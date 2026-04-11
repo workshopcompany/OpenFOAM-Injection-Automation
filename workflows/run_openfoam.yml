@@ -1,11 +1,20 @@
-name: OpenFOAM Auto Run
-on: [push] # Zapier가 파일을 푸시하면 바로 실행
+name: OpenFOAM Simulation
+
+on:
+  push:
+    paths:
+      - 'OpenFOAM/case/constant/transportProperties' # 파일이 업데이트될 때만 실행
 
 jobs:
   run-simulation:
     runs-on: ubuntu-latest
+    container: openfoam/openfoam10-graphical-user-interface # 사용하시는 버전에 맞게 수정
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Run OpenFOAM in Docker
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run OpenFOAM Case
         run: |
-          docker run --rm -v $(pwd):/data opencfd/openfoam-run:latest /bin/bash -c "cd /data && ./Allrun"
+          cd OpenFOAM/case
+          ./Allrun # 또는 직접 blockMesh, simpleFoam 등 명령어 입력
