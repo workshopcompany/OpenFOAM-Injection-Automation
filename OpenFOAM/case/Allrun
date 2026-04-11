@@ -1,1 +1,15 @@
+#!/bin/sh
+cd "${0%/*}" || exit 1
 
+# 1. 메쉬 생성
+blockMesh
+
+# 2. (선택사항) 필요 시 setFields 등 추가
+# setFields
+
+# 3. 솔버 실행 (예: 단순 비압축성 유동이라면 simpleFoam)
+# 사용하시는 솔버 이름으로 변경하세요 (pisoFoam, icoFoam 등)
+simpleFoam
+
+# 4. (선택사항) 결과 후처리나 파일 변환이 필요하면 여기에 작성
+# foamToEnsight
