@@ -1,0 +1,13 @@
+startTime 0;
+endTime 1000;
+timeStep 1;
+writeControl iteration;
+writeInterval 1000;
+purgeWrite 2;
+writeFormat ascii;
+writePrecision 6;
+writeCompression uncompressed;
+readFormat ascii;
+compression uncompressed;
+userTimeLogging on;
+funcFormat default;
