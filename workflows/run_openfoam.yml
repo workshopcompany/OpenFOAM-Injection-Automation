@@ -1,0 +1,11 @@
+name: OpenFOAM Auto Run
+on: [push] # Zapier가 파일을 푸시하면 바로 실행
+
+jobs:
+  run-simulation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run OpenFOAM in Docker
+        run: |
+          docker run --rm -v $(pwd):/data opencfd/openfoam-run:latest /bin/bash -c "cd /data && ./Allrun"
