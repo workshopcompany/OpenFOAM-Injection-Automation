@@ -1,20 +1,36 @@
-name: OpenFOAM Simulation
+name: OpenFOAM Automated Simulation
 
 on:
   push:
     paths:
-      - 'OpenFOAM/case/constant/transportProperties' # 파일이 업데이트될 때만 실행
+      - 'OpenFOAM/case/constant/transportProperties' # 이 파일이 바뀔 때만 트리거
 
 jobs:
-  run-simulation:
+  simulate:
     runs-on: ubuntu-latest
-    container: openfoam/openfoam10-graphical-user-interface # 사용하시는 버전에 맞게 수정
+    # OpenFOAM 공식 도커 이미지를 사용하여 환경 구축 시간을 단축합니다.
+    container: openfoam/openfoam10-default
 
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Run OpenFOAM Case
+      - name: Run Simulation
+        shell: bash
         run: |
+          # OpenFOAM 환경 변수 로드
+          . /usr/lib/openfoam/openfoam10/etc/bashrc
+          
+          # 케이스 디렉토리로 이동
           cd OpenFOAM/case
-          ./Allrun # 또는 직접 blockMesh, simpleFoam 등 명령어 입력
+          
+          # Allrun 스크립트에 실행 권한 부여 및 실행
+          chmod +x Allrun
+          ./Allrun
+
+      - name: Archive Results
+        if: success()
+        uses: actions/upload-artifact@v3
+        with:
+          name: simulation-results
+          path: OpenFOAM/case/ # 계산된 결과 폴더 전체를 업로드
