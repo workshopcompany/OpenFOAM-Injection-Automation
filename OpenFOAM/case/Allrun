@@ -2,7 +2,7 @@
 cd "${0%/*}" || exit
 
 # ======================================================
-# fvSolution 강제 재생성 (파일 인코딩 문제 방지)
+# [0] fvSolution / fvSchemes 강제 재생성
 # ======================================================
 cat > system/fvSolution << 'EOF'
 FoamFile
@@ -28,15 +28,15 @@ solvers
         tolerance       1e-8;
         relTol          0;
     }
-    p_rgh       { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0.05; }
-    p_rghFinal  { $p_rgh; relTol 0; }
-    pcorr       { solver PCG; preconditioner DIC; tolerance 1e-5; relTol 0; }
-    pcorrFinal  { $pcorr; relTol 0; }
-    U           { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
-    UFinal      { $U; relTol 0; }
-    k           { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
-    kFinal      { $k; relTol 0; }
-    epsilon     { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
+    p_rgh        { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0.05; }
+    p_rghFinal   { $p_rgh; relTol 0; }
+    pcorr        { solver PCG; preconditioner DIC; tolerance 1e-5; relTol 0; }
+    pcorrFinal   { $pcorr; relTol 0; }
+    U            { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
+    UFinal       { $U; relTol 0; }
+    k            { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
+    kFinal       { $k; relTol 0; }
+    epsilon      { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
     epsilonFinal { $epsilon; relTol 0; }
 }
 
@@ -54,7 +54,6 @@ relaxationFactors
 }
 EOF
 
-# fvSchemes도 동일하게 강제 재생성
 cat > system/fvSchemes << 'EOF'
 FoamFile
 {
@@ -77,37 +76,44 @@ divSchemes
     div(phi,epsilon)                            Gauss upwind;
     div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
 }
-laplacianSchemes  { default Gauss linear corrected; }
+laplacianSchemes     { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
-snGradSchemes     { default corrected; }
-fluxRequired      { default no; p_rgh; pcorr; alpha.water; }
+snGradSchemes        { default corrected; }
+fluxRequired         { default no; p_rgh; pcorr; alpha.water; }
 EOF
 
 echo "[Allrun] fvSolution and fvSchemes regenerated successfully."
 
 # ======================================================
-# 이후 기존 로직 그대로
+# [1] 초기화
 # ======================================================
 echo "[Allrun] Cleaning and creating results folder..."
 rm -rf [1-9]* 0.* log.* results
 mkdir -p results && chmod 777 results
 
-# blockMesh 실행 + 로그 즉시 출력
+# ======================================================
+# [2] blockMesh
+# ======================================================
 echo "[Allrun] Running blockMesh..."
 blockMesh > log.blockMesh 2>&1
 echo "===== blockMesh Log ====="
 cat log.blockMesh
 echo "========================="
-[ ! -s log.blockMesh ] && echo "ERROR: blockMesh failed" && exit 1
 
-# interFoam 실행 + 로그 즉시 출력
+if [ ! -s log.blockMesh ]; then
+    echo "ERROR: blockMesh log is empty — blockMesh likely failed"
+    exit 1
+fi
+
+# ======================================================
+# [3] interFoam
+# ======================================================
 echo "[Allrun] Running interFoam..."
 interFoam > simulation.log 2>&1
 echo "===== interFoam Log (last 50 lines) ====="
 tail -50 simulation.log
 echo "========================================="
 
-# 타임스텝 체크
 TIMESTEP_COUNT=$(ls -d [0-9]* 2>/dev/null | grep -v "^0$" | wc -l)
 echo "CHECK: Found $TIMESTEP_COUNT timestep folders"
 ls -la
@@ -117,18 +123,53 @@ if [ "$TIMESTEP_COUNT" -le 0 ]; then
     exit 1
 fi
 
-# 후처리
+# ======================================================
+# [4] 후처리
+# ======================================================
 echo "[Allrun] Starting Post-processing..."
 touch case.foam
-if [ -f "export_screenshots.py" ]; then
-    PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
-    echo "Using: $PVPY_EXE"
-    $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
-    echo "===== Post-processing Result Check ====="
-    cat log.pvpython
-    ls -la results/
-    echo "========================================"
-else
+echo "CHECK: case.foam created at $(pwd)/case.foam"
+
+if [ ! -f "export_screenshots.py" ]; then
     echo "ERROR: export_screenshots.py missing!"
     exit 1
 fi
+
+PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
+echo "Using pvpython: $PVPY_EXE"
+
+xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
+    $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
+
+EXIT_CODE=$?
+echo "===== pvpython exit code: $EXIT_CODE ====="
+echo "===== log.pvpython ====="
+cat log.pvpython
+echo "========================"
+
+echo "===== results folder contents ====="
+ls -la results/
+echo "==================================="
+
+# ======================================================
+# [5] 결과 동기화 (컨테이너 → 호스트 워크스페이스)
+# ======================================================
+WORKSPACE_DIR="${GITHUB_WORKSPACE:-/__w}"
+SYNC_DIR="$WORKSPACE_DIR/sync_results"
+echo "Step: Syncing results to $SYNC_DIR ..."
+mkdir -p "$SYNC_DIR"
+
+if [ -d "results" ] && [ "$(ls -A results/ 2>/dev/null)" ]; then
+    cp -rv results/* "$SYNC_DIR/"
+    echo "CHECK: Files copied to sync_results"
+    ls -la "$SYNC_DIR/"
+else
+    echo "ERROR: results folder is empty or missing!"
+    echo "--- case.foam check ---"
+    ls -la case.foam 2>/dev/null || echo "case.foam MISSING"
+    echo "--- log.pvpython ---"
+    cat log.pvpython 2>/dev/null || echo "(log.pvpython not found)"
+    exit 1
+fi
+
+echo "[Allrun] All done."
