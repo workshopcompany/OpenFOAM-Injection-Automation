@@ -9,7 +9,7 @@ jobs:
   run-sim:
     runs-on: ubuntu-latest
     container: 
-      image: openfoam/openfoam10-default
+      image: opencfd/openfoam-run:2312
       options: --user root
 
     steps:
