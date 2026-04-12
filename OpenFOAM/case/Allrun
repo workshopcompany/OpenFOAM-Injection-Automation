@@ -1,61 +1,45 @@
-name: OpenFOAM Simulation
+#!/bin/bash
+cd "${0%/*}" || exit
 
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+# 1. 초기화
+echo "Step 1: Cleaning and preparing results folder..."
+rm -rf [1-9]* 0.* log.* simulation.log results
+mkdir -p results
+chmod 777 results
 
-jobs:
-  run-sim:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    container: 
-      image: opencfd/openfoam-run:2312
-      options: --user root
+# 2. 초기 조건 설정
+[ -d "0.orig" ] && cp -r 0.orig 0
+
+# 3. 격자 및 해석
+echo "Step 2: Mesh generation..."
+blockMesh > log.blockMesh 2>&1
+snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
+
+echo "Step 3: Running interFoam..."
+unset application
+interFoam > simulation.log 2>&1
+
+# 4. 후처리 준비 (환경변수는 yml에서 이미 선언했으나 이중 보완)
+echo "Step 4: Preparing Post-processing..."
+touch case.foam
+
+# 5. 후처리 실행
+if [ -f "export_screenshots.py" ]; then
+    echo "Running pvpython post-processing..."
+    # 중복 실행 제거: 변수 확인 후 단 한 번만 실행
+    PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Install Post-Processing Dependencies
-        run: |
-          rm -f /etc/apt/sources.list.d/openfoam.list || true
-          apt-get update
-          apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
-      
-      - name: Run OpenFOAM Simulation
-        shell: bash
-        working-directory: OpenFOAM/case
-        run: |
-          bash << 'SCRIPT_END'
-          set -e
-          source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
-          
-          # 후처리 필수 환경 변수 강제 주입
-          export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
-          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
-          export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
-          
-          # 결과 폴더 권한 부여 및 생성
-          mkdir -p results
-          chmod 777 results
-          chmod +x Allrun
-          
-          echo "Starting Simulation..."
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
-          
-          echo "===== CRITICAL: WORKSPACE DEBUG ====="
-          pwd
-          ls -R results/
-          cat log.pvpython || echo "log.pvpython is missing!"
-          SCRIPT_END
-      
-      - name: Upload 3D Interactive Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: OpenFOAM-Web-Dashboard
-          # 컨테이너 내 생성된 파일이 호스트 볼륨에 반영되었는지 확인하기 위해 와일드카드 사용
-          path: "**/OpenFOAM/case/results/*"
-          if-no-files-found: error
+    # 가상 디스플레이(xvfb-run) 내부에서 호출되므로 바로 실행
+    $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
+    
+    # 결과 요약 보고
+    echo "===== Post-processing Complete ====="
+    FILE_COUNT=$(ls -1 results/ | wc -l)
+    echo "Total files in results/: $FILE_COUNT"
+    ls -la results/
+else
+    echo "Error: export_screenshots.py not found"
+    exit 1
+fi
+
+echo "All processes finished successfully."
