@@ -31,7 +31,8 @@ boundaryField
     {
         type            totalPressure;
         p0              uniform 0;
-        value           uniform 0;
+        // value 항목을 internalField와 일치시켜 초기 충격을 완화합니다.
+        value           $internalField; 
     }
 
     bottom
