@@ -6,7 +6,7 @@ FoamFile
     location    "constant";
     object      thermophysicalProperties;
 }
- 
+  
 thermoType
 {
     type            heRhoThermo;
