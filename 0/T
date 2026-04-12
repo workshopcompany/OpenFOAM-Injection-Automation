@@ -1,0 +1,29 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      T;
+}
+
+dimensions      [0 0 0 1 0 0 0];
+internalField   uniform 353.15; // Mold Temp: 80C
+
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform 448.15; // Nozzle Temp: 175C
+    }
+    outlet
+    {
+        type            zeroGradient;
+    }
+    walls
+    {
+        type            fixedValue;
+        value           uniform 353.15; // Mold Temp
+    }
+}
