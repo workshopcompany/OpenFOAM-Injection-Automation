@@ -1,50 +1,61 @@
-#!/bin/bash
-cd "${0%/*}" || exit
+name: OpenFOAM Simulation
 
-# 1. 초기화 (이전 해석 결과 및 통합 폴더 삭제)
-echo "Cleaning old simulation data and folders..."
-rm -rf [1-9]* 0.* log.* simulation.log results
-mkdir -p results
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
 
-# 2. 초기 조건 설정
-[ -d "0.orig" ] && cp -r 0.orig 0
-
-# 3. 격자 생성 및 해석 (interFoam)
-echo "Generating Mesh (blockMesh & snappyHexMesh)..."
-blockMesh > log.blockMesh 2>&1
-snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
-
-echo "Running interFoam simulation..."
-unset application
-interFoam > simulation.log 2>&1
-
-# 4. 후처리 준비 (ParaView)
-echo "Preparing post-processing..."
-touch case.foam
-export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
-export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
-
-# yml에서 전달된 PVPYTHON_PATH가 없을 경우 기본값 설정
-if [ -z "$PVPYTHON_PATH" ]; then
-    PVPYTHON_PATH="/usr/bin/pvpython"
-fi
-
-# 5. 후처리 실행 (스크린샷 5장 + 3D VTP 데이터 추출)
-if [ -f "export_screenshots.py" ]; then
-    echo "Running post-processing..."
+jobs:
+  run-sim:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    container: 
+      image: opencfd/openfoam-run:2312
+      options: --user root
     
-    # yml에서 전달된 PVPYTHON_PATH 사용
-    ${PVPYTHON_PATH:-/usr/bin/pvpython} export_screenshots.py > log.pvpython 2>&1
-    
-    # 파이썬 스크립트 실행
-    $PVPYTHON_PATH export_screenshots.py > log.pvpython 2>&1
-    
-    # 결과 확인을 위한 로그 출력
-    echo "Post-processing complete. Checking results in results/ folder..."
-    ls -la results/
-else
-    echo "Error: export_screenshots.py not found"
-    exit 1
-fi
-
-echo "All processes finished successfully."
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Post-Processing Dependencies
+        run: |
+          rm -f /etc/apt/sources.list.d/openfoam.list || true
+          apt-get update
+          apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
+      
+      - name: Run OpenFOAM Simulation
+        shell: bash
+        working-directory: OpenFOAM/case
+        run: |
+          bash << 'SCRIPT_END'
+          set -e
+          source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
+          
+          # 후처리 필수 환경 변수 강제 주입
+          export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
+          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
+          export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
+          
+          # 결과 폴더 권한 부여 및 생성
+          mkdir -p results
+          chmod 777 results
+          chmod +x Allrun
+          
+          echo "Starting Simulation..."
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
+          
+          echo "===== CRITICAL: WORKSPACE DEBUG ====="
+          pwd
+          ls -R results/
+          cat log.pvpython || echo "log.pvpython is missing!"
+          SCRIPT_END
+      
+      - name: Upload 3D Interactive Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OpenFOAM-Web-Dashboard
+          # 컨테이너 내 생성된 파일이 호스트 볼륨에 반영되었는지 확인하기 위해 와일드카드 사용
+          path: "**/OpenFOAM/case/results/*"
+          if-no-files-found: error
