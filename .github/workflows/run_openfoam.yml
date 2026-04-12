@@ -24,24 +24,27 @@ jobs:
         shell: bash
         run: |
           cd OpenFOAM/case
-          source /usr/bin/openfoam2312 && ./Allrun
+          chmod +x Allrun
+          bash -c "source /usr/bin/openfoam2312 && ./Allrun"
       
-      - name: Debug - Find screenshots
+      - name: Debug - Check results
         shell: bash
+        if: always()
         run: |
-          echo "=== Looking for generated files ==="
-          find . -type f \( -name "*.png" -o -name "*.jpg" \) -ls || echo "No images found"
+          echo "=== Screenshots folder ==="
+          ls -la OpenFOAM/case/screenshots/ 2>/dev/null || echo "No screenshots folder"
           
           echo ""
-          echo "=== Case directory contents ==="
-          ls -la OpenFOAM/case/ || true
+          echo "=== All PNG/JPG files ==="
+          find OpenFOAM/case -type f \( -name "*.png" -o -name "*.jpg" \) -ls || echo "No images"
+          
+          echo ""
+          echo "=== VTK files (simulation output) ==="
+          find OpenFOAM/case -name "*.vtk" -o -name "*.foam" || echo "No VTK files"
       
       - name: Upload Screenshots
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: flow-results
-          path: |
-            OpenFOAM/case/**/*.png
-            OpenFOAM/case/**/*.jpg
-            OpenFOAM/case/screenshots/
+          path: OpenFOAM/case/screenshots/
