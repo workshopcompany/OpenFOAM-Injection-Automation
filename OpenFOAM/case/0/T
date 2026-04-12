@@ -28,14 +28,13 @@ boundaryField
     }
     atmosphere
     {
-        type            totalPressure;
-        p0              uniform 0;
-        value           uniform 0;
+        type            inletOutlet;
+        inletValue      uniform 300; // 외부 공기 온도 (예: 300K)
+        value           uniform 300;
     }
 
     bottom
     {
-        type            fixedFluxPressure;
-        value           uniform 0;
+        type            zeroGradient; // 단열 또는 온도 구배 없음
     }
 }
