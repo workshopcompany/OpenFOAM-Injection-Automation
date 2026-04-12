@@ -9,6 +9,7 @@ on:
 jobs:
   run-sim:
     runs-on: ubuntu-latest
+    # 방법 A (추천): 공식 컨테이너 사용
     container:
       image: opencfd/openfoam-dev:2312
       options: --user root
@@ -17,20 +18,33 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Run Solver with Logging
+      - name: Check OpenFOAM Installation
         shell: bash
-        working-directory: OpenFOAM/case
         run: |
-          # 1. Load OpenFOAM environment
-          . /usr/lib/openfoam/openfoam2312/etc/bashrc
-          
-          # 2. Setup permissions and CRLF fix
-          sed -i 's/\r$//' Allrun
+          echo ">>> Checking OpenFOAM path..."
+          ls -d /usr/lib/openfoam/openfoam* || ls -d /opt/openfoam* || echo "OpenFOAM NOT FOUND"
+
+      - name: Execute Solver Pipeline
+        # 핵심: 로그인 쉘(-l)을 사용하여 환경 변수 상속을 보장
+        shell: bash -l {0}
+        working-directory: OpenFOAM/case
+        env:
+          VELOCITY: ${{ github.event.inputs.velocity }}
+          END_TIME: ${{ github.event.inputs.end_time }}
+        run: |
+          # 1. 안전한 환경 로딩 (분석하신 해결책 적용)
+          if [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ]; then
+              . /usr/lib/openfoam/openfoam2312/etc/bashrc
+          elif [ -f /opt/openfoam2312/etc/bashrc ]; then
+              . /opt/openfoam2312/etc/bashrc
+          else
+              echo "❌ ERROR: OpenFOAM environment file not found!"
+              exit 1
+          fi
+
+          # 2. 스크립트 실행
           chmod +x Allrun
-          
-          # 3. Execute Allrun and capture exit code
-          echo ">>> Starting Pipeline execution..."
-          ./Allrun || (echo "❌ Allrun failed. Printing solver.log:" && tail -n 50 logs/solver.log && exit 1)
+          ./Allrun || (echo "❌ Solver failed. Printing logs:" && tail -n 20 logs/solver.log && exit 1)
 
       - name: Upload Artifacts
         if: always()
