@@ -21,7 +21,8 @@ jobs:
       - name: Install Post-Processing Dependencies
         run: |
           apt-get update
-          apt-get install -y paraview python3-vtk9 xvfb libgl1-mesa-glx libglu1-mesa
+          # paraview-python(또는 python3-paraview)을 명시적으로 설치합니다.
+          apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa
       
       - name: Run OpenFOAM Simulation
         shell: bash
@@ -31,16 +32,18 @@ jobs:
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          # 라이브러리 경로 강제 지정 (ParaView 충돌 방지)
-          export LD_LIBRARY_PATH=/usr/lib/openfoam/openfoam2312/platforms/linux64GccDPInt32Opt/lib:$LD_LIBRARY_PATH
+          # 시스템에 설치된 pvpython 경로를 찾아서 환경 변수에 추가
+          PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
+          echo "Using pvpython at: $PVPYTHON_PATH"
           
           chmod +x Allrun
           
           echo "Starting Simulation..."
+          # xvfb-run으로 가상 모니터를 띄우고 실행
           xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" ./Allrun
           
           echo "===== DEBUG: log.pvpython content ====="
-          cat log.pvpython || echo "log.pvpython not found"
+          cat log.pvpython || echo "log.pvpython was not created"
           
           echo "===== DEBUG: Final screenshots folder ====="
           ls -la screenshots/
