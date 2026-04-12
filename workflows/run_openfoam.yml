@@ -1,36 +1,34 @@
-name: OpenFOAM Automated Simulation
+name: OpenFOAM PimpleFoam Simulation
 
 on:
   push:
     paths:
-      - 'OpenFOAM/case/constant/transportProperties' # 이 파일이 바뀔 때만 트리거
+      - 'OpenFOAM/case/constant/thermophysicalProperties'
 
 jobs:
-  simulate:
+  run-sim:
     runs-on: ubuntu-latest
-    # OpenFOAM 공식 도커 이미지를 사용하여 환경 구축 시간을 단축합니다.
-    container: openfoam/openfoam10-default
+    container: 
+      image: openfoam/openfoam10-default
+      options: --user root
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Run Simulation
-        shell: bash
+      - name: Install ParaView (for pvpython)
         run: |
-          # OpenFOAM 환경 변수 로드
+          apt-get update
+          apt-get install -y paraview
+
+      - name: Run OpenFOAM and Post-processing
+        run: |
           . /usr/lib/openfoam/openfoam10/etc/bashrc
-          
-          # 케이스 디렉토리로 이동
           cd OpenFOAM/case
-          
-          # Allrun 스크립트에 실행 권한 부여 및 실행
           chmod +x Allrun
           ./Allrun
 
-      - name: Archive Results
-        if: success()
+      - name: Upload Screenshots
         uses: actions/upload-artifact@v3
         with:
-          name: simulation-results
-          path: OpenFOAM/case/ # 계산된 결과 폴더 전체를 업로드
+          name: flow-results
+          path: OpenFOAM/case/screenshots/
