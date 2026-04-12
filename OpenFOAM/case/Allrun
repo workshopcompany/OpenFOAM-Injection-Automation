@@ -1,11 +1,10 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 초기화 (이전 해석 결과 및 폴더 삭제)
-# web_data 폴더도 초기화 목록에 추가했습니다.
+# 1. 초기화 (이전 해석 결과 및 통합 폴더 삭제)
 echo "Cleaning old simulation data and folders..."
-rm -rf [1-9]* 0.* log.* simulation.log screenshots web_data
-mkdir -p screenshots web_data
+rm -rf [1-9]* 0.* log.* simulation.log results
+mkdir -p results
 
 # 2. 초기 조건 설정
 [ -d "0.orig" ] && cp -r 0.orig 0
@@ -32,7 +31,7 @@ fi
 if [ -f "export_screenshots.py" ]; then
     echo "Running pvpython post-processing with $PVPYTHON_PATH..."
     
-    # 컨테이너 내부 라이브러리 경로 강제 지정 (충돌 방지)
+    # 컨테이너 내부 라이브러리 경로 강제 지정
     export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
     export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
     
@@ -40,9 +39,8 @@ if [ -f "export_screenshots.py" ]; then
     $PVPYTHON_PATH export_screenshots.py > log.pvpython 2>&1
     
     # 결과 확인을 위한 로그 출력
-    echo "Post-processing complete. Checking results..."
-    ls -la screenshots/
-    ls -la web_data/
+    echo "Post-processing complete. Checking results in results/ folder..."
+    ls -la results/
 else
     echo "Error: export_screenshots.py not found in the case directory!"
     exit 1
