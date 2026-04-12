@@ -1,42 +1,37 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 이전 결과 정리
-echo "Cleaning old data..."
+# 1. 초기화
 rm -rf [1-9]* 0.* log.* simulation.log screenshots
 mkdir -p screenshots
 
-# 2. 초기 데이터 복구
+# 2. 초기 조건
 [ -d "0.orig" ] && cp -r 0.orig 0
 
-# 3. 격자 및 해석 실행
-echo "Generating Mesh..."
+# 3. 격자 및 해석 (interFoam)
 blockMesh > log.blockMesh 2>&1
 snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 
 unset application
-echo "Running interFoam..."
 interFoam > simulation.log 2>&1
 
-# 4. 후처리 (ParaView 스크린샷)
+# 4. 후처리 (ParaView)
 touch case.foam
 
-# yml에서 전달한 환경변수가 없으면 직접 찾습니다.
+# yml에서 설정한 경로가 있는지 확인
 if [ -z "$PVPYTHON_PATH" ]; then
-    PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
+    PVPYTHON_PATH="/usr/bin/pvpython"
 fi
 
 if [ -f "export_screenshots.py" ]; then
     echo "Running post-processing with $PVPYTHON_PATH..."
-    # 해석 결과가 파일 시스템에 기록될 시간을 위해 아주 짧게 대기합니다.
-    sleep 2
-    # 절대 경로를 사용하여 pvpython을 실행합니다.
+    # 파이썬 경로를 다시 한 번 명시적으로 선언
+    export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
+    
     $PVPYTHON_PATH export_screenshots.py > log.pvpython 2>&1
 else
     echo "Error: export_screenshots.py not found"
     exit 1
 fi
 
-# 5. 최종 이미지 확인
-echo "Checking generated images in screenshots/ folder..."
 ls -la screenshots/
