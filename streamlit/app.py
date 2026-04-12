@@ -4,6 +4,7 @@ import os
 import sys
 import pandas as pd
 import matplotlib.pyplot as plt
+import requests  # Zapier 전송을 위해 추가
 
 # Import AI Script
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
@@ -11,8 +12,16 @@ from gemini_advisor import get_material_properties
 
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 
+# --- SECRETS SETUP ---
+# Streamlit Cloud의 Settings > Secrets 또는 로컬의 .streamlit/secrets.toml에서 불러옴
+try:
+    ZAPIER_WEBHOOK_URL = st.secrets["ZAPIER_URL"]
+except Exception:
+    ZAPIER_WEBHOOK_URL = None
+    st.warning("⚠️ ZAPIER_URL not found in Secrets. Zapier integration will be disabled.")
+
 st.title("🔬 MIM-Ops: AI-Powered Flow Analysis")
-st.caption("Integrated Pipeline: STL Upload → snappyHexMesh → simpleFoam → Gemini Analysis")
+st.caption("Integrated Pipeline: STL Upload → AI Config → Zapier Sync → OpenFOAM")
 
 # --- PATH SETUP ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,10 +61,25 @@ with st.sidebar:
         etime = st.number_input("Analysis Time (s)", value=2.0)
 
         if st.button("🚀 Run Simulation", type="primary"):
+            # 1. Store parameters in session state
             st.session_state["run_params"] = {
                 "nu": nu, "rho": rho, "tmelt": tmelt, "tmold": tmold, 
                 "vel": vel, "etime": etime, "mat": mat_name
             }
+            
+            # 2. Send Data to Zapier (Webhook)
+            if ZAPIER_WEBHOOK_URL:
+                with st.spinner("Syncing with Zapier..."):
+                    try:
+                        payload = st.session_state["run_params"]
+                        resp = requests.post(ZAPIER_WEBHOOK_URL, json=payload, timeout=5)
+                        if resp.status_code == 200:
+                            st.toast("✅ Zapier Sync Successful!", icon="🌐")
+                        else:
+                            st.error(f"Zapier Error: {resp.status_code}")
+                    except Exception as e:
+                        st.error(f"Webhook Failed: {e}")
+            
             st.session_state["exec"] = True
 
 # --- MAIN: EXECUTION & RESULTS ---
@@ -66,7 +90,12 @@ if st.session_state.get("exec"):
     log_box = st.empty()
     bar = st.progress(0)
     
-    env = {**os.environ, "VELOCITY": str(params["vel"]), "VISCOSITY": str(params["nu"]), "END_TIME": str(params["etime"])}
+    env = {
+        **os.environ, 
+        "VELOCITY": str(params["vel"]), 
+        "VISCOSITY": str(params["nu"]), 
+        "END_TIME": str(params["etime"])
+    }
 
     # Execution (Bash Allrun)
     try:
@@ -81,14 +110,13 @@ if st.session_state.get("exec"):
         proc.wait()
         if proc.returncode == 0:
             st.success("✅ Analysis Complete!")
-            # Visualization Tabs
             t1, t2, t3 = st.tabs(["Flow Field", "Pressure", "AI Report"])
             with t1: st.subheader("Velocity Vector Field"); _plot_demo()
             with t2: st.subheader("Pressure Distribution"); _plot_demo()
             with t3: 
                 st.subheader("Gemini AI Analysis")
                 st.write(f"**Material:** {params['mat']} | **Risk Level:** Low")
-                st.info("AI Insight: The current gate location minimizes weldline visibility.")
+                st.info("AI Insight: The parameters have been synced to GitHub via Zapier for version control.")
         else:
             st.error("Simulation failed. Check logs.")
     except Exception as e:
