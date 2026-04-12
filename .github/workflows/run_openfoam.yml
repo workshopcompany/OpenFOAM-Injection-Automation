@@ -53,27 +53,22 @@ jobs:
           INPUT_END_TIME: ${{ github.event.inputs.end_time }}
         run: |
           set -e
-          # OpenFOAM 환경 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          echo ">>> [MIM-Ops] 파라미터 매핑 시작"
-          echo "Target Velocity: $INPUT_VELOCITY"
-          echo "Target Viscosity: $INPUT_VISCOSITY"
-          echo "Target EndTime: $INPUT_END_TIME"
+          echo ">>> [MIM-Ops] 파라미터 업데이트 시작"
 
-          # 1. 0/U 파일 수정 (공백 유연성 확보)
-          # 'value'와 'uniform' 사이의 공백이 몇 칸이든 대응하도록 수정
+          # 1. 0/U 수정 (입구 유속)
+          # 'inlet' 섹션 내부의 value 값을 정확히 찾아 바꿉니다.
           sed -i "/inlet/,/}/ s/value[[:space:]]*uniform[[:space:]]*(.* 0 0);/value           uniform ($INPUT_VELOCITY 0 0);/" 0/U
           
-          # 2. constant/transportProperties 수정
-          # 점도(nu) 단위를 포함한 전체 라인을 교체
-          sed -i "s/nu[[:space:]]*\[0 2 -1 0 0 0 0\].*;/nu [0 2 -1 0 0 0 0] $INPUT_VISCOSITY;/" constant/transportProperties
+          # 2. constant/transportProperties 수정 (점도)
+          # nu 뒤의 숫자만 정교하게 바꿉니다.
+          sed -i "s/\(nu[[:space:]]*\[0 2 -1 0 0 0 0\][[:space:]]*\).*/\1$INPUT_VISCOSITY;/" constant/transportProperties
 
-          # 3. system/controlDict 수정
-          # endTime 키워드를 찾아 정확히 세미콜론을 포함하여 교체
-          sed -i "s/^endTime[[:space:]]*.*;/endTime           $INPUT_END_TIME;/" system/controlDict
+          # 3. system/controlDict 수정 (종료 시간)
+          # endTime 뒤의 숫자만 정교하게 바꿉니다. (velocity 같은 엉뚱한 건 건드리지 않음)
+          sed -i "s/\(endTime[[:space:]]*\).*/\1$INPUT_END_TIME;/" system/controlDict
 
-          # 실행 권한 부여 및 Allrun 실행
           chmod +x Allrun
           ./Allrun
 
@@ -83,4 +78,3 @@ jobs:
         with:
           name: OpenFOAM-Web-Dashboard
           path: OpenFOAM/case/results/
-          if-no-files-found: warn
