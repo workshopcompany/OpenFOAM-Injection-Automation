@@ -1,3 +1,10 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
 FoamFile
 {
     version     2.0;
@@ -6,35 +13,40 @@ FoamFile
     location    "0";
     object      T;
 }
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 dimensions      [0 0 0 1 0 0 0];
-internalField   uniform 353.15; // Mold Temp: 80C
+
+internalField   uniform 353.15;   // Mold temperature 80°C
 
 boundaryField
 {
     inlet
     {
         type            fixedValue;
-        value           uniform 448.15; // Nozzle Temp: 175C
+        value           uniform 448.15;   // Nozzle temperature 175°C
     }
+
     outlet
     {
         type            zeroGradient;
     }
-    walls
+
+    "wall.*"
     {
         type            fixedValue;
-        value           uniform 353.15; // Mold Temp
+        value           uniform 353.15;   // Mold temperature
     }
+
     atmosphere
     {
         type            inletOutlet;
-        inletValue      uniform 300; // 외부 공기 온도 (예: 300K)
+        inletValue      uniform 300;
         value           uniform 300;
     }
 
     bottom
     {
-        type            zeroGradient; // 단열 또는 온도 구배 없음
+        type            zeroGradient;
     }
 }
