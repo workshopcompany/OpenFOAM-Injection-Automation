@@ -22,7 +22,7 @@ jobs:
 
       - name: Run OpenFOAM and Post-processing
         run: |
-          . /usr/lib/openfoam/openfoam10/etc/bashrc
+          . /usr/lib/openfoam/openfoam/bashrc
           cd OpenFOAM/case
           chmod +x Allrun
           ./Allrun
