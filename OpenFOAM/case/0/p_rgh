@@ -27,4 +27,16 @@ boundaryField
         type            fixedValue;
         value           uniform 0;
     }
+    atmosphere
+    {
+        type            totalPressure;
+        p0              uniform 0;
+        value           uniform 0;
+    }
+
+    bottom
+    {
+        type            fixedFluxPressure;
+        value           uniform 0;
+    }
 }
