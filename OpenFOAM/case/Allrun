@@ -21,6 +21,8 @@ interFoam > simulation.log 2>&1
 # 4. 후처리 준비 (ParaView)
 echo "Preparing post-processing..."
 touch case.foam
+export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
 
 # yml에서 전달된 PVPYTHON_PATH가 없을 경우 기본값 설정
 if [ -z "$PVPYTHON_PATH" ]; then
@@ -29,11 +31,10 @@ fi
 
 # 5. 후처리 실행 (스크린샷 5장 + 3D VTP 데이터 추출)
 if [ -f "export_screenshots.py" ]; then
-    echo "Running pvpython post-processing with $PVPYTHON_PATH..."
+    echo "Running post-processing..."
     
-    # 컨테이너 내부 라이브러리 경로 강제 지정
-    export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
-    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
+    # yml에서 전달된 PVPYTHON_PATH 사용
+    ${PVPYTHON_PATH:-/usr/bin/pvpython} export_screenshots.py > log.pvpython 2>&1
     
     # 파이썬 스크립트 실행
     $PVPYTHON_PATH export_screenshots.py > log.pvpython 2>&1
@@ -42,7 +43,7 @@ if [ -f "export_screenshots.py" ]; then
     echo "Post-processing complete. Checking results in results/ folder..."
     ls -la results/
 else
-    echo "Error: export_screenshots.py not found in the case directory!"
+    echo "Error: export_screenshots.py not found"
     exit 1
 fi
 
