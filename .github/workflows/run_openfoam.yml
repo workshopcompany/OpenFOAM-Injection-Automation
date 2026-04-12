@@ -20,8 +20,9 @@ jobs:
       
       - name: Install Post-Processing Dependencies
         run: |
+          # 리포지토리 청소 및 필수 패키지 설치
+          rm -f /etc/apt/sources.list.d/openfoam.list || true
           apt-get update
-          # ParaView와 가상 화면 실행을 위한 필수 패키지들을 모두 설치합니다.
           apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
       
       - name: Run OpenFOAM Simulation
@@ -30,24 +31,26 @@ jobs:
         run: |
           bash << 'SCRIPT_END'
           set -e
-          # OpenFOAM 환경 로드
+          # 1. OpenFOAM 환경 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          # ✅ pvpython의 절대 경로를 미리 파악합니다.
+          # 2. 파이썬 모듈 경로 강제 지정 (Ubuntu Jammy 기준)
+          # OpenFOAM 환경 변수가 시스템 경로를 가리는 것을 방지합니다.
+          export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
+          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
+          
+          # 3. pvpython 실행 파일 위치 확인
           PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           export PVPYTHON_PATH
-          echo "Using pvpython at: $PVPYTHON_PATH"
           
           chmod +x Allrun
           
-          # xvfb-run을 통해 가상 모니터 환경에서 Allrun 실행
-          # --server-args 설정을 통해 렌더링에 필요한 충분한 메모리를 확보합니다.
+          echo "Starting Simulation..."
+          # 가상 모니터 환경에서 Allrun 실행
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
-          echo "===== DEBUG: log.pvpython output ====="
-          cat log.pvpython || echo "No log.pvpython found"
-          
-          echo "===== DEBUG: screenshots check ====="
+          echo "===== DEBUG: Final Check ====="
+          cat log.pvpython || echo "log.pvpython not found"
           ls -la screenshots/
           SCRIPT_END
       
