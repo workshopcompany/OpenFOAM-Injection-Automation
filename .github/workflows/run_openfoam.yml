@@ -48,6 +48,7 @@ jobs:
         shell: bash
         working-directory: OpenFOAM/case
         env:
+          # ✅ 핵심: JSON 객체가 아닌 개별 값을 정확히 주입합니다.
           INPUT_VELOCITY: ${{ github.event.inputs.velocity }}
           INPUT_VISCOSITY: ${{ github.event.inputs.viscosity }}
           INPUT_END_TIME: ${{ github.event.inputs.end_time }}
@@ -55,20 +56,21 @@ jobs:
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          echo ">>> [MIM-Ops] 파라미터 업데이트 시작"
+          echo ">>> [MIM-Ops] 파라미터 매핑 시작"
+          echo "Value of INPUT_VELOCITY: $INPUT_VELOCITY"
 
-          # 1. 0/U 수정 (입구 유속)
-          # 'inlet' 섹션 내부의 value 값을 정확히 찾아 바꿉니다.
+          # 1. 0/U 파일 수정 (입구 유속 주입)
+          # 이제 $INPUT_VELOCITY에는 '5.0' 같은 순수 숫자만 들어있습니다.
           sed -i "/inlet/,/}/ s/value[[:space:]]*uniform[[:space:]]*(.* 0 0);/value           uniform ($INPUT_VELOCITY 0 0);/" 0/U
           
-          # 2. constant/transportProperties 수정 (점도)
-          # nu 뒤의 숫자만 정교하게 바꿉니다.
-          sed -i "s/\(nu[[:space:]]*\[0 2 -1 0 0 0 0\][[:space:]]*\).*/\1$INPUT_VISCOSITY;/" constant/transportProperties
+          # 2. constant/transportProperties 수정 (점도 주입)
+          sed -i "s/nu[[:space:]]*\[0 2 -1 0 0 0 0\].*;/nu [0 2 -1 0 0 0 0] $INPUT_VISCOSITY;/" constant/transportProperties
 
-          # 3. system/controlDict 수정 (종료 시간)
-          # endTime 뒤의 숫자만 정교하게 바꿉니다. (velocity 같은 엉뚱한 건 건드리지 않음)
-          sed -i "s/\(endTime[[:space:]]*\).*/\1$INPUT_END_TIME;/" system/controlDict
+          # 3. system/controlDict 수정 (해석 종료 시간 주입)
+          # 이제 endTime 뒤에 JSON이 통째로 들어가는 대참사는 일어나지 않습니다.
+          sed -i "s/^endTime[[:space:]]*.*;/endTime           $INPUT_END_TIME;/" system/controlDict
 
+          # 실행 권한 부여 및 Allrun 실행
           chmod +x Allrun
           ./Allrun
 
@@ -78,3 +80,4 @@ jobs:
         with:
           name: OpenFOAM-Web-Dashboard
           path: OpenFOAM/case/results/
+          if-no-files-found: warn
