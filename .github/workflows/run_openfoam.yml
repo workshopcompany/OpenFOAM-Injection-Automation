@@ -8,6 +8,9 @@ on:
 jobs:
   run-sim:
     runs-on: ubuntu-latest
+    env:
+      # Node.js 20 지원 중단 경고 해결을 위한 설정
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     container: 
       image: opencfd/openfoam-run:2312
       options: --user root
@@ -20,42 +23,38 @@ jobs:
           apt-get update
           apt-get install -y paraview python3-vtk9
       
-      - name: Debug case structure
-        run: |
-          echo "===== CURRENT DIR ====="
-          pwd
-          echo "===== FILE TREE ====="
-          ls -R
-      
       - name: Run OpenFOAM Simulation
         shell: bash
         working-directory: OpenFOAM/case
         run: |
           bash << 'SCRIPT_END'
           set -e
-          
-          # OpenFOAM 환경 설정
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          echo "===== RUN DIR ====="
-          pwd
+          # Allrun 실행 전 screenshots 폴더 선제 생성
+          mkdir -p screenshots
           
-          # Allrun 파일에 실행 권한 부여 및 실행
-          # 이를 통해 내부의 interFoam 로직이 정확히 수행됩니다.
           chmod +x Allrun
           ./Allrun
           
+          # 후처리 결과 확인용 로그
+          echo "===== Generated Results ====="
+          ls -R
+          echo "===== Screenshot Folder Content ====="
+          ls -la screenshots/
           SCRIPT_END
       
       - name: Check Results
         if: always()
         run: |
+          # 이미지가 실제로 어디에 있는지 검색
           find OpenFOAM/case -name "*.png" -o -name "*.jpg"
-          ls -la OpenFOAM/case/screenshots/ || echo "No screenshots"
       
       - name: Upload Screenshots
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: flow-results
+          # 경로를 더 확실하게 지정
           path: OpenFOAM/case/screenshots/
+          if-no-files-found: warn
