@@ -1,143 +1,123 @@
 import streamlit as st
 import requests
+import zipfile
+import io
+import os
 import time
-from datetime import datetime
 
-GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-GITHUB_OWNER = st.secrets["GITHUB_OWNER"]
-GITHUB_REPO  = st.secrets["GITHUB_REPO"]
-WORKFLOW_ID  = "run_openfoam.yml"
+# --- 1. 설정 및 보안 ---
+# Streamlit Cloud의 Settings > Secrets에 아래 값들을 설정하세요.
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+REPO_OWNER = "workshopcompany"
+REPO_NAME = "OpenFOAM-Injection-Automation"
+ARTIFACT_NAME = "OpenFOAM-Web-Dashboard"
+ZAPIER_WEBHOOK_URL = st.secrets.get("ZAPIER_WEB_URL", "") # 기존 Webhook URL
 
-HEADERS = {
-    "Authorization": f"Bearer {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28"
-}
+st.set_page_config(page_title="MIM-Ops Dashboard", layout="wide")
 
-st.set_page_config(page_title="MIM-Flow Analyzer", page_icon="🌊", layout="wide")
-st.title("🌊 MIM-Flow Analyzer")
-st.caption("Materials-Ops Portfolio | Auto-CFD Module v1.0")
-st.divider()
+# --- 2. 핵심 로직 함수 ---
 
-with st.sidebar:
-    st.header("⚙️ Simulation Parameters")
-    velocity = st.slider("Inlet Velocity (m/s)", 0.5, 10.0, 2.5, 0.5)
-    viscosity_map = {
-        "Water (1e-6)": "1e-6",
-        "Oil (1e-4)":   "1e-4",
-        "Air (1.5e-5)": "1.5e-5"
+def trigger_simulation(velocity, viscosity, end_time, label):
+    """Zapier Webhook을 통해 GitHub Actions 실행 요청"""
+    payload = {
+        "velocity": str(velocity),
+        "viscosity": str(viscosity),
+        "end_time": str(end_time),
+        "run_label": label
     }
-    viscosity_label = st.selectbox("Fluid (Kinematic Viscosity)", list(viscosity_map.keys()))
-    end_time  = st.slider("Simulation End Time (s)", 1, 20, 5, 1)
-    run_label = st.text_input("Run Label", value=f"run-{datetime.now().strftime('%m%d-%H%M')}")
-    st.divider()
-    run_button = st.button("🚀 Run Simulation", type="primary", use_container_width=True)
+    try:
+        res = requests.post(ZAPIER_WEBHOOK_URL, json=payload)
+        return res.status_code == 200
+    except Exception as e:
+        st.error(f"연결 오류: {e}")
+        return False
 
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("📊 Current Parameters")
-    st.json({"velocity": f"{velocity} m/s", "viscosity": viscosity_map[viscosity_label],
-             "end_time": f"{end_time} s", "label": run_label})
-with col2:
-    st.subheader("📈 Reynolds Number Preview")
-    Re = velocity * 0.05 / float(viscosity_map[viscosity_label])
-    st.metric("Re", f"{Re:,.0f}")
-    if Re < 2300:   st.success("🟢 Laminar Flow")
-    elif Re < 4000: st.warning("🟡 Transitional Flow")
-    else:           st.error("🔴 Turbulent Flow")
+def fetch_latest_artifact():
+    """GitHub API를 사용하여 최신 시뮬레이션 결과 파일(zip) 가져오기"""
+    if not GITHUB_TOKEN:
+        return False, "GitHub Token이 설정되지 않았습니다. Secrets를 확인하세요."
+    
+    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
+    
+    try:
+        response = requests.get(api_url, headers=headers)
+        if response.status_code == 200:
+            artifacts = response.json().get("artifacts", [])
+            # 워크플로우에서 명시한 이름과 일치하는 가장 최신 Artifact 탐색
+            target = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
+            
+            if target:
+                download_url = target["archive_download_url"]
+                file_res = requests.get(download_url, headers=headers)
+                
+                if file_res.status_code == 200:
+                    result_dir = "temp_results"
+                    if not os.path.exists(result_dir):
+                        os.makedirs(result_dir)
+                    
+                    # zip 파일 압축 해제
+                    with zipfile.ZipFile(io.BytesIO(file_res.content)) as zip_ref:
+                        zip_ref.extractall(result_dir)
+                    return True, result_dir
+            return False, "아직 생성된 결과 파일이 없습니다. (약 2~3분 소요)"
+        return False, f"GitHub 접근 실패 (코드: {response.status_code})"
+    except Exception as e:
+        return False, str(e)
 
+# --- 3. UI 구성 ---
+
+st.title("🚀 MIM-Ops: 유동해석 자동화 플랫폼")
+st.info("금속 사출 성형(MIM) 공정 최적화를 위한 OpenFOAM 자동화 파이프라인입니다.")
+
+# 사이드바: 입력 파라미터
+with st.sidebar:
+    st.header("⚙️ 시뮬레이션 파라미터")
+    vel = st.number_input("입구 유속 (Inlet Velocity)", value=2.5, step=0.1)
+    vis = st.text_input("동점성 계수 (Kinematic Viscosity)", value="1e-6")
+    etime = st.number_input("해석 시간 (End Time)", value=5, step=1)
+    run_label = st.text_input("프로젝트 명", value=f"MIM_Project_{int(time.time())}")
+    
+    if st.button("🚀 시뮬레이션 시작", use_container_width=True):
+        with st.spinner("GitHub로 명령을 전송 중..."):
+            if trigger_simulation(vel, vis, etime, run_label):
+                st.success("해석이 시작되었습니다!")
+                st.toast("GitHub Actions 실행 중...")
+            else:
+                st.error("트리거 실패. Webhook URL을 확인하세요.")
+
+# 메인 화면: 결과 확인
 st.divider()
+main_col, side_col = st.columns([2, 1])
 
-def trigger_workflow(velocity, viscosity, end_time, run_label):
-    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_ID}/dispatches"
-    res = requests.post(url, headers=HEADERS, json={
-        "ref": "main",
-        "inputs": {
-            "velocity":  str(velocity),
-            "viscosity": viscosity_map[viscosity],
-            "end_time":  str(end_time),
-            "run_label": run_label
-        }
-    })
-    return res.status_code == 204
+with main_col:
+    st.subheader("📊 시뮬레이션 분석 결과")
+    if st.button("🔄 최신 결과 업데이트 (Refresh)", type="primary"):
+        with st.spinner("GitHub에서 최신 데이터를 가져오는 중..."):
+            success, result = fetch_latest_artifact()
+            if success:
+                st.session_state['data_path'] = result
+                st.success("데이터를 성공적으로 불러왔습니다.")
+            else:
+                st.warning(result)
 
-def get_run_after(triggered_at):
-    """트리거 시점 이후에 생성된 run만 가져옴"""
-    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?per_page=5"
-    res = requests.get(url, headers=HEADERS)
-    for run in res.json().get("workflow_runs", []):
-        if run["created_at"] >= triggered_at:
-            return run
-    return None
-
-def get_artifacts_for_run(run_id):
-    """특정 run_id의 artifact만 가져옴"""
-    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run_id}/artifacts"
-    res = requests.get(url, headers=HEADERS)
-    artifacts = res.json().get("artifacts", [])
-    return artifacts[0] if artifacts else None
-
-if run_button:
-    triggered_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    with st.status("🔄 Simulation 실행 중...", expanded=True) as status:
-        st.write("GitHub Actions에 파라미터 전송 중...")
-        success = trigger_workflow(velocity, viscosity_label, end_time, run_label)
-
-        if not success:
-            status.update(label="❌ 워크플로우 트리거 실패", state="error")
-            st.error("GITHUB_TOKEN 권한(repo + actions:write)을 확인하세요.")
-            st.stop()
-
-        st.write("✅ 워크플로우 트리거 완료! 실행 ID 확인 중...")
-        time.sleep(8)  # GitHub API 반영 대기
-
-        # 현재 실행 ID 확인
-        current_run = None
-        for _ in range(10):
-            current_run = get_run_after(triggered_at)
-            if current_run:
-                break
-            time.sleep(3)
-
-        if not current_run:
-            status.update(label="❌ 실행 ID를 찾을 수 없음", state="error")
-            st.stop()
-
-        run_id  = current_run["id"]
-        run_url = current_run["html_url"]
-        st.write(f"✅ Run ID: `{run_id}` | [GitHub에서 보기]({run_url})")
-
-        # 완료 대기 (최대 15분)
-        for i in range(90):
-            res = requests.get(
-                f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs/{run_id}",
-                headers=HEADERS
-            )
-            run_data   = res.json()
-            run_status = run_data.get("status")
-            run_conc   = run_data.get("conclusion")
-            elapsed    = (i + 1) * 10
-
-            st.write(f"  [{elapsed}s] status: {run_status} | conclusion: {run_conc}")
-
-            if run_status == "completed":
-                if run_conc == "success":
-                    status.update(label="✅ 시뮬레이션 완료!", state="complete")
-                else:
-                    status.update(label=f"❌ 실패: {run_conc} | [로그 확인]({run_url})", state="error")
-                break
-            time.sleep(10)
-
-        # 이 run의 artifact만 표시
-        st.divider()
-        st.subheader("🖼️ 시뮬레이션 결과")
-
-        artifact = get_artifacts_for_run(run_id)
-        if artifact:
-            artifact_id = artifact["id"]
-            st.success(f"Artifact ID: `{artifact_id}` — 생성 완료!")
-            st.markdown(f"[📦 GitHub Actions에서 결과 다운로드]({run_url})")
-        else:
-            st.warning("Artifact가 아직 없습니다. 잠시 후 GitHub Actions 페이지에서 직접 확인하세요.")
-            st.markdown(f"[🔗 이번 실행 결과 보기]({run_url})")
+    # 결과 데이터 렌더링
+    if 'data_path' in st.session_state:
+        res_dir = st.session_state['data_path']
+        all_files = os.listdir(res_dir)
+        
+        # 이미지 파일 시각화
+        imgs = sorted([f for f in all_files if f.endswith(".png")])
+        if imgs:
+            st.write("#### 🖼️ 유동 흐름 분석 이미지")
+            grid = st.columns(3)
+            for idx, img_file in enumerate(imgs):
+                with grid[idx % 3]:
+                    st.image(os.path.join(res_dir, img_file), caption=img_file, use_container_width=True)
+        
+        # 리포트 출력
+        if "report.md" in all_files:
+            with side_col:
+                st.subheader("📄 분석 리포트")
+                with open(os.path.join(res_dir, "report.md"), "r", encoding="utf-8") as f:
+                    st.markdown(f.read())
