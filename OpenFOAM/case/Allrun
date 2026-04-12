@@ -1,29 +1,39 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1~3 단계 (기존과 동일)
+# 1. 이전 결과 정리
 rm -rf [1-9]* 0.* log.* simulation.log screenshots
 mkdir -p screenshots
+
+# 2. 초기 데이터 복사
 [ -d "0.orig" ] && cp -r 0.orig 0
+
+# 3. 격자 및 해석 실행
+echo "Generating Mesh..."
 blockMesh > log.blockMesh 2>&1
 snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 
-# 4. 솔버 실행
 unset application
+echo "Running interFoam..."
 interFoam > simulation.log 2>&1
 
-# 5. 후처리 (pvpython 호출부 수정)
+# 4. 후처리 (ParaView 스크린샷)
 touch case.foam
-if ls -d [0-9]* >/dev/null 2>&1; then
-    echo "Running post-processing..."
-    # 'pvpython' 명령어를 찾지 못하는 문제 해결을 위해 전체 경로 확인 후 실행
-    CMD=$(which pvpython)
-    if [ -z "$CMD" ]; then CMD="/usr/bin/pvpython"; fi
-    
-    $CMD export_screenshots.py > log.pvpython 2>&1
+
+# yml에서 전달한 PVPYTHON_BIN 변수가 없으면 기본값 사용
+if [ -z "$PVPYTHON_BIN" ]; then
+    PVPYTHON_BIN="pvpython"
+fi
+
+if [ -f "export_screenshots.py" ]; then
+    echo "Running post-processing with $PVPYTHON_BIN..."
+    # 5초 정도 해석 데이터가 써질 시간을 준 뒤 실행
+    sleep 2
+    $PVPYTHON_BIN export_screenshots.py > log.pvpython 2>&1
 else
-    echo "No results to process."
+    echo "Error: export_screenshots.py not found"
     exit 1
 fi
 
+# 5. 최종 이미지 확인
 ls -la screenshots/
