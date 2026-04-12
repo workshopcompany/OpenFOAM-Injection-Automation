@@ -30,4 +30,8 @@ boundaryField
         type            pressureInletOutletVelocity;
         value           uniform (0 0 0);
     }
+    bottom
+    {
+        type            noSlip;  // 바닥면이므로 유속이 0인 벽면 조건
+    }
 }
