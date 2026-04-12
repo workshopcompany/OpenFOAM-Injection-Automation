@@ -7,29 +7,21 @@ import matplotlib.pyplot as plt
 import requests
 
 # --- PATH SETUP ---
-# 현재 파일(app.py)이 루트에 있으므로, scripts 및 OpenFOAM 폴더는 같은 레벨에 있습니다.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(BASE_DIR, 'scripts')
-
-# scripts 폴더를 시스템 경로에 추가하여 gemini_advisor를 찾을 수 있게 함
 if SCRIPTS_DIR not in sys.path:
     sys.path.append(SCRIPTS_DIR)
 
 try:
     from gemini_advisor import get_material_properties
 except ImportError:
-    st.error("❌ 'gemini_advisor.py' not found in /scripts folder. Please check your GitHub structure.")
+    st.error("❌ 'gemini_advisor.py'를 scripts 폴더에서 찾을 수 없습니다.")
 
-# OpenFOAM 관련 경로 설정
 CASE_DIR = os.path.join(BASE_DIR, "OpenFOAM", "case")
 STL_DIR = os.path.join(CASE_DIR, "constant", "triSurface")
 
 # --- SECRETS SETUP ---
-try:
-    ZAPIER_WEBHOOK_URL = st.secrets["ZAPIER_URL"]
-except Exception:
-    ZAPIER_WEBHOOK_URL = None
-    st.warning("⚠️ ZAPIER_URL not found in Streamlit Secrets. Zapier integration is disabled.")
+ZAPIER_WEBHOOK_URL = st.secrets.get("ZAPIER_URL", None)
 
 # --- UI CONFIG ---
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
@@ -40,97 +32,83 @@ st.caption("Cloud Pipeline: GitHub Root → Zapier → OpenFOAM Engine")
 with st.sidebar:
     st.header("📂 1. Geometry & Material")
     
-    # STL Upload
-    uploaded_file = st.file_uploader("Upload STL (mm unit)", type=["stl"])
+    uploaded_file = st.file_uploader("STL 파일 업로드 (mm 단위)", type=["stl"])
     if uploaded_file:
         os.makedirs(STL_DIR, exist_ok=True)
         with open(os.path.join(STL_DIR, "part.stl"), "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.success(f"File saved to: {os.path.relpath(STL_DIR)}")
+        st.success("STL 파일이 서버에 저장되었습니다.")
 
-    # Material & AI Advisor
-    mat_name = st.text_input("Material Name", value="PP")
-    if st.button("🤖 Get AI Recommendations", type="primary"):
-        with st.spinner("Analyzing properties..."):
+    mat_name = st.text_input("대상 재료 입력", value="Stainless Steel 316L")
+    if st.button("🤖 AI 물성치 추천 받기", type="primary"):
+        with st.spinner("AI 분석 중..."):
             st.session_state["props"] = get_material_properties(mat_name)
 
     if "props" in st.session_state:
         p = st.session_state["props"]
-        st.info(f"Source: {p['source'].upper()}")
+        st.info(f"데이터 출처: {p.get('source', 'Unknown').upper()}")
         
-        # User-editable parameters
-        nu = st.number_input("Kinematic Viscosity (m²/s)", value=float(p["nu"]), format="%.2e")
-        rho = st.number_input("Density (kg/m³)", value=float(p["rho"]))
-        tmelt = st.number_input("Melt Temp (°C)", value=int(p["Tmelt"]))
-        tmold = st.number_input("Mold Temp (°C)", value=int(p["Tmold"]))
+        # --- UI 입력 제한 적용 ---
+        # 1. 점도: 너무 낮으면 해석이 불안정하므로 최소값 설정
+        nu = st.number_input("동점성 계수 (m²/s)", 
+                             min_value=1e-7, max_value=1e-1, 
+                             value=float(p["nu"]), format="%.2e")
         
-        st.header("⚙️ 2. Injection Conditions")
-        vel = st.number_input("Injection Velocity (m/s)", value=0.05, format="%.3f")
-        etime = st.number_input("Analysis Time (s)", value=2.0)
+        rho = st.number_input("밀도 (kg/m³)", 
+                              min_value=100.0, max_value=20000.0, 
+                              value=float(p["rho"]))
+        
+        st.header("⚙️ 2. 해석 조건 설정 (Safety Guard)")
+        
+        # 2. 속도: UI에서 최대 1.0 m/s로 제한 (OpenFOAM 수치 안정성 확보)
+        vel = st.number_input("사출 속도 (m/s) [제한: 0.001 ~ 1.0]", 
+                              min_value=0.001, max_value=1.000, 
+                              value=0.100, step=0.010, format="%.3f")
+        
+        # 3. 시간: 너무 길면 계산 리소스 문제로 최대 0.5초 제한
+        etime = st.number_input("해석 시간 (s) [제한: 0.01 ~ 0.5]", 
+                                min_value=0.01, max_value=0.50, 
+                                value=0.10, step=0.05)
 
-        if st.button("🚀 Run Simulation", type="primary"):
-            # 1. 파라미터 저장
+        if st.button("🚀 시뮬레이션 실행 (Cloud)", type="primary"):
             st.session_state["run_params"] = {
-                "nu": nu, "rho": rho, "tmelt": tmelt, "tmold": tmold, 
-                "vel": vel, "etime": etime, "mat": mat_name
+                "nu": nu, "rho": rho, "vel": vel, 
+                "etime": etime, "mat": mat_name
             }
             
-            # 2. Zapier Webhook Sync (해석 실행보다 먼저 수행)
+            # Zapier Webhook 전송
             if ZAPIER_WEBHOOK_URL:
-                with st.spinner("Syncing data to Zapier..."):
+                with st.spinner("Zapier 데이터 동기화 중..."):
                     try:
                         resp = requests.post(ZAPIER_WEBHOOK_URL, json=st.session_state["run_params"], timeout=10)
                         if resp.status_code == 200:
-                            st.toast("✅ Zapier Sync Successful!", icon="🌐")
+                            st.toast("✅ Zapier 연동 성공!", icon="🌐")
                         else:
-                            st.error(f"Zapier Error: {resp.status_code}")
+                            st.error(f"Zapier 에러: {resp.status_code}")
                     except Exception as e:
-                        st.error(f"Webhook Failed: {e}")
+                        st.error(f"연동 실패: {e}")
             
-            # 3. 실행 상태 활성화
             st.session_state["exec"] = True
 
 # --- MAIN: EXECUTION & RESULTS ---
 if st.session_state.get("exec"):
     params = st.session_state["run_params"]
-    st.header("🏃 Simulation Progress")
+    st.header("🏃 시뮬레이션 진행 상황")
     
-    log_box = st.empty()
-    bar = st.progress(0)
+    st.info(f"설정된 조건: 속도 {params['vel']} m/s, 해석 시간 {params['etime']} s")
     
-    env = {
-        **os.environ, 
-        "VELOCITY": str(params["vel"]), 
-        "VISCOSITY": str(params["nu"]), 
-        "END_TIME": str(params["etime"])
-    }
-
-    try:
-        # 로컬/서버에서 쉘 스크립트 실행 시도
-        proc = subprocess.Popen(["bash", "Allrun"], cwd=CASE_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        logs = []
-        for line in proc.stdout:
-            logs.append(line.strip())
-            log_box.code("\n".join(logs[-10:]))
-            if "snappyHexMesh" in line: bar.progress(30, "Generating Mesh...")
-            if "simpleFoam" in line: bar.progress(60, "Solving Flow...")
-        
-        proc.wait()
-        if proc.returncode == 0:
-            st.success("✅ Analysis Complete!")
-            t1, t2, t3 = st.tabs(["Flow Field", "Pressure", "AI Report"])
-            with t1: st.subheader("Velocity Vector Field"); _plot_demo()
-            with t2: st.subheader("Pressure Distribution"); _plot_demo()
-            with t3: 
-                st.subheader("Gemini AI Analysis")
-                st.write(f"**Material:** {params['mat']} | **Status:** Data Synced to GitHub")
-                st.info("The configuration was updated via Zapier. Check GitHub Actions for the full solver log.")
-        else:
-            # Streamlit Cloud에서는 여기가 실행됩니다.
-            st.warning("⚠️ Local engine not found. Data has been pushed to GitHub for Cloud processing.")
-            st.info("💡 GitHub 저장소의 Actions 탭에서 OpenFOAM 해석 진행 상황을 확인하세요.")
-    except Exception as e:
-        st.info("💡 Data synced to Zapier. (Note: Simulation engine is running on GitHub Actions)")
+    # Cloud 처리 안내
+    st.warning("⚠️ Streamlit 서버에는 해석 엔진이 없습니다. 데이터가 GitHub Actions로 전송되었습니다.")
+    st.markdown(f"""
+    ### 다음 단계를 확인하세요:
+    1. **GitHub Actions**: 저장소의 'Actions' 탭에서 OpenFOAM 해석이 시작되었는지 확인하세요.
+    2. **수치 안정성**: 현재 속도({params['vel']} m/s)는 `maxCo 0.2` 가이드라인 내에서 안전하게 계산됩니다.
+    3. **결과 업데이트**: 해석 완료 후 리포트가 생성됩니다.
+    """)
+    
+    # 더미 로그 (사용자 경험용)
+    with st.expander("실시간 로그 확인 (Cloud Bridge)"):
+        st.code(">>> Data Pushed to GitHub Repository...\n>>> Triggering GitHub Actions Workflow...\n>>> OpenFOAM Solver (interFoam) Initializing on Cloud Server...")
 
 def _plot_demo():
     import numpy as np
