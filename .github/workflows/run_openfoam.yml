@@ -22,7 +22,13 @@ jobs:
 
       - name: Run OpenFOAM and Post-processing
         run: |
-          . /usr/lib/openfoam/openfoam/bashrc
+          # OpenFOAM 환경 설정을 자동으로 찾아서 로드
+          if [ -f /usr/lib/openfoam/openfoam10/etc/bashrc ]; then
+            . /usr/lib/openfoam/openfoam10/etc/bashrc
+          elif [ -f /usr/lib/openfoam/openfoam/bashrc ]; then
+            . /usr/lib/openfoam/openfoam/bashrc
+          fi
+          
           cd OpenFOAM/case
           chmod +x Allrun
           ./Allrun
