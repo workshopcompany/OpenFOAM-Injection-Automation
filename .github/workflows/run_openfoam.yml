@@ -20,7 +20,6 @@ jobs:
       
       - name: Install Post-Processing Dependencies
         run: |
-          # 리포지토리 청소 및 필수 패키지 설치
           rm -f /etc/apt/sources.list.d/openfoam.list || true
           apt-get update
           apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
@@ -31,33 +30,32 @@ jobs:
         run: |
           bash << 'SCRIPT_END'
           set -e
-          # 1. OpenFOAM 환경 로드
+          # 1. 환경 설정
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
-          
-          # 2. 파이썬 모듈 경로 강제 지정 (Ubuntu Jammy 기준)
-          # OpenFOAM 환경 변수가 시스템 경로를 가리는 것을 방지합니다.
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
-          
-          # 3. pvpython 실행 파일 위치 확인
           PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           export PVPYTHON_PATH
           
+          mkdir -p web_data
           chmod +x Allrun
           
-          echo "Starting Simulation..."
-          # 가상 모니터 환경에서 Allrun 실행
+          # 2. 실행
+          echo "Starting Simulation & Web Data Export..."
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
           echo "===== DEBUG: Final Check ====="
-          cat log.pvpython || echo "log.pvpython not found"
           ls -la screenshots/
+          ls -la web_data/
           SCRIPT_END
       
-      - name: Upload Results
+      - name: Upload 3D Interactive Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: flow-simulation-results
-          path: OpenFOAM/case/screenshots/
+          name: OpenFOAM-Web-Dashboard
+          # 스크린샷과 3D 웹 데이터를 모두 포함합니다.
+          path: |
+            OpenFOAM/case/screenshots/
+            OpenFOAM/case/web_data/
           if-no-files-found: warn
