@@ -29,13 +29,26 @@ gradSchemes
 
 divSchemes
 {
-    default                                     none;
-    div(rhoPhi,U)                               Gauss linearUpwind grad(U);
-    div(phi,alpha.water)                        Gauss vanLeer;
-    div(phi,alpha)                              Gauss vanLeer;
-    div(phirb,alpha.water)                      Gauss linear;
-    div(phirb,alpha)                            Gauss linear;
-    div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
+    default                                         none;
+
+    // alpha
+    div(phi,alpha.water)                            Gauss vanLeer;
+    div(phi,alpha)                                  Gauss vanLeer;
+    div(phirb,alpha.water)                          Gauss linear;
+    div(phirb,alpha)                                Gauss linear;
+
+    // 운동량
+    div(rhoPhi,U)                                   Gauss linearUpwind grad(U);
+
+    // k-epsilon 난류
+    div(phi,k)                                      Gauss upwind;
+    div(phi,epsilon)                                Gauss upwind;
+    div(phi,omega)                                  Gauss upwind;
+    div(phi,nut)                                    Gauss upwind;
+    div(phi,alphat)                                 Gauss upwind;
+
+    // 점성 응력
+    div(((rho*nuEff)*dev2(T(grad(U)))))             Gauss linear;
 }
 
 laplacianSchemes
