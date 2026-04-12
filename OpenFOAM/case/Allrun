@@ -1,39 +1,40 @@
 #!/bin/bash
 set -e
 
-# ---------- Parameters from Environment ----------
+# ---------- Parameters ----------
 VELOCITY="${VELOCITY:-0.05}"
 VISCOSITY="${VISCOSITY:-1e-3}"
 END_TIME="${END_TIME:-0.1}"
 
-echo "Starting MIM-Ops Pipeline: V=$VELOCITY, nu=$VISCOSITY, EndTime=$END_TIME"
+echo "==========================================="
+echo " MIM-Ops LOG: Simulation Started"
+echo " Time: $(date)"
+echo " Params: V=$VELOCITY, nu=$VISCOSITY, End=$END_TIME"
+echo "==========================================="
 
-# 1. Clean previous results
-rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh
+# 1. Directory Setup
 mkdir -p results logs
+echo ">>> [STEP 1] Cleaning previous data..."
+rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh
 
-# 2. Verify OpenFOAM environment
-if ! command -v blockMesh &> /dev/null; then
-    echo "Error: OpenFOAM commands not found. Check your environment sourcing."
-    exit 1
-fi
-
-# 3. STL Pre-processing
+# 2. STL & Mesh Processing
 if [ -f "constant/triSurface/part.stl" ]; then
-    echo "STL detected. Scaling and Mesh generation starting..."
+    echo ">>> [STEP 2] STL found. Scaling mm to m..."
     surfaceTransformPoints -scale '(0.001 0.001 0.001)' \
-        constant/triSurface/part.stl constant/triSurface/part.stl
+        constant/triSurface/part.stl constant/triSurface/part.stl > logs/scale.log 2>&1
     
-    surfaceFeatureExtract
-    blockMesh
-    snappyHexMesh -overwrite
-    checkMesh > logs/mesh_check.log
+    echo ">>> [STEP 3] Extracting features & Meshing..."
+    surfaceFeatureExtract > logs/extract.log 2>&1
+    blockMesh > logs/blockMesh.log 2>&1
+    snappyHexMesh -overwrite > logs/snappy.log 2>&1
+    echo ">>> Mesh generation complete."
 else
-    echo "No STL found. Using default blockMesh geometry."
-    blockMesh
+    echo ">>> [STEP 2] No STL. Using default blockMesh..."
+    blockMesh > logs/blockMesh.log 2>&1
 fi
 
-# 4. Dynamic Configuration
+# 3. Dynamic Configuration (Safety Guards)
+echo ">>> [STEP 4] Writing dynamic controlDict..."
 cat <<EOF > system/controlDict
 FoamFile { version 2.0; format ascii; class dictionary; location "system"; object controlDict; }
 application     interFoam;
@@ -45,16 +46,30 @@ deltaT          1e-05;
 adjustTimeStep  yes;
 maxCo           0.2;
 maxAlphaCo      0.2;
-maxDeltaT       1;
 writeControl    adjustableRunTime;
 writeInterval   0.05;
 EOF
 
-sed -i 's/Gauss linear/Gauss upwind/g' system/fvSchemes
+if [ -f "system/fvSchemes" ]; then
+    sed -i 's/Gauss linear/Gauss upwind/g' system/fvSchemes
+fi
 
-# 5. Run Solver
-interFoam | tee logs/solver.log
+# 4. Main Solver Execution
+echo ">>> [STEP 5] Running interFoam solver (This may take time)..."
+if interFoam > logs/solver.log 2>&1; then
+    echo "✅ [SUCCESS] Solver finished normally."
+else
+    echo "❌ [ERROR] Solver crashed. Check logs/solver.log"
+    exit 1
+fi
 
-# 6. Export Results
-cp -r postProcessing results/ 2>/dev/null || true
-echo "Simulation Finished Successfully."
+# 5. Exporting Results
+echo ">>> [STEP 6] Exporting results to results/ folder..."
+if [ -d "postProcessing" ]; then
+    cp -r postProcessing results/
+fi
+
+echo "==========================================="
+echo " MIM-Ops LOG: Simulation Finished Successfully"
+echo " Time: $(date)"
+echo "==========================================="
