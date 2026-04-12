@@ -1,41 +1,37 @@
 #!/bin/bash
-# 현재 스크립트가 위치한 디렉토리로 이동
 cd "${0%/*}" || exit
 
-# 1. 이전 실행 결과 및 로그 완전 삭제 (Clean Up)
-# 0 폴더를 제외한 숫자 폴더, 로그, 기존 결과물을 정리합니다.
-echo "Cleaning up old simulation data..."
+# 1. 초기화
+echo "Cleaning old data..."
 rm -rf [1-9]* 0.* log.* simulation.log screenshots
-rm -rf constant/polyMesh/level* constant/polyMesh/refinementHistory
-rm -rf processor*
+mkdir -p screenshots
 
-# 2. 초기 조건 설정
-# 0.orig가 있다면 깨끗한 0 폴더를 다시 생성합니다.
+# 2. 0 폴더 복구
 if [ -d "0.orig" ]; then
     cp -r 0.orig 0
 fi
 
-# 3. 격자 생성
-echo "Generating mesh with blockMesh and snappyHexMesh..."
+# 3. 격자 및 해석
+echo "Generating Mesh..."
 blockMesh > log.blockMesh 2>&1
 snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 
-# 4. 솔버 실행 전 환경 정화 및 실행
-# 혹시 모를 환경 변수 충돌(buoyantPimpleFoam 등)을 방지하기 위해 
-# application 변수를 해제하고 interFoam을 직접 호출합니다.
 unset application
-echo "Starting interFoam simulation (Multiphase)..."
-
-# interFoam 실행 (실시간 로그 기록)
+echo "Running interFoam..."
 interFoam > simulation.log 2>&1
 
-# 5. 후처리 (스크린샷 생성)
+# 4. 후처리 (이 부분이 핵심입니다)
+# 최신 타임스텝의 데이터를 읽기 위해 .foam 파일을 생성합니다.
+touch case.foam
+
 if [ -f "export_screenshots.py" ]; then
-    echo "Running post-processing scripts..."
-    mkdir -p screenshots
-    pvpython export_screenshots.py
+    echo "Running pvpython post-processing..."
+    # xvfb-run은 가상 디스플레이를 제공하여 서버 환경에서 그래픽 작업을 가능하게 합니다.
+    apt-get install -y xvfb > /dev/null 2>&1
+    xvfb-run -a pvpython export_screenshots.py > log.pvpython 2>&1
 else
-    echo "Warning: export_screenshots.py not found, skipping screenshots."
+    echo "Error: export_screenshots.py not found!"
 fi
 
-echo "Simulation process completed."
+# 5. 결과 확인
+ls -la screenshots/
