@@ -2,8 +2,7 @@ name: OpenFOAM PimpleFoam Simulation
 
 on:
   push:
-    paths:
-      - 'OpenFOAM/case/constant/thermophysicalProperties'
+    branches: [ "main" ]  # main 브랜치에 뭐가 올라오기만 하면 실행
 
 jobs:
   run-sim:
