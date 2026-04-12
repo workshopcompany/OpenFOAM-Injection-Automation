@@ -4,19 +4,25 @@ set -e
 CASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$CASE_DIR"
 
-VELOCITY="${VELOCITY:-2.5}"
-VISCOSITY="${VISCOSITY:-1e-6}"
-END_TIME="${END_TIME:-5}"
+# ---------- 파라미터 ----------
+VELOCITY="${VELOCITY:-0.05}"
+END_TIME="${END_TIME:-2}"
+MELT_TEMP="${MELT_TEMP:-230}"
+MOLD_TEMP="${MOLD_TEMP:-40}"
+# 점도: 수지 기본값 (Gemini가 추천한 값이 환경변수로 들어올 수 있음)
+VISCOSITY="${VISCOSITY:-1e-3}"
+DENSITY="${DENSITY:-900}"
 
-echo "[Allrun] Cleaning case..."
-rm -rf processor* logs postProcessing
-find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d -exec rm -rf {} + 2>/dev/null || true
+echo "[Allrun] 파라미터: V=${VELOCITY} | nu=${VISCOSITY} | rho=${DENSITY} | T=${END_TIME}"
+mkdir -p logs results
 
-echo "[Allrun] Velocity=${VELOCITY} | Viscosity=${VISCOSITY} | EndTime=${END_TIME}"
-mkdir -p logs
+# ---------- 이전 결과 정리 ----------
+rm -rf processor* postProcessing
+find . -maxdepth 1 -regextype posix-extended \
+  -regex '\./[0-9]+\.[0-9]+' -type d -exec rm -rf {} + 2>/dev/null || true
 
 # ---------- controlDict ----------
-cat > system/controlDict << 'DICT_EOF'
+cat > system/controlDict << 'EOF_CTRL'
 FoamFile
 {
     version     2.0;
@@ -25,19 +31,16 @@ FoamFile
     location    "system";
     object      controlDict;
 }
-
-application     interFoam;
+application     simpleFoam;
 startFrom       startTime;
 startTime       0;
 stopAt          endTime;
-DICT_EOF
-
+EOF_CTRL
 echo "endTime         ${END_TIME};" >> system/controlDict
-
-cat >> system/controlDict << 'DICT_EOF'
-deltaT          0.0001;
-writeControl    adjustableRunTime;
-writeInterval   0.1;
+cat >> system/controlDict << 'EOF_CTRL'
+deltaT          0.001;
+writeControl    timeStep;
+writeInterval   50;
 purgeWrite      0;
 writeFormat     ascii;
 writePrecision  6;
@@ -45,24 +48,25 @@ writeCompression off;
 timeFormat      general;
 timePrecision   6;
 runTimeModifiable true;
-adjustTimeStep  yes;
-maxCo           0.5;
-maxAlphaCo      0.5;
-maxDeltaT       1;
+functions
+{
+    fieldAverage
+    {
+        type            fieldAverage;
+        libs            (fieldFunctionObjects);
+        writeControl    writeTime;
+        fields
+        (
+            U { mean on; prime2Mean off; base time; }
+            p { mean on; prime2Mean off; base time; }
+        );
+    }
+}
 // ************************************************************************* //
-DICT_EOF
+EOF_CTRL
 
-echo "[Allrun] controlDict created"
-echo "=============================="
-echo "[DEBUG] controlDict CONTENT"
-echo "=============================="
-cat -n system/controlDict
-echo "=============================="
-echo "[DEBUG] controlDict HASH"
-md5sum system/controlDict
-
-# ---------- transportProperties (sed 없이 직접 생성) ----------
-cat > constant/transportProperties << 'TP_EOF'
+# ---------- transportProperties ----------
+cat > constant/transportProperties << 'EOF_TP'
 FoamFile
 {
     version     2.0;
@@ -71,63 +75,86 @@ FoamFile
     location    "constant";
     object      transportProperties;
 }
+transportModel  Newtonian;
+EOF_TP
+echo "nu              [0 2 -1 0 0 0 0] ${VISCOSITY};" >> constant/transportProperties
+echo "// ************************************************************************* //" >> constant/transportProperties
 
-phases (water air);
-
-water
+# ---------- turbulenceProperties (층류) ----------
+cat > constant/turbulenceProperties << 'EOF_TURB'
+FoamFile
 {
-    transportModel  Newtonian;
-TP_EOF
-
-echo "    nu              [0 2 -1 0 0 0 0] ${VISCOSITY};" >> constant/transportProperties
-
-cat >> constant/transportProperties << 'TP_EOF'
-    rho             1000;
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      turbulenceProperties;
 }
-
-air
-{
-    transportModel  Newtonian;
-    nu              [0 2 -1 0 0 0 0] 1.48e-5;
-    rho             1;
-}
-
-sigma           [1 0 -2 0 0 0 0] 0.07;
-
+simulationType  laminar;
 // ************************************************************************* //
-TP_EOF
+EOF_TURB
 
-echo "[Allrun] transportProperties created (nu=${VISCOSITY})"
-
-# ---------- 0/U velocity ----------
-sed -i "s|VELOCITY_PLACEHOLDER|${VELOCITY}|g" 0/U
-sed -i "s|uniform ([0-9e.eE+-]* 0 0)|uniform (${VELOCITY} 0 0)|g" 0/U
-
-echo "[Allrun] 0/ fields ready"
+# ---------- 0/U ----------
+cat > 0/U << 'EOF_U'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    location    "0";
+    object      U;
+}
+dimensions      [0 1 -1 0 0 0 0];
+internalField   uniform (0 0 0);
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+EOF_U
+echo "        value           uniform (${VELOCITY} 0 0);" >> 0/U
+cat >> 0/U << 'EOF_U'
+    }
+    outlet      { type zeroGradient; }
+    walls       { type noSlip; }
+    frontAndBack { type empty; }
+}
+// ************************************************************************* //
+EOF_U
 
 # ---------- blockMesh ----------
-echo "[Allrun] Running blockMesh..."
+echo "[Allrun] blockMesh 실행..."
 blockMesh 2>&1 | tee logs/blockMesh.log
 
-# ---------- setFields ----------
-if [ -f "system/setFieldsDict" ]; then
-    echo "[Allrun] Running setFields..."
-    setFields 2>&1 | tee logs/setFields.log
+# ---------- simpleFoam ----------
+echo "[Allrun] simpleFoam 실행..."
+simpleFoam 2>&1 | tee logs/simpleFoam.log
+
+# ---------- 결과 후처리 ----------
+echo "[Allrun] 결과 추출..."
+mkdir -p results
+
+# 마지막 타임스텝 확인
+LAST_TIME=$(find . -maxdepth 1 -name "[0-9]*" -type d | \
+  grep -v "^\.\/0$" | sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
+
+if [ -z "$LAST_TIME" ]; then
+  echo "ERROR: 타임스텝 없음"
+  exit 1
 fi
 
-# ---------- interFoam ----------
-echo "[Allrun] Running interFoam..."
-interFoam 2>&1 | tee logs/interFoam.log
+echo "[Allrun] 마지막 타임스텝: ${LAST_TIME}"
+echo "LAST_TIME=${LAST_TIME}" > results/meta.txt
+echo "VELOCITY=${VELOCITY}"   >> results/meta.txt
+echo "VISCOSITY=${VISCOSITY}" >> results/meta.txt
+echo "DENSITY=${DENSITY}"     >> results/meta.txt
+echo "MELT_TEMP=${MELT_TEMP}" >> results/meta.txt
+echo "MOLD_TEMP=${MOLD_TEMP}" >> results/meta.txt
 
-echo "===== interFoam tail ====="
-tail -20 logs/interFoam.log
+# U, p 데이터 추출 (내부 셀 샘플)
+postProcess -func "writeCellVolumes" -time "${LAST_TIME}" 2>/dev/null || true
 
-TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d | wc -l)
-echo "CHECK: Found ${TIMESTEPS} timestep folders"
+# simpleFoam 로그에서 수렴 데이터 추출
+grep "Ux\|Uy\|p " logs/simpleFoam.log | tail -100 > results/convergence.txt || true
 
-if [ "$TIMESTEPS" -eq 0 ]; then
-    echo "ERROR: No timesteps generated"
-    exit 1
-else
-    echo "[Allrun] SUCCESS: ${TIMESTEPS} timestep(s) written"
-fi
+echo "[Allrun] 완료"
