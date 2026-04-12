@@ -2,10 +2,11 @@
 cd "${0%/*}" || exit
 
 # 1. 이전 결과 정리
+echo "Cleaning old data..."
 rm -rf [1-9]* 0.* log.* simulation.log screenshots
 mkdir -p screenshots
 
-# 2. 초기 데이터 복사
+# 2. 초기 데이터 복구
 [ -d "0.orig" ] && cp -r 0.orig 0
 
 # 3. 격자 및 해석 실행
@@ -20,20 +21,22 @@ interFoam > simulation.log 2>&1
 # 4. 후처리 (ParaView 스크린샷)
 touch case.foam
 
-# yml에서 전달한 PVPYTHON_BIN 변수가 없으면 기본값 사용
-if [ -z "$PVPYTHON_BIN" ]; then
-    PVPYTHON_BIN="pvpython"
+# yml에서 전달한 환경변수가 없으면 직접 찾습니다.
+if [ -z "$PVPYTHON_PATH" ]; then
+    PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
 fi
 
 if [ -f "export_screenshots.py" ]; then
-    echo "Running post-processing with $PVPYTHON_BIN..."
-    # 5초 정도 해석 데이터가 써질 시간을 준 뒤 실행
+    echo "Running post-processing with $PVPYTHON_PATH..."
+    # 해석 결과가 파일 시스템에 기록될 시간을 위해 아주 짧게 대기합니다.
     sleep 2
-    $PVPYTHON_BIN export_screenshots.py > log.pvpython 2>&1
+    # 절대 경로를 사용하여 pvpython을 실행합니다.
+    $PVPYTHON_PATH export_screenshots.py > log.pvpython 2>&1
 else
     echo "Error: export_screenshots.py not found"
     exit 1
 fi
 
 # 5. 최종 이미지 확인
+echo "Checking generated images in screenshots/ folder..."
 ls -la screenshots/
