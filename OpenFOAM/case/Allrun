@@ -1,8 +1,7 @@
-#!/bin/sh
-# 1. OpenFOAM 환경 설정 로드
-. /usr/lib/openfoam/openfoam10/etc/bashrc
+#!/bin/bash
+cd "${0%/*}" || exit
 
-# 2. 실행 권한 확인 및 스크린샷 폴더 생성
+# 2. 스크린샷 폴더 생성
 mkdir -p screenshots
 
 # 3. 격자 생성 및 해석 실행
