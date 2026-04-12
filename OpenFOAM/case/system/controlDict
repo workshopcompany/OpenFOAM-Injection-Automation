@@ -16,41 +16,28 @@ FoamFile
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 application     interFoam;
-
 startFrom       startTime;
-
 startTime       0;
-
 stopAt          endTime;
 
+// 아래 키워드들이 정확히 있어야 sed 명령어가 에러를 안 냅니다.
 endTime         5;
+velocity        1.0; 
+viscosity       0.000001;
 
 deltaT          0.0001;
-
 writeControl    adjustableRunTime;
-
 writeInterval   0.1;
-
 purgeWrite      0;
-
 writeFormat     ascii;
-
 writePrecision  6;
-
 writeCompression off;
-
 timeFormat      general;
-
 timePrecision   6;
-
 runTimeModifiable true;
-
 adjustTimeStep  yes;
-
 maxCo           0.5;
-
 maxAlphaCo      0.5;
-
 maxDeltaT       1;
 
 // ************************************************************************* //
