@@ -1,10 +1,3 @@
-/*--------------------------------*- C++ -*----------------------------------*\
-  =========                 |
-  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
-   \\    /   O peration     | Website:  https://openfoam.org
-    \\  /    A nd           | Version:  2312
-     \\/     M anipulation  |
-\*---------------------------------------------------------------------------*/
 FoamFile
 {
     version     2.0;
@@ -13,48 +6,13 @@ FoamFile
     location    "0";
     object      nut;
 }
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
-
 dimensions      [0 2 -1 0 0 0 0];
-
 internalField   uniform 0;
-
 boundaryField
 {
-    // 입구 조건
-    inlet
-    {
-        type            calculated;
-        value           uniform 0;
-    }
-
-    // 출구 조건
-    outlet
-    {
-        type            calculated;
-        value           uniform 0;
-    }
-
-    // 대기 조건 (방금 추가하셨던 이름)
-    atmosphere
-    {
-        type            calculated;
-        value           uniform 0;
-    }
-
-    // 바닥 조건 (벽면 함수 적용)
-    bottom
-    {
-        type            nutkWallFunction;
-        value           uniform 0;
-    }
-
-    // 기타 벽면 (파일에 다른 벽면 이름이 있다면 동일하게 적용)
-    "wall.*"
-    {
-        type            nutkWallFunction;
-        value           uniform 0;
-    }
+    inlet       { type calculated; value uniform 0; }
+    outlet      { type calculated; value uniform 0; }
+    walls       { type nutkWallFunction; value uniform 0; }
+    frontAndBack { type empty; }
 }
-
 // ************************************************************************* //
