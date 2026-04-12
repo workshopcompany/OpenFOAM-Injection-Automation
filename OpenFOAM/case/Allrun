@@ -1,15 +1,9 @@
 #!/bin/bash
 set -e
 
-# ============================================================
-# MIM-Ops Pipeline - Allrun
-# interFoam runner for OpenFOAM 2312
-# ============================================================
-
 CASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$CASE_DIR"
 
-# ---------- 파라미터 (환경변수 또는 기본값) ----------
 VELOCITY="${VELOCITY:-2.5}"
 VISCOSITY="${VISCOSITY:-1e-6}"
 END_TIME="${END_TIME:-5}"
@@ -19,11 +13,10 @@ rm -rf processor* logs postProcessing
 find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo "[Allrun] Velocity=${VELOCITY} | Viscosity=${VISCOSITY} | EndTime=${END_TIME}"
-
 mkdir -p logs
 
-# ---------- controlDict 생성 ----------
-cat > system/controlDict << EOF
+# ---------- controlDict ----------
+cat > system/controlDict << 'DICT_EOF'
 FoamFile
 {
     version     2.0;
@@ -34,38 +27,32 @@ FoamFile
 }
 
 application     interFoam;
-
 startFrom       startTime;
 startTime       0;
-
 stopAt          endTime;
-endTime         ${END_TIME};
+DICT_EOF
 
+echo "endTime         ${END_TIME};" >> system/controlDict
+
+cat >> system/controlDict << 'DICT_EOF'
 deltaT          0.0001;
-
 writeControl    adjustableRunTime;
 writeInterval   0.1;
-
 purgeWrite      0;
 writeFormat     ascii;
 writePrecision  6;
 writeCompression off;
-
 timeFormat      general;
 timePrecision   6;
-
 runTimeModifiable true;
-
 adjustTimeStep  yes;
 maxCo           0.5;
 maxAlphaCo      0.5;
 maxDeltaT       1;
-
 // ************************************************************************* //
-EOF
+DICT_EOF
 
 echo "[Allrun] controlDict created"
-
 echo "=============================="
 echo "[DEBUG] controlDict CONTENT"
 echo "=============================="
@@ -74,11 +61,47 @@ echo "=============================="
 echo "[DEBUG] controlDict HASH"
 md5sum system/controlDict
 
-# ---------- 0/ 필드에 파라미터 치환 ----------
-sed -i "s|VELOCITY_PLACEHOLDER|${VELOCITY}|g" 0/U
-sed -i "s|uniform ([0-9e.+-]* 0 0)|uniform (${VELOCITY} 0 0)|g" 0/U
+# ---------- transportProperties (sed 없이 직접 생성) ----------
+cat > constant/transportProperties << 'TP_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      transportProperties;
+}
 
-sed -i "s|VISCOSITY_PLACEHOLDER|${VISCOSITY}|g" constant/transportProperties
+phases (water air);
+
+water
+{
+    transportModel  Newtonian;
+TP_EOF
+
+echo "    nu              [0 2 -1 0 0 0 0] ${VISCOSITY};" >> constant/transportProperties
+
+cat >> constant/transportProperties << 'TP_EOF'
+    rho             1000;
+}
+
+air
+{
+    transportModel  Newtonian;
+    nu              [0 2 -1 0 0 0 0] 1.48e-5;
+    rho             1;
+}
+
+sigma           [1 0 -2 0 0 0 0] 0.07;
+
+// ************************************************************************* //
+TP_EOF
+
+echo "[Allrun] transportProperties created (nu=${VISCOSITY})"
+
+# ---------- 0/U velocity ----------
+sed -i "s|VELOCITY_PLACEHOLDER|${VELOCITY}|g" 0/U
+sed -i "s|uniform ([0-9e.eE+-]* 0 0)|uniform (${VELOCITY} 0 0)|g" 0/U
 
 echo "[Allrun] 0/ fields ready"
 
@@ -86,7 +109,7 @@ echo "[Allrun] 0/ fields ready"
 echo "[Allrun] Running blockMesh..."
 blockMesh 2>&1 | tee logs/blockMesh.log
 
-# ---------- setFields (있을 경우만) ----------
+# ---------- setFields ----------
 if [ -f "system/setFieldsDict" ]; then
     echo "[Allrun] Running setFields..."
     setFields 2>&1 | tee logs/setFields.log
@@ -96,7 +119,6 @@ fi
 echo "[Allrun] Running interFoam..."
 interFoam 2>&1 | tee logs/interFoam.log
 
-# ---------- 결과 검증 ----------
 echo "===== interFoam tail ====="
 tail -20 logs/interFoam.log
 
