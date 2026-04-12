@@ -49,7 +49,6 @@ jobs:
         shell: bash
         working-directory: OpenFOAM/case
         env:
-          # 일단 들어오는 원본 데이터를 모두 받습니다.
           RAW_V: ${{ github.event.inputs.velocity }}
           RAW_N: ${{ github.event.inputs.viscosity }}
           RAW_E: ${{ github.event.inputs.end_time }}
@@ -57,15 +56,15 @@ jobs:
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          echo ">>> [MIM-Ops] JSON 파싱 및 데이터 정제 시작"
+          echo ">>> [MIM-Ops] JSON 파싱 시작 (Safe Mode)"
 
-          # 1. JSON 여부 확인 및 값 추출 (jq 사용)
-          # 만약 RAW_V가 JSON 형태라면 내부의 값을 꺼내고, 아니면 그대로 사용합니다.
+          # ✅ jq --arg 옵션을 사용하여 따옴표 충돌 방지
           if echo "$RAW_V" | jq -e . >/dev/null 2>&1; then
-              echo "JSON input detected. Extracting values..."
-              V_VAL=$(echo "$RAW_V" | jq -r '.velocity // "'$RAW_V'"')
-              N_VAL=$(echo "$RAW_V" | jq -r '.viscosity // "'$RAW_N'"')
-              E_VAL=$(echo "$RAW_V" | jq -r '.end_time // "'$RAW_E'"')
+              echo "JSON input detected."
+              # JSON에서 값을 뽑고, 없으면 원본 RAW 값을 기본값으로 사용
+              V_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_V" '.velocity // $default')
+              N_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_N" '.viscosity // $default')
+              E_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_E" '.end_time // $default')
           else
               echo "Standard text input detected."
               V_VAL=$RAW_V
@@ -73,8 +72,7 @@ jobs:
               E_VAL=$RAW_E
           fi
 
-          # 2. 물리적 정제 (숫자, 소수점, 지수표현 e, 마이너스 기호 외 제거)
-          # 이 단계에서 중괄호{}나 따옴표""가 완전히 삭제됩니다.
+          # ✅ 물리적 정제 (숫자, 소수점, 지수 e, 마이너스 외 제거)
           FINAL_VELOCITY=$(echo "$V_VAL" | sed 's/[^0-9.eE-]*//g')
           FINAL_VISCOSITY=$(echo "$N_VAL" | sed 's/[^0-9.eE-]*//g')
           FINAL_END_TIME=$(echo "$E_VAL" | sed 's/[^0-9.eE-]*//g')
@@ -91,7 +89,7 @@ jobs:
           # system/controlDict 수정
           sed -i "s/^endTime[[:space:]]*.*;/endTime           $FINAL_END_TIME;/" system/controlDict
 
-          echo ">>> [MIM-Ops] 파일 수정 완료. Allrun 실행."
+          echo ">>> 파일 수정 완료. Allrun 실행."
           chmod +x Allrun
           ./Allrun
 
