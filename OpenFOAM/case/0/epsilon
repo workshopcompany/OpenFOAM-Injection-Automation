@@ -1,9 +1,9 @@
 /*--------------------------------*- C++ -*----------------------------------*\
-  =========                 |
-  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
-   \\    /   O peration     | Website:  https://openfoam.org
-    \\  /    A nd           | Version:  2312
-     \\/     M anipulation  |
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
 FoamFile
 {
@@ -21,9 +21,35 @@ internalField   uniform 0.01;
 
 boundaryField
 {
-    inlet           { type fixedValue; value $internalField; }
-    outlet          { type inletOutlet; inletValue $internalField; value $internalField; }
-    atmosphere      { type inletOutlet; inletValue $internalField; value $internalField; }
-    bottom          { type epsilonWallFunction; value $internalField; }
-    "wall.*"        { type epsilonWallFunction; value $internalField; }
+    inlet
+    {
+        type            fixedValue;
+        value           uniform 0.01;
+    }
+
+    outlet
+    {
+        type            inletOutlet;
+        inletValue      uniform 0.01;
+        value           uniform 0.01;
+    }
+
+    atmosphere
+    {
+        type            inletOutlet;
+        inletValue      uniform 0.01;
+        value           uniform 0.01;
+    }
+
+    bottom
+    {
+        type            epsilonWallFunction;
+        value           uniform 0.01;
+    }
+
+    "wall.*"
+    {
+        type            epsilonWallFunction;
+        value           uniform 0.01;
+    }
 }
