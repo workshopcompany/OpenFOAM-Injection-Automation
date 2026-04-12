@@ -1,19 +1,21 @@
 #!/bin/bash
 set -e
 
-# 환경 변수 및 폴더 준비
-VELOCITY="${VELOCITY:-0.05}"
-END_TIME="${END_TIME:-0.1}"
+# 로그 폴더 생성
 mkdir -p results logs
 
-echo "=== MIM-Ops Solver Pipeline Log: $(date) ===" | tee -a logs/pipeline.log
+echo ">>> [MIM-Ops] Simulation Started" | tee -a logs/pipeline.log
 
-# 1. Clean
-echo ">>> [STEP 1] Cleaning old data..." | tee -a logs/pipeline.log
+# 1. 환경 확인
+if ! command -v blockMesh &> /dev/null; then
+    echo "❌ ERROR: blockMesh command not found. Environment source failed!" | tee -a logs/pipeline.log
+    exit 1
+fi
+
+# 2. 이전 데이터 삭제
 rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh 2>/dev/null
 
-# 2. Mesh (STL scaling mm to m)
-echo ">>> [STEP 2] Mesh generation starting..." | tee -a logs/pipeline.log
+# 3. Mesh & Scaling
 if [ -f "constant/triSurface/part.stl" ]; then
     surfaceTransformPoints -scale '(0.001 0.001 0.001)' \
         constant/triSurface/part.stl constant/triSurface/part.stl > logs/mesh.log 2>&1
@@ -21,36 +23,15 @@ if [ -f "constant/triSurface/part.stl" ]; then
     blockMesh >> logs/mesh.log 2>&1
     snappyHexMesh -overwrite >> logs/mesh.log 2>&1
 else
-    echo "No STL found, using blockMesh only." | tee -a logs/pipeline.log
     blockMesh > logs/mesh.log 2>&1
 fi
 
-# 3. Solver Setup
-echo ">>> [STEP 3] Configuring Solver (interFoam)..." | tee -a logs/pipeline.log
-cat <<EOF > system/controlDict
-FoamFile { version 2.0; format ascii; class dictionary; location "system"; object controlDict; }
-application     interFoam;
-startFrom       startTime;
-startTime       0;
-stopAt          endTime;
-endTime         ${END_TIME};
-deltaT          1e-05;
-adjustTimeStep  yes;
-maxCo           0.2;
-maxAlphaCo      0.2;
-writeControl    adjustableRunTime;
-writeInterval   0.05;
-EOF
+# 4. Solver 실행
+echo ">>> Running interFoam..." | tee -a logs/pipeline.log
+interFoam > logs/solver.log 2>&1
 
-# 4. Execute Solver
-echo ">>> [STEP 4] Running interFoam (This may take time)..." | tee -a logs/pipeline.log
-if interFoam > logs/solver.log 2>&1; then
-    echo "✅ Solver Finished Successfully." | tee -a logs/pipeline.log
-else
-    echo "❌ Solver Crashed. See logs/solver.log for details." | tee -a logs/pipeline.log
-    exit 1
+# 5. 결과 정리
+if [ -d "postProcessing" ]; then
+    cp -r postProcessing results/
 fi
-
-# 5. Export
-[ -d "postProcessing" ] && cp -r postProcessing results/
-echo "=== Pipeline Finished: $(date) ===" | tee -a logs/pipeline.log
+echo "✅ Simulation Finished Successfully" | tee -a logs/pipeline.log
