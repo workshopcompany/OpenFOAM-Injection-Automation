@@ -9,15 +9,19 @@ set -e
 CASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$CASE_DIR"
 
-# ---------- 파라미터 파싱 (환경변수 또는 기본값) ----------
+# ---------- 파라미터 (환경변수 또는 기본값) ----------
 VELOCITY="${VELOCITY:-2.5}"
 VISCOSITY="${VISCOSITY:-1e-6}"
 END_TIME="${END_TIME:-5}"
 
 echo "[Allrun] Cleaning case..."
-rm -rf processor* [1-9]* 0.[0-9]* postProcessing logs
+rm -rf processor* logs postProcessing
+# 숫자 타임스텝 폴더만 삭제 (0/ 폴더 보호)
+find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d -exec rm -rf {} + 2>/dev/null || true
 
 echo "[Allrun] Velocity=${VELOCITY} | Viscosity=${VISCOSITY} | EndTime=${END_TIME}"
+
+mkdir -p logs
 
 # ---------- controlDict 생성 ----------
 cat > system/controlDict << EOF
@@ -63,7 +67,6 @@ EOF
 
 echo "[Allrun] controlDict created"
 
-# ---------- DEBUG: controlDict 확인 ----------
 echo "=============================="
 echo "[DEBUG] controlDict CONTENT"
 echo "=============================="
@@ -72,29 +75,23 @@ echo "=============================="
 echo "[DEBUG] controlDict HASH"
 md5sum system/controlDict
 
-# ---------- 0/ 필드 생성 ----------
-if [ ! -d "0.orig" ]; then
-    echo "[ERROR] 0.orig directory not found!"
-    exit 1
-fi
-rm -rf 0
-cp -r 0.orig 0
-
-# ---------- transportProperties 속도/점성 치환 ----------
-# U (inlet velocity)
+# ---------- 0/ 필드에 파라미터 직접 치환 ----------
+# U - velocity 치환 (PLACEHOLDER 방식 + 이미 숫자인 경우 모두 대응)
 sed -i "s|VELOCITY_PLACEHOLDER|${VELOCITY}|g" 0/U
+# 혹시 이미 이전 값이 들어있으면 덮어쓰기 (inlet fixedValue 라인 직접 교체)
+sed -i "s|uniform ([0-9e.+-]* 0 0)|uniform (${VELOCITY} 0 0)|g" 0/U
 
-# transportProperties 점성 치환
+# transportProperties - viscosity 치환
 sed -i "s|VISCOSITY_PLACEHOLDER|${VISCOSITY}|g" constant/transportProperties
+sed -i "s|nu\s*[0-9e.+-]*;|nu              ${VISCOSITY};|g" constant/transportProperties
 
-echo "[Allrun] 0/ fields created"
+echo "[Allrun] 0/ fields ready"
 
 # ---------- blockMesh ----------
 echo "[Allrun] Running blockMesh..."
 blockMesh 2>&1 | tee logs/blockMesh.log
-echo "blockMesh exit code: $?"
 
-# ---------- setFields (alpha 초기화) ----------
+# ---------- setFields (있을 경우만) ----------
 if [ -f "system/setFieldsDict" ]; then
     echo "[Allrun] Running setFields..."
     setFields 2>&1 | tee logs/setFields.log
@@ -102,14 +99,13 @@ fi
 
 # ---------- interFoam ----------
 echo "[Allrun] Running interFoam..."
-mkdir -p logs
 interFoam 2>&1 | tee logs/interFoam.log
 
 # ---------- 결과 검증 ----------
 echo "===== interFoam tail ====="
 tail -20 logs/interFoam.log
 
-TIMESTEPS=$(find . -maxdepth 1 -name "[0-9]*.[0-9]*" -type d | wc -l)
+TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d | wc -l)
 echo "CHECK: Found ${TIMESTEPS} timestep folders"
 
 if [ "$TIMESTEPS" -eq 0 ]; then
