@@ -1,3 +1,10 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  2312                                  |
+|   \\  /    A nd           | Web:      www.OpenFOAM.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
 FoamFile
 {
     version     2.0;
@@ -6,41 +13,89 @@ FoamFile
     location    "system";
     object      fvSolution;
 }
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 solvers
 {
     "alpha.water.*"
     {
-        nAlphaCorr      1;
-        nAlphaSubCycles 1;
-        cAlpha          1; // ✅ 이 줄이 누락되어 에러가 났던 겁니다.
-        icAlpha         0;
+        cAlpha              1;
+        nAlphaCorr          2;
+        nAlphaSubCycles     1;
+        MULESCorr           yes;
+        alphaApplyPrevCorr  yes;
 
-        solver          MULES;
+        solver              smoothSolver;
+        smoother            symGaussSeidel;
+        tolerance           1e-8;
+        relTol              0;
+    }
+
+    "pcorr.*"
+    {
+        solver          PCG;
+        preconditioner
+        {
+            preconditioner  GAMG;
+            tolerance       1e-5;
+            relTol          0;
+            smoother        GaussSeidel;
+        }
+        tolerance       1e-5;
+        relTol          0;
+        maxIter         100;
     }
 
     p_rgh
     {
-        solver          PCG;
-        preconditioner  DIC;
-        tolerance       1e-07;
-        relTol          0.01;
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-7;
+        relTol          0.05;
     }
 
-    "(U|k|epsilon|omega|f|v2)"
+    p_rghFinal
     {
-        solver          PBiCGStab;
-        preconditioner  DILU;
-        tolerance       1e-07;
-        relTol          0.1;
+        $p_rgh;
+        relTol          0;
+    }
+
+    U
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-6;
+        relTol          0;
+        nSweeps         1;
+    }
+
+    UFinal
+    {
+        $U;
+        relTol          0;
     }
 }
 
 PIMPLE
 {
-    momentumPredictor no;
-    nCorrectors     2;
+    momentumPredictor   no;
+    nOuterCorrectors    1;
+    nCorrectors         3;
     nNonOrthogonalCorrectors 0;
-    pRefCell        0;
-    pRefValue       0;
+
+    pRefCell            0;
+    pRefValue           0;
 }
+
+relaxationFactors
+{
+    fields
+    {
+    }
+    equations
+    {
+        ".*"            1;
+    }
+}
+
+// ************************************************************************* //
