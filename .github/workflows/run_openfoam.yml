@@ -1,4 +1,4 @@
-name: OpenFOAM PimpleFoam Simulation
+name: OpenFOAM Simulation
 
 on:
   push:
