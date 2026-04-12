@@ -1,5 +1,4 @@
 name: OpenFOAM Simulation
-
 on:
   workflow_dispatch:
     inputs:
@@ -19,17 +18,14 @@ on:
         description: 'Run Label (for report)'
         default: 'default-run'
         required: false
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run-sim:
     runs-on: ubuntu-latest
     container:
       image: opencfd/openfoam-run:2312
       options: --user root
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -38,8 +34,6 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update && apt-get install -y --no-install-recommends \
-            paraview python3-paraview \
-            xvfb libgl1-mesa-glx libglu1-mesa libxcursor1 \
             python3-pip \
             jq \
             tzdata
@@ -55,43 +49,40 @@ jobs:
         run: |
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
-          
+
           echo ">>> [MIM-Ops] JSON 파싱 시작 (Safe Mode)"
 
-          # ✅ jq --arg 옵션을 사용하여 따옴표 충돌 방지
           if echo "$RAW_V" | jq -e . >/dev/null 2>&1; then
-              echo "JSON input detected."
-              # JSON에서 값을 뽑고, 없으면 원본 RAW 값을 기본값으로 사용
-              V_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_V" '.velocity // $default')
-              N_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_N" '.viscosity // $default')
-              E_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_E" '.end_time // $default')
+            echo "JSON input detected."
+            V_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_V" '.velocity // $default')
+            N_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_N" '.viscosity // $default')
+            E_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_E" '.end_time // $default')
           else
-              echo "Standard text input detected."
-              V_VAL=$RAW_V
-              N_VAL=$RAW_N
-              E_VAL=$RAW_E
+            echo "Standard text input detected."
+            V_VAL=$RAW_V
+            N_VAL=$RAW_N
+            E_VAL=$RAW_E
           fi
 
-          # ✅ 물리적 정제 (숫자, 소수점, 지수 e, 마이너스 외 제거)
           FINAL_VELOCITY=$(echo "$V_VAL" | sed 's/[^0-9.eE-]*//g')
           FINAL_VISCOSITY=$(echo "$N_VAL" | sed 's/[^0-9.eE-]*//g')
           FINAL_END_TIME=$(echo "$E_VAL" | sed 's/[^0-9.eE-]*//g')
 
           echo "Final Cleaned Values -> Velocity: $FINAL_VELOCITY, Viscosity: $FINAL_VISCOSITY, EndTime: $FINAL_END_TIME"
 
-          # 3. OpenFOAM 파일 수정
           # 0/U 수정
           sed -i "/inlet/,/}/ s/value[[:space:]]*uniform[[:space:]]*(.* 0 0);/value           uniform ($FINAL_VELOCITY 0 0);/" 0/U
-          
-          # constant/transportProperties 수정
-          sed -i "s/nu[[:space:]]*\[0 2 -1 0 0 0 0\].*;/nu [0 2 -1 0 0 0 0] $FINAL_VISCOSITY;/" constant/transportProperties
 
-          # system/controlDict 수정
-          sed -i "s/^endTime[[:space:]]*.*;/endTime           $FINAL_END_TIME;/" system/controlDict
+          # constant/transportProperties 수정 (차원 표기 형식에 맞춤)
+          sed -i "s/nu[[:space:]]*\[0 2 -1 0 0 0 0\][[:space:]]*[0-9.eE-]*;/nu              [0 2 -1 0 0 0 0] $FINAL_VISCOSITY;/" constant/transportProperties
+
+          # ❌ controlDict sed 완전 제거 — Allrun이 직접 생성하므로 불필요
 
           echo ">>> 파일 수정 완료. Allrun 실행."
           chmod +x Allrun
-          ./Allrun
+
+          # Allrun에 파라미터 환경변수로 전달
+          VELOCITY=$FINAL_VELOCITY VISCOSITY=$FINAL_VISCOSITY END_TIME=$FINAL_END_TIME ./Allrun
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
