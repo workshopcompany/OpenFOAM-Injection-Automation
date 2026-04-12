@@ -1,14 +1,14 @@
 #!/bin/sh
-cd "${0%/*}" || exit 1
-
+# 1. OpenFOAM 환경 설정 로드
 . /usr/lib/openfoam/openfoam10/etc/bashrc
 
+# 2. 실행 권한 확인 및 스크린샷 폴더 생성
 mkdir -p screenshots
 
+# 3. 격자 생성 및 해석 실행
 blockMesh
 snappyHexMesh -overwrite
-pimpleFoam > log.pimpleFoam 2>&1
+pimpleFoam
 
-touch case.foam
-
+# 4. 후처리 (스크린샷)
 pvpython export_screenshots.py
