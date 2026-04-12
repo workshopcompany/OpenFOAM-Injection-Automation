@@ -1,31 +1,33 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 환경 정리
+# 1. 초기화
 rm -rf [1-9]* 0.* log.* simulation.log screenshots
 mkdir -p screenshots
 
 # 2. 초기 조건
 [ -d "0.orig" ] && cp -r 0.orig 0
 
-# 3. 격자 및 해석
+# 3. 격자 생성
 blockMesh > log.blockMesh 2>&1
 snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 
+# 4. 솔버 실행
 unset application
 interFoam > simulation.log 2>&1
 
-# 4. 후처리 (ParaView)
-# .foam 파일이 있어야 ParaView가 데이터를 읽을 수 있습니다.
+# 5. 후처리 (중요: 해석 결과 폴더가 생겼는지 확인)
 touch case.foam
 
-if [ -f "export_screenshots.py" ]; then
-    echo "Running post-processing..."
-    # yml에서 xvfb-run을 썼으므로 여기선 직접 실행
+# 최소 하나 이상의 결과 폴더(숫자 폴더)가 생겼는지 확인
+if ls -d [0-9]* >/dev/null 2>&1; then
+    echo "Simulation finished with results. Running pvpython..."
+    # xvfb-run은 yml에서 실행하므로 여기선 직접 호출
     pvpython export_screenshots.py > log.pvpython 2>&1
 else
-    echo "export_screenshots.py not found"
+    echo "Error: No simulation result folders found!"
+    exit 1
 fi
 
-# 5. 최종 확인용
+# 생성된 이미지 확인
 ls -la screenshots/
