@@ -7,11 +7,11 @@ import time
 
 # --- 1. 설정 및 보안 ---
 # Streamlit Cloud의 Settings > Secrets에 아래 값들을 설정하세요.
-GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
 REPO_OWNER = "workshopcompany"
 REPO_NAME = "OpenFOAM-Injection-Automation"
 ARTIFACT_NAME = "OpenFOAM-Web-Dashboard"
-ZAPIER_WEBHOOK_URL = st.secrets.get("ZAPIER_WEB_URL", "") # 기존 Webhook URL
+ZAPIER_WEBHOOK_URL = st.secrets["ZAPIER_WEB_URL"] # 기존 Webhook URL
 
 st.set_page_config(page_title="MIM-Ops Dashboard", layout="wide")
 
