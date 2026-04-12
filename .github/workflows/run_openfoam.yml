@@ -54,6 +54,8 @@ jobs:
         if: always()
         with:
           name: OpenFOAM-Web-Dashboard
-          # 여러 경로 대신 통합된 results 폴더 하나만 지정합니다.
-          path: OpenFOAM/case/results/
+          # '**/results/'를 사용하면 레포지토리 내 어느 위치에 있든 
+          # results 폴더를 찾아 그 안의 모든 내용을 업로드합니다.
+          path: |
+            **/results/*
           if-no-files-found: error
