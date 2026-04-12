@@ -36,10 +36,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          apt-get update && apt-get install -y \
+          # DEBIAN_FRONTEND 설정을 통해 tzdata 등의 입력 대기 현상을 원천 차단합니다.
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update && apt-get install -y --no-install-recommends \
             paraview python3-paraview \
             xvfb libgl1-mesa-glx libglu1-mesa libxcursor1 \
-            python3-pip
+            python3-pip \
+            tzdata
           pip3 install jinja2 --break-system-packages
 
       - name: Run OpenFOAM Simulation
@@ -52,12 +55,17 @@ jobs:
           INPUT_RUN_LABEL: ${{ github.event.inputs.run_label || 'auto-run' }}
         run: |
           set -e
+          # OpenFOAM 환경 변수 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
+          
+          # 파라뷰 및 라이브러리 경로 설정
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
           export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
+          
           echo "CHECK: PVPYTHON_PATH is $PVPYTHON_PATH"
           echo "CHECK: velocity=$INPUT_VELOCITY, viscosity=$INPUT_VISCOSITY, endTime=$INPUT_END_TIME"
+          
           chmod +x Allrun
           ./Allrun
 
@@ -67,6 +75,7 @@ jobs:
         working-directory: OpenFOAM/case
         run: |
           mkdir -p ${{ github.workspace }}/sync_results
+          # 결과 폴더가 비어있지 않은지 확인 후 복사
           if [ -d "results" ] && [ "$(ls -A results/ 2>/dev/null)" ]; then
             cp -rv results/* ${{ github.workspace }}/sync_results/
             echo "CHECK: Files copied"
