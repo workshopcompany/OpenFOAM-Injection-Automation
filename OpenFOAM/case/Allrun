@@ -1,40 +1,40 @@
 #!/bin/bash
 set -e
 
-# ---------- Parameters ----------
+# Parameters
 VELOCITY="${VELOCITY:-0.05}"
 VISCOSITY="${VISCOSITY:-1e-3}"
 END_TIME="${END_TIME:-0.1}"
 
-echo "==========================================="
-echo " MIM-Ops LOG: Simulation Started"
-echo " Time: $(date)"
-echo " Params: V=$VELOCITY, nu=$VISCOSITY, End=$END_TIME"
-echo "==========================================="
-
-# 1. Directory Setup
+echo ">>> [MIM-Ops] Checking basic files..."
 mkdir -p results logs
-echo ">>> [STEP 1] Cleaning previous data..."
+
+# 1. Clean previous data
 rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh
 
-# 2. STL & Mesh Processing
+# 2. Check essential system files (Failure here causes Exit Code 1)
+for file in system/fvSchemes system/fvSolution; do
+    if [ ! -f "$file" ]; then
+        echo "❌ Error: $file is missing! Simulation cannot start."
+        exit 1
+    fi
+done
+
+# 3. STL & Mesh
 if [ -f "constant/triSurface/part.stl" ]; then
-    echo ">>> [STEP 2] STL found. Scaling mm to m..."
+    echo ">>> STL scaling..."
     surfaceTransformPoints -scale '(0.001 0.001 0.001)' \
         constant/triSurface/part.stl constant/triSurface/part.stl > logs/scale.log 2>&1
-    
-    echo ">>> [STEP 3] Extracting features & Meshing..."
     surfaceFeatureExtract > logs/extract.log 2>&1
     blockMesh > logs/blockMesh.log 2>&1
     snappyHexMesh -overwrite > logs/snappy.log 2>&1
-    echo ">>> Mesh generation complete."
 else
-    echo ">>> [STEP 2] No STL. Using default blockMesh..."
+    echo ">>> No STL, using blockMesh..."
     blockMesh > logs/blockMesh.log 2>&1
 fi
 
-# 3. Dynamic Configuration (Safety Guards)
-echo ">>> [STEP 4] Writing dynamic controlDict..."
+# 4. Generate controlDict (Ensuring variables are not empty)
+echo ">>> Writing controlDict with EndTime: $END_TIME"
 cat <<EOF > system/controlDict
 FoamFile { version 2.0; format ascii; class dictionary; location "system"; object controlDict; }
 application     interFoam;
@@ -50,26 +50,17 @@ writeControl    adjustableRunTime;
 writeInterval   0.05;
 EOF
 
-if [ -f "system/fvSchemes" ]; then
-    sed -i 's/Gauss linear/Gauss upwind/g' system/fvSchemes
-fi
+# Numerical Guard for schemes
+sed -i 's/Gauss linear/Gauss upwind/g' system/fvSchemes
 
-# 4. Main Solver Execution
-echo ">>> [STEP 5] Running interFoam solver (This may take time)..."
+# 5. Solver Execution
+echo ">>> Executing Solver (interFoam)..."
 if interFoam > logs/solver.log 2>&1; then
-    echo "✅ [SUCCESS] Solver finished normally."
+    echo "✅ Success: Simulation finished."
 else
-    echo "❌ [ERROR] Solver crashed. Check logs/solver.log"
-    exit 1
+    echo "❌ Error: interFoam crashed. Check logs/solver.log"
+    exit 1 # This triggers Exit Code 1 in GitHub Actions
 fi
 
-# 5. Exporting Results
-echo ">>> [STEP 6] Exporting results to results/ folder..."
-if [ -d "postProcessing" ]; then
-    cp -r postProcessing results/
-fi
-
-echo "==========================================="
-echo " MIM-Ops LOG: Simulation Finished Successfully"
-echo " Time: $(date)"
-echo "==========================================="
+# 6. Export
+[ -d "postProcessing" ] && cp -r postProcessing results/ || echo "No post-data."
