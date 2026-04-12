@@ -2,7 +2,8 @@ name: OpenFOAM PimpleFoam Simulation
 
 on:
   push:
-    branches: [ "main" ]  # main 브랜치에 뭐가 올라오기만 하면 실행
+    branches: [ "main" ]  # 메인에 푸시될 때마다 실행
+  workflow_dispatch:      # [Actions] 탭에서 버튼으로 수동 실행 가능하게 함
 
 jobs:
   run-sim:
