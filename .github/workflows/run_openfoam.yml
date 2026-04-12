@@ -22,6 +22,11 @@ jobs:
 
       - name: Run OpenFOAM and Post-processing
         run: |
+          # OpenFOAM 환경 소싱
+          source /opt/openfoam10/etc/bashrc  # 실제 설치 경로 확인
+    
+          # 또는 Docker 컨테이너 내 경로
+          # source /usr/lib/openfoam/openfoam10/etc/bashrc
           # OpenFOAM 환경 설정을 자동으로 찾아서 로드
           . ${FOAM_BASHRC:-/usr/lib/openfoam/openfoam10/etc/bashrc}
           
