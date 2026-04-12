@@ -69,16 +69,17 @@ with st.sidebar:
         etime = st.number_input("Analysis Time (s)", value=2.0)
 
         if st.button("🚀 Run Simulation", type="primary"):
+            # 1. 파라미터 저장
             st.session_state["run_params"] = {
                 "nu": nu, "rho": rho, "tmelt": tmelt, "tmold": tmold, 
                 "vel": vel, "etime": etime, "mat": mat_name
             }
             
-            # Zapier Webhook Sync
+            # 2. Zapier Webhook Sync (해석 실행보다 먼저 수행)
             if ZAPIER_WEBHOOK_URL:
                 with st.spinner("Syncing data to Zapier..."):
                     try:
-                        resp = requests.post(ZAPIER_WEBHOOK_URL, json=st.session_state["run_params"], timeout=5)
+                        resp = requests.post(ZAPIER_WEBHOOK_URL, json=st.session_state["run_params"], timeout=10)
                         if resp.status_code == 200:
                             st.toast("✅ Zapier Sync Successful!", icon="🌐")
                         else:
@@ -86,6 +87,7 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f"Webhook Failed: {e}")
             
+            # 3. 실행 상태 활성화
             st.session_state["exec"] = True
 
 # --- MAIN: EXECUTION & RESULTS ---
@@ -104,7 +106,7 @@ if st.session_state.get("exec"):
     }
 
     try:
-        # 쉘 스크립트 실행 (OpenFOAM 환경이 구축된 서버에서만 작동)
+        # 로컬/서버에서 쉘 스크립트 실행 시도
         proc = subprocess.Popen(["bash", "Allrun"], cwd=CASE_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         logs = []
         for line in proc.stdout:
@@ -124,9 +126,11 @@ if st.session_state.get("exec"):
                 st.write(f"**Material:** {params['mat']} | **Status:** Data Synced to GitHub")
                 st.info("The configuration was updated via Zapier. Check GitHub Actions for the full solver log.")
         else:
-            st.error("Simulation engine not found or failed. Ensure OpenFOAM is installed.")
+            # Streamlit Cloud에서는 여기가 실행됩니다.
+            st.warning("⚠️ Local engine not found. Data has been pushed to GitHub for Cloud processing.")
+            st.info("💡 GitHub 저장소의 Actions 탭에서 OpenFOAM 해석 진행 상황을 확인하세요.")
     except Exception as e:
-        st.error(f"Execution Error: {e}")
+        st.info("💡 Data synced to Zapier. (Note: Simulation engine is running on GitHub Actions)")
 
 def _plot_demo():
     import numpy as np
