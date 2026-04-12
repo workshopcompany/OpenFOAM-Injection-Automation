@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-# ---------- Parameters ----------
+# ---------- Parameters from Environment (Zapier/GitHub) ----------
 VELOCITY="${VELOCITY:-0.05}"
 VISCOSITY="${VISCOSITY:-1e-3}"
-END_TIME="${END_TIME:-2}"
+END_TIME="${END_TIME:-0.1}"
 
-echo "Starting MIM-Ops Pipeline: V=$VELOCITY, nu=$VISCOSITY"
+echo "Starting MIM-Ops Pipeline: V=$VELOCITY, nu=$VISCOSITY, EndTime=$END_TIME"
 
 # 1. Clean previous results
 rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh
@@ -15,6 +15,7 @@ mkdir -p results logs
 # 2. STL Pre-processing (Scale mm to m if file exists)
 if [ -f "constant/triSurface/part.stl" ]; then
     echo "STL detected. Scaling and Mesh generation starting..."
+    # Scale mm to m
     surfaceTransformPoints -scale '(0.001 0.001 0.001)' \
         constant/triSurface/part.stl constant/triSurface/part.stl
     
@@ -27,12 +28,29 @@ else
     blockMesh
 fi
 
-# 3. Update controlDict & transportProperties dynamically
-sed -i "s/END_TIME_VAL/$END_TIME/g" system/controlDict
-sed -i "s/NU_VAL/$VISCOSITY/g" constant/transportProperties
+# 3. Dynamic Configuration for Numerical Stability
+# Generate controlDict with Safety Guards
+cat <<EOF > system/controlDict
+FoamFile { version 2.0; format ascii; class dictionary; location "system"; object controlDict; }
+application     interFoam;
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         ${END_TIME};
+deltaT          1e-05;
+adjustTimeStep  yes;
+maxCo           0.2;          # Numerical Guard to prevent divergence
+maxAlphaCo      0.2;
+maxDeltaT       1;
+writeControl    adjustableRunTime;
+writeInterval   0.05;
+EOF
 
-# 4. Run Solver (simpleFoam for Laminar Flow)
-simpleFoam | tee logs/simpleFoam.log
+# Force stable upwind schemes to prevent "command not found" or divergence errors
+sed -i 's/Gauss linear/Gauss upwind/g' system/fvSchemes
+
+# 4. Run Solver (interFoam is recommended for MIM injection)
+interFoam | tee logs/solver.log
 
 # 5. Export Results
 cp -r postProcessing results/ 2>/dev/null || true
