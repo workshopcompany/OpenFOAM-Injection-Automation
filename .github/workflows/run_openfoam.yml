@@ -20,7 +20,6 @@ jobs:
       
       - name: Install Post-Processing Dependencies
         run: |
-          # OpenFOAM 리포지토리 충돌 방지 및 필수 패키지 설치
           rm -f /etc/apt/sources.list.d/openfoam.list || true
           apt-get update
           apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
@@ -31,26 +30,24 @@ jobs:
         run: |
           bash << 'SCRIPT_END'
           set -e
-          # 1. OpenFOAM 및 파이썬 환경 설정
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
           export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           
-          # 2. 결과 폴더 준비 및 권한 설정
+          # 1. 결과 폴더를 미리 만들고 권한을 완전히 개방합니다.
           mkdir -p results
-          chmod 777 results
-          chmod +x Allrun
+          chmod -R 777 results
           
-          # 3. 시뮬레이션 및 후처리 실행
-          echo "Starting Simulation & Post-processing..."
+          chmod +x Allrun
+          echo "Starting Simulation..."
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
-          # 4. 디버깅 로그 (파일 생성 여부 확인)
-          echo "===== DEBUG: File List ====="
+          # 2. [중요] 컨테이너 종료 전, 생성된 파일의 권한을 다시 한번 호스트와 맞춥니다.
+          chmod -R 777 results/
+          
+          echo "===== FINAL CHECK INSIDE CONTAINER ====="
           ls -la results/
-          echo "===== DEBUG: PyPython Log ====="
-          cat log.pvpython || echo "log.pvpython is missing!"
           SCRIPT_END
       
       - name: Upload 3D Interactive Results
@@ -58,6 +55,6 @@ jobs:
         if: always()
         with:
           name: OpenFOAM-Web-Dashboard
-          # 가장 안전한 경로 패턴: 어떤 계층에 있든 results 폴더 안의 모든 파일을 수거
-          path: "**/OpenFOAM/case/results/*"
+          # 가장 직관적인 상대 경로 사용 (와일드카드 없이 폴더명만 지정)
+          path: OpenFOAM/case/results
           if-no-files-found: error
