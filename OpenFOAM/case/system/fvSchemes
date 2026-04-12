@@ -11,8 +11,9 @@ gradSchemes     { default Gauss linear; }
 divSchemes
 {
     default         none;
-    div(phi,U)      Gauss linearUpwind grad(U);
-    div((nuEff*dev(T(grad(U))))) Gauss linear;
+    div(phi,U)      Gauss upwind;  // linear 대신 upwind
+    div(phi,alpha)  Gauss upwind;
+    ...
 }
 laplacianSchemes { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
