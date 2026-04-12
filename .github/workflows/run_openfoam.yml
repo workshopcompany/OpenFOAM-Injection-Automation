@@ -26,8 +26,23 @@ jobs:
           source /usr/bin/openfoam2312
           ./Allrun
       
+      - name: Debug - Find screenshots
+        shell: bash
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo ""
+          echo "=== All PNG/JPG files ==="
+          find . -type f \( -name "*.png" -o -name "*.jpg" \) || echo "No images found"
+          echo ""
+          echo "=== Full directory tree ==="
+          ls -R
+      
       - name: Upload Screenshots
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: flow-results
-          path: OpenFOAM/case/screenshots/
+          path: |
+            **/*.png
+            **/*.jpg
