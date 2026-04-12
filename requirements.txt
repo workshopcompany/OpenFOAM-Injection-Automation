@@ -1,3 +1,13 @@
+# UI Framework
 streamlit
-requests
+
+# AI & Data Processing
 google-generativeai
+pandas
+numpy
+
+# Visualization
+matplotlib
+
+# OpenFOAM Data Handling (Optional for future 3D view)
+pyvista
