@@ -3,13 +3,9 @@ name: MIM-Ops Flow Analysis
 on:
   push:
     paths:
-      - 'OpenFOAM/case/constant/transportProperties' # Zapier updates this file
+      - 'OpenFOAM/case/constant/transportProperties'
   workflow_dispatch:
     inputs:
-      material:
-        description: 'Material Name'
-        default: 'PP'
-        required: true
       velocity:
         description: 'Injection Velocity (m/s)'
         default: '0.05'
@@ -20,9 +16,9 @@ on:
 jobs:
   run-sim:
     runs-on: ubuntu-latest
-    # Critical: Use the official OpenFOAM container to recognize commands like blockMesh
+    # Change to 'dev' image to ensure all tools (surfaceTransformPoints, etc.) are available
     container:
-      image: opencfd/openfoam-run:2312
+      image: opencfd/openfoam-dev:2312
       options: --user root
 
     steps:
@@ -33,18 +29,19 @@ jobs:
         shell: bash
         working-directory: OpenFOAM/case
         run: |
-          # 1. Grant execution permission
-          chmod +x Allrun
+          # CRITICAL: Source OpenFOAM environment
+          if [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ]; then
+            . /usr/lib/openfoam/openfoam2312/etc/bashrc
+          fi
           
-          # 2. Execute the Allrun script
-          # The environment is already set by the container
+          chmod +x Allrun
           ./Allrun
 
       - name: Upload Artifacts
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: simulation-results
           path: |
-            OpenFOAM/case/postProcessing/
-            OpenFOAM/case/log.*
+            OpenFOAM/case/results/
+            OpenFOAM/case/logs/
