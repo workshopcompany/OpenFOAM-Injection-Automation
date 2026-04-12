@@ -14,11 +14,19 @@ FoamFile
     object      transportProperties;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+phases (water air);
 
-transportModel  Newtonian;
+water
+{
+    transportModel  Newtonian;
+    nu              1e-06;
+    rho             1000; // 물의 밀도
+}
+air
+{
+    transportModel  Newtonian;
+    nu              1.48e-05;
+    rho             1.2;  // 공기의 밀도
+}
 
-// 아래 단위를 정확히 지켜주세요.
-nu              [0 2 -1 0 0 0 0] 1e-06;
-rho             [1 -3 0 0 0 0 0] 900; 
-
-// ************************************************************************* //
+sigma           0.072; // 표면장력 계수
