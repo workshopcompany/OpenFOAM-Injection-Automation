@@ -1,27 +1,25 @@
 #!/bin/bash
-cd "${0%/*}" || exit 1
+set -e
 
-# ======================================================
-# [0] 초기 클린
-# ======================================================
+# ============================================================
+# MIM-Ops Pipeline - Allrun
+# interFoam runner for OpenFOAM 2312
+# ============================================================
+
+CASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$CASE_DIR"
+
+# ---------- 파라미터 파싱 (환경변수 또는 기본값) ----------
+VELOCITY="${VELOCITY:-2.5}"
+VISCOSITY="${VISCOSITY:-1e-6}"
+END_TIME="${END_TIME:-5}"
+
 echo "[Allrun] Cleaning case..."
-rm -rf [1-9]* log.* results
-rm -rf 0
-mkdir -p 0 results
-chmod 777 results
+rm -rf processor* [1-9]* 0.[0-9]* postProcessing logs
 
-# ======================================================
-# [1] 변수 설정
-# ======================================================
-VELOCITY=${INPUT_VELOCITY:-2.5}
-VISCOSITY=${INPUT_VISCOSITY:-1e-6}
-END_TIME=${INPUT_END_TIME:-5}
+echo "[Allrun] Velocity=${VELOCITY} | Viscosity=${VISCOSITY} | EndTime=${END_TIME}"
 
-echo "[Allrun] Velocity=$VELOCITY | Viscosity=$VISCOSITY | EndTime=$END_TIME"
-
-# ======================================================
-# [2] controlDict 강제 생성 (🔥 핵심)
-# ======================================================
+# ---------- controlDict 생성 ----------
 cat > system/controlDict << EOF
 FoamFile
 {
@@ -38,7 +36,7 @@ startFrom       startTime;
 startTime       0;
 
 stopAt          endTime;
-endTime         $END_TIME;
+endTime         ${END_TIME};
 
 deltaT          0.0001;
 
@@ -65,206 +63,58 @@ EOF
 
 echo "[Allrun] controlDict created"
 
-# 🔥 덮어쓰기 방지
-chmod 444 system/controlDict
-
-# ======================================================
-# [3] DEBUG: 실제 controlDict 확인
-# ======================================================
+# ---------- DEBUG: controlDict 확인 ----------
 echo "=============================="
 echo "[DEBUG] controlDict CONTENT"
 echo "=============================="
-nl -ba system/controlDict
+cat -n system/controlDict
 echo "=============================="
-
 echo "[DEBUG] controlDict HASH"
 md5sum system/controlDict
 
-# ======================================================
-# [4] 초기조건 생성
-# ======================================================
+# ---------- 0/ 필드 생성 ----------
+if [ ! -d "0.orig" ]; then
+    echo "[ERROR] 0.orig directory not found!"
+    exit 1
+fi
+rm -rf 0
+cp -r 0.orig 0
 
-# U
-cat > 0/U << EOF
-FoamFile
-{
-    version 2.0;
-    format ascii;
-    class volVectorField;
-    location "0";
-    object U;
-}
-dimensions [0 1 -1 0 0 0 0];
-internalField uniform (0 0 0);
-boundaryField
-{
-    inlet { type fixedValue; value uniform ($VELOCITY 0 0); }
-    outlet { type zeroGradient; }
-    walls { type noSlip; }
-    atmosphere { type pressureInletOutletVelocity; value uniform (0 0 0); }
-    bottom { type noSlip; }
-}
-EOF
+# ---------- transportProperties 속도/점성 치환 ----------
+# U (inlet velocity)
+sed -i "s|VELOCITY_PLACEHOLDER|${VELOCITY}|g" 0/U
 
-# p_rgh
-cat > 0/p_rgh << EOF
-FoamFile
-{
-    version 2.0;
-    format ascii;
-    class volScalarField;
-    location "0";
-    object p_rgh;
-}
-dimensions [1 -1 -2 0 0 0 0];
-internalField uniform 0;
-boundaryField
-{
-    inlet { type fixedFluxPressure; }
-    outlet { type fixedValue; value uniform 0; }
-    walls { type fixedFluxPressure; }
-    atmosphere { type totalPressure; p0 uniform 0; }
-    bottom { type fixedFluxPressure; }
-}
-EOF
-
-# alpha.water
-cat > 0/alpha.water << EOF
-FoamFile
-{
-    version 2.0;
-    format ascii;
-    class volScalarField;
-    location "0";
-    object alpha.water;
-}
-dimensions [0 0 0 0 0 0 0];
-internalField uniform 0;
-boundaryField
-{
-    inlet { type fixedValue; value uniform 1; }
-    outlet { type zeroGradient; }
-    walls { type zeroGradient; }
-    atmosphere { type inletOutlet; inletValue uniform 0; value uniform 0; }
-    bottom { type zeroGradient; }
-}
-EOF
+# transportProperties 점성 치환
+sed -i "s|VISCOSITY_PLACEHOLDER|${VISCOSITY}|g" constant/transportProperties
 
 echo "[Allrun] 0/ fields created"
 
-# ======================================================
-# [5] 물성
-# ======================================================
-cat > constant/transportProperties << EOF
-FoamFile
-{
-    version 2.0;
-    format ascii;
-    class dictionary;
-    location "constant";
-    object transportProperties;
-}
-
-phases (water air);
-
-water
-{
-    transportModel Newtonian;
-    nu $VISCOSITY;
-    rho 1000;
-}
-
-air
-{
-    transportModel Newtonian;
-    nu 1.48e-05;
-    rho 1;
-}
-
-sigma 0.07;
-EOF
-
-# ======================================================
-# [6] fvSolution
-# ======================================================
-cat > system/fvSolution << EOF
-FoamFile
-{
-    version 2.0;
-    format ascii;
-    class dictionary;
-    location "system";
-    object fvSolution;
-}
-solvers
-{
-    "alpha.water.*"
-    {
-        solver smoothSolver;
-        smoother symGaussSeidel;
-        tolerance 1e-8;
-        relTol 0;
-    }
-    p_rgh { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0.05; }
-    U { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
-}
-PIMPLE
-{
-    nOuterCorrectors 1;
-    nCorrectors 2;
-}
-EOF
-
-# ======================================================
-# [7] fvSchemes
-# ======================================================
-cat > system/fvSchemes << EOF
-FoamFile
-{
-    version 2.0;
-    format ascii;
-    class dictionary;
-    location "system";
-    object fvSchemes;
-}
-ddtSchemes { default Euler; }
-gradSchemes { default Gauss linear; }
-divSchemes
-{
-    default none;
-    div(rhoPhi,U) Gauss linearUpwind grad(U);
-    div(phi,alpha) Gauss vanLeer;
-}
-laplacianSchemes { default Gauss linear corrected; }
-interpolationSchemes { default linear; }
-snGradSchemes { default corrected; }
-EOF
-
-# ======================================================
-# [8] mesh
-# ======================================================
+# ---------- blockMesh ----------
 echo "[Allrun] Running blockMesh..."
-blockMesh > log.blockMesh 2>&1
-tail -20 log.blockMesh
+blockMesh 2>&1 | tee logs/blockMesh.log
+echo "blockMesh exit code: $?"
 
-# ======================================================
-# [9] solver
-# ======================================================
-echo "[Allrun] Running interFoam..."
-interFoam > simulation.log 2>&1
-
-echo "===== interFoam tail ====="
-tail -30 simulation.log
-
-# ======================================================
-# [10] 결과 확인
-# ======================================================
-TIMESTEP_COUNT=$(ls -d [0-9]* 2>/dev/null | grep -v "^0$" | wc -l)
-echo "CHECK: Found $TIMESTEP_COUNT timestep folders"
-
-if [ "$TIMESTEP_COUNT" -le 0 ]; then
-    echo "ERROR: No timesteps generated"
-    exit 1
+# ---------- setFields (alpha 초기화) ----------
+if [ -f "system/setFieldsDict" ]; then
+    echo "[Allrun] Running setFields..."
+    setFields 2>&1 | tee logs/setFields.log
 fi
 
-echo "[Allrun] SUCCESS"
+# ---------- interFoam ----------
+echo "[Allrun] Running interFoam..."
+mkdir -p logs
+interFoam 2>&1 | tee logs/interFoam.log
+
+# ---------- 결과 검증 ----------
+echo "===== interFoam tail ====="
+tail -20 logs/interFoam.log
+
+TIMESTEPS=$(find . -maxdepth 1 -name "[0-9]*.[0-9]*" -type d | wc -l)
+echo "CHECK: Found ${TIMESTEPS} timestep folders"
+
+if [ "$TIMESTEPS" -eq 0 ]; then
+    echo "ERROR: No timesteps generated"
+    exit 1
+else
+    echo "[Allrun] SUCCESS: ${TIMESTEPS} timestep(s) written"
+fi
