@@ -1,40 +1,32 @@
 #!/bin/bash
 set -e
 
-# Parameters
+# 환경 변수 및 폴더 준비
 VELOCITY="${VELOCITY:-0.05}"
-VISCOSITY="${VISCOSITY:-1e-3}"
 END_TIME="${END_TIME:-0.1}"
-
-echo ">>> [MIM-Ops] Checking basic files..."
 mkdir -p results logs
 
-# 1. Clean previous data
-rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh
+echo "=== MIM-Ops Solver Pipeline Log: $(date) ===" | tee -a logs/pipeline.log
 
-# 2. Check essential system files (Failure here causes Exit Code 1)
-for file in system/fvSchemes system/fvSolution; do
-    if [ ! -f "$file" ]; then
-        echo "❌ Error: $file is missing! Simulation cannot start."
-        exit 1
-    fi
-done
+# 1. Clean
+echo ">>> [STEP 1] Cleaning old data..." | tee -a logs/pipeline.log
+rm -rf 0.[0-9]* [1-9]* postProcessing constant/polyMesh 2>/dev/null
 
-# 3. STL & Mesh
+# 2. Mesh (STL scaling mm to m)
+echo ">>> [STEP 2] Mesh generation starting..." | tee -a logs/pipeline.log
 if [ -f "constant/triSurface/part.stl" ]; then
-    echo ">>> STL scaling..."
     surfaceTransformPoints -scale '(0.001 0.001 0.001)' \
-        constant/triSurface/part.stl constant/triSurface/part.stl > logs/scale.log 2>&1
-    surfaceFeatureExtract > logs/extract.log 2>&1
-    blockMesh > logs/blockMesh.log 2>&1
-    snappyHexMesh -overwrite > logs/snappy.log 2>&1
+        constant/triSurface/part.stl constant/triSurface/part.stl > logs/mesh.log 2>&1
+    surfaceFeatureExtract >> logs/mesh.log 2>&1
+    blockMesh >> logs/mesh.log 2>&1
+    snappyHexMesh -overwrite >> logs/mesh.log 2>&1
 else
-    echo ">>> No STL, using blockMesh..."
-    blockMesh > logs/blockMesh.log 2>&1
+    echo "No STL found, using blockMesh only." | tee -a logs/pipeline.log
+    blockMesh > logs/mesh.log 2>&1
 fi
 
-# 4. Generate controlDict (Ensuring variables are not empty)
-echo ">>> Writing controlDict with EndTime: $END_TIME"
+# 3. Solver Setup
+echo ">>> [STEP 3] Configuring Solver (interFoam)..." | tee -a logs/pipeline.log
 cat <<EOF > system/controlDict
 FoamFile { version 2.0; format ascii; class dictionary; location "system"; object controlDict; }
 application     interFoam;
@@ -50,17 +42,15 @@ writeControl    adjustableRunTime;
 writeInterval   0.05;
 EOF
 
-# Numerical Guard for schemes
-sed -i 's/Gauss linear/Gauss upwind/g' system/fvSchemes
-
-# 5. Solver Execution
-echo ">>> Executing Solver (interFoam)..."
+# 4. Execute Solver
+echo ">>> [STEP 4] Running interFoam (This may take time)..." | tee -a logs/pipeline.log
 if interFoam > logs/solver.log 2>&1; then
-    echo "✅ Success: Simulation finished."
+    echo "✅ Solver Finished Successfully." | tee -a logs/pipeline.log
 else
-    echo "❌ Error: interFoam crashed. Check logs/solver.log"
-    exit 1 # This triggers Exit Code 1 in GitHub Actions
+    echo "❌ Solver Crashed. See logs/solver.log for details." | tee -a logs/pipeline.log
+    exit 1
 fi
 
-# 6. Export
-[ -d "postProcessing" ] && cp -r postProcessing results/ || echo "No post-data."
+# 5. Export
+[ -d "postProcessing" ] && cp -r postProcessing results/
+echo "=== Pipeline Finished: $(date) ===" | tee -a logs/pipeline.log
