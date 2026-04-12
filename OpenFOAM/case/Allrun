@@ -1,37 +1,51 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 초기화
-rm -rf [1-9]* 0.* log.* simulation.log screenshots
-mkdir -p screenshots
+# 1. 초기화 (이전 해석 결과 및 폴더 삭제)
+# web_data 폴더도 초기화 목록에 추가했습니다.
+echo "Cleaning old simulation data and folders..."
+rm -rf [1-9]* 0.* log.* simulation.log screenshots web_data
+mkdir -p screenshots web_data
 
-# 2. 초기 조건
+# 2. 초기 조건 설정
 [ -d "0.orig" ] && cp -r 0.orig 0
 
-# 3. 격자 및 해석 (interFoam)
+# 3. 격자 생성 및 해석 (interFoam)
+echo "Generating Mesh (blockMesh & snappyHexMesh)..."
 blockMesh > log.blockMesh 2>&1
 snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 
+echo "Running interFoam simulation..."
 unset application
 interFoam > simulation.log 2>&1
 
-# 4. 후처리 (ParaView)
+# 4. 후처리 준비 (ParaView)
+echo "Preparing post-processing..."
 touch case.foam
 
-# yml에서 설정한 경로가 있는지 확인
+# yml에서 전달된 PVPYTHON_PATH가 없을 경우 기본값 설정
 if [ -z "$PVPYTHON_PATH" ]; then
     PVPYTHON_PATH="/usr/bin/pvpython"
 fi
 
+# 5. 후처리 실행 (스크린샷 5장 + 3D VTP 데이터 추출)
 if [ -f "export_screenshots.py" ]; then
-    echo "Running post-processing with $PVPYTHON_PATH..."
-    # 파이썬 경로를 다시 한 번 명시적으로 선언
-    export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
+    echo "Running pvpython post-processing with $PVPYTHON_PATH..."
     
+    # 컨테이너 내부 라이브러리 경로 강제 지정 (충돌 방지)
+    export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
+    
+    # 파이썬 스크립트 실행
     $PVPYTHON_PATH export_screenshots.py > log.pvpython 2>&1
+    
+    # 결과 확인을 위한 로그 출력
+    echo "Post-processing complete. Checking results..."
+    ls -la screenshots/
+    ls -la web_data/
 else
-    echo "Error: export_screenshots.py not found"
+    echo "Error: export_screenshots.py not found in the case directory!"
     exit 1
 fi
 
-ls -la screenshots/
+echo "All processes finished successfully."
