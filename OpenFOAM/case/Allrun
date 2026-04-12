@@ -1,14 +1,10 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 초기화
+# 1~3 단계 (기존과 동일)
 rm -rf [1-9]* 0.* log.* simulation.log screenshots
 mkdir -p screenshots
-
-# 2. 초기 조건
 [ -d "0.orig" ] && cp -r 0.orig 0
-
-# 3. 격자 생성
 blockMesh > log.blockMesh 2>&1
 snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 
@@ -16,18 +12,18 @@ snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
 unset application
 interFoam > simulation.log 2>&1
 
-# 5. 후처리 (중요: 해석 결과 폴더가 생겼는지 확인)
+# 5. 후처리 (pvpython 호출부 수정)
 touch case.foam
-
-# 최소 하나 이상의 결과 폴더(숫자 폴더)가 생겼는지 확인
 if ls -d [0-9]* >/dev/null 2>&1; then
-    echo "Simulation finished with results. Running pvpython..."
-    # xvfb-run은 yml에서 실행하므로 여기선 직접 호출
-    pvpython export_screenshots.py > log.pvpython 2>&1
+    echo "Running post-processing..."
+    # 'pvpython' 명령어를 찾지 못하는 문제 해결을 위해 전체 경로 확인 후 실행
+    CMD=$(which pvpython)
+    if [ -z "$CMD" ]; then CMD="/usr/bin/pvpython"; fi
+    
+    $CMD export_screenshots.py > log.pvpython 2>&1
 else
-    echo "Error: No simulation result folders found!"
+    echo "No results to process."
     exit 1
 fi
 
-# 생성된 이미지 확인
 ls -la screenshots/
