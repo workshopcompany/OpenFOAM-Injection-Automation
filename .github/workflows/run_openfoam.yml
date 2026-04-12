@@ -30,32 +30,31 @@ jobs:
         run: |
           bash << 'SCRIPT_END'
           set -e
-          # 1. 환경 설정
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
-          PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
-          export PVPYTHON_PATH
+          export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           
-          # 결과물을 모을 통합 폴더 생성
           mkdir -p results
           chmod +x Allrun
           
-          # 2. 실행
-          echo "Starting Simulation & Web Data Export..."
+          echo "Starting Simulation..."
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
-          echo "===== DEBUG: Final Check (Inside Container) ====="
-          ls -R results/
+          echo "===== [STEP 1] Check inside container ====="
+          pwd
+          ls -R results/ || echo "results folder is empty!"
+          
+          echo "===== [STEP 2] pvpython log output ====="
+          cat log.pvpython || echo "log.pvpython not found"
           SCRIPT_END
-      
+
       - name: Upload 3D Interactive Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: OpenFOAM-Web-Dashboard
-          # '**/results/'를 사용하면 레포지토리 내 어느 위치에 있든 
-          # results 폴더를 찾아 그 안의 모든 내용을 업로드합니다.
+          # 상대 경로가 아닌 절대 경로 패턴으로 시도합니다.
           path: |
-            **/results/*
+            ${{ github.workspace }}/OpenFOAM/case/results/*
           if-no-files-found: error
