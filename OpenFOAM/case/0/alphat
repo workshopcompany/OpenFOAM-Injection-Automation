@@ -1,12 +1,19 @@
 /*--------------------------------*- C++ -*----------------------------------*\
+| =========                 |                                                 |
+| \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
+|  \\    /   O peration     | Version:  v2312                                 |
+|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|    \\/     M anipulation  |                                                 |
+\*---------------------------------------------------------------------------*/
 FoamFile
 {
     version     2.0;
     format      ascii;
     class       volScalarField;
+    location    "0";
     object      alphat;
 }
-\*---------------------------------------------------------------------------*/
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 dimensions      [0 2 -1 0 0 0 0];
 
@@ -26,6 +33,13 @@ boundaryField
         value           uniform 0;
     }
 
+    "wall.*"
+    {
+        type            alphatJayatillekeWallFunction;
+        Prt             0.85;          // turbulent Prandtl number
+        value           uniform 0;
+    }
+
     atmosphere
     {
         type            calculated;
@@ -34,15 +48,8 @@ boundaryField
 
     bottom
     {
-        type            calculated;
-        value           uniform 0;
-    }
-
-    "wall.*"
-    {
-        type            compressible::alphatWallFunction;
+        type            alphatJayatillekeWallFunction;
+        Prt             0.85;
         value           uniform 0;
     }
 }
-
-// ************************************************************************* //
