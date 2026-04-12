@@ -8,8 +8,6 @@ on:
 jobs:
   run-sim:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     container: 
       image: opencfd/openfoam-run:2312
       options: --user root
@@ -20,9 +18,7 @@ jobs:
       
       - name: Install Post-Processing Dependencies
         run: |
-          rm -f /etc/apt/sources.list.d/openfoam.list || true
-          apt-get update
-          apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
+          apt-get update && apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
       
       - name: Run OpenFOAM Simulation
         shell: bash
@@ -31,23 +27,28 @@ jobs:
           bash << 'SCRIPT_END'
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
+          
+          # [체크포인트 1] 환경 변수 설정
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
           export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
+          echo "CHECK: PVPYTHON_PATH is $PVPYTHON_PATH"
           
-          # 1. 결과 폴더를 미리 만들고 권한을 완전히 개방합니다.
-          mkdir -p results
-          chmod -R 777 results
-          
+          # [체크포인트 2] 실행 및 권한
           chmod +x Allrun
-          echo "Starting Simulation..."
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
-          # 2. [중요] 컨테이너 종료 전, 생성된 파일의 권한을 다시 한번 호스트와 맞춥니다.
-          chmod -R 777 results/
-          
-          echo "===== FINAL CHECK INSIDE CONTAINER ====="
-          ls -la results/
+          # [체크포인트 3] 결과물 물리적 복사 (가장 중요)
+          # 컨테이너 전용 경로가 아닌 호스트 공유 경로(${{ github.workspace }})로 강제 복사
+          echo "Step: Syncing results to workspace..."
+          mkdir -p ${{ github.workspace }}/sync_results
+          if [ -d "results" ]; then
+            cp -rv results/* ${{ github.workspace }}/sync_results/
+            echo "CHECK: Files copied to sync_results"
+          else
+            echo "ERROR: 'results' folder not found inside container!"
+            exit 1
+          fi
           SCRIPT_END
       
       - name: Upload 3D Interactive Results
@@ -55,6 +56,5 @@ jobs:
         if: always()
         with:
           name: OpenFOAM-Web-Dashboard
-          # 가장 직관적인 상대 경로 사용 (와일드카드 없이 폴더명만 지정)
-          path: OpenFOAM/case/results
+          path: sync_results/
           if-no-files-found: error
