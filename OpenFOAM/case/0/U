@@ -1,8 +1,8 @@
 /*--------------------------------*- C++ -*----------------------------------*\
 | =========                 |                                                 |
 | \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox           |
-|  \\    /   O peration     | Version:  v2312                                 |
-|   \\  /    A nd           | Website:  www.openfoam.com                      |
+|  \\    /   O peration     | Version:  2312                                  |
+|   \\  /    A nd           | Web:      www.OpenFOAM.com                      |
 |    \\/     M anipulation  |                                                 |
 \*---------------------------------------------------------------------------*/
 FoamFile
@@ -13,7 +13,7 @@ FoamFile
     location    "0";
     object      U;
 }
-// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 dimensions      [0 1 -1 0 0 0 0];
 
@@ -24,7 +24,7 @@ boundaryField
     inlet
     {
         type            fixedValue;
-        value           uniform (0.04 0 0);   // 40 mm/s
+        value           uniform (VELOCITY_PLACEHOLDER 0 0);
     }
 
     outlet
@@ -32,7 +32,7 @@ boundaryField
         type            zeroGradient;
     }
 
-    "wall.*"
+    walls
     {
         type            noSlip;
     }
@@ -48,3 +48,5 @@ boundaryField
         type            noSlip;
     }
 }
+
+// ************************************************************************* //
