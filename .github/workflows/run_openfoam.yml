@@ -3,28 +3,18 @@ on:
   workflow_dispatch:
     inputs:
       material:
-        description: '수지 재료명 (예: PP, ABS, Nylon66)'
+        description: 'Material Name (e.g., PP, ABS, Nylon66)'
         default: 'PP'
         required: true
       velocity:
-        description: '사출 속도 (m/s)'
+        description: 'Injection Velocity (m/s)'
         default: '0.05'
-        required: true
       melt_temp:
-        description: '용융 온도 (°C)'
+        description: 'Melt Temperature (°C)'
         default: '230'
-        required: true
-      mold_temp:
-        description: '금형 온도 (°C)'
-        default: '40'
-        required: true
       end_time:
-        description: '시뮬레이션 종료 시간 (s)'
+        description: 'Simulation End Time (s)'
         default: '2'
-        required: true
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-sim:
@@ -36,44 +26,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get update && apt-get install -y --no-install-recommends \
-            python3-pip jq tzdata
-          pip3 install jinja2 --break-system-packages || pip3 install jinja2
-
-      - name: Run simulation
+      - name: Run Simulation
         shell: bash
         working-directory: OpenFOAM/case
         env:
-          MATERIAL:  ${{ github.event.inputs.material }}
-          VELOCITY:  ${{ github.event.inputs.velocity }}
+          VELOCITY: ${{ github.event.inputs.velocity }}
           MELT_TEMP: ${{ github.event.inputs.melt_temp }}
-          MOLD_TEMP: ${{ github.event.inputs.mold_temp }}
-          END_TIME:  ${{ github.event.inputs.end_time }}
+          END_TIME: ${{ github.event.inputs.end_time }}
         run: |
-          set -e
-          source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
-
-          # 숫자 정제
-          FINAL_VELOCITY=$(echo "$VELOCITY"  | sed 's/[^0-9.eE-]*//g')
-          FINAL_END_TIME=$(echo "$END_TIME"  | sed 's/[^0-9.eE-]*//g')
-          FINAL_MELT=$(echo "$MELT_TEMP"     | sed 's/[^0-9.eE-]*//g')
-          FINAL_MOLD=$(echo "$MOLD_TEMP"     | sed 's/[^0-9.eE-]*//g')
-
-          echo "MATERIAL=${MATERIAL} | V=${FINAL_VELOCITY} | Tmelt=${FINAL_MELT} | Tmold=${FINAL_MOLD} | T=${FINAL_END_TIME}"
-
           chmod +x Allrun
-          VELOCITY=$FINAL_VELOCITY \
-          END_TIME=$FINAL_END_TIME \
-          MELT_TEMP=$FINAL_MELT \
-          MOLD_TEMP=$FINAL_MOLD \
           ./Allrun
 
-      - name: Upload results
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: openfoam-results
+          name: simulation-results
           path: OpenFOAM/case/results/
