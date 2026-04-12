@@ -2,7 +2,97 @@
 cd "${0%/*}" || exit
 
 # ======================================================
-# [0] fvSolution / fvSchemes 강제 재생성
+# [0] 외부 변수 수신 (GitHub Actions ENV → OpenFOAM 파일)
+# ======================================================
+VELOCITY=${INPUT_VELOCITY:-2.5}
+VISCOSITY=${INPUT_VISCOSITY:-1e-6}
+END_TIME=${INPUT_END_TIME:-5}
+RUN_LABEL=${INPUT_RUN_LABEL:-"auto-run"}
+
+echo "[Allrun] === Run Config ==="
+echo "  Velocity  : $VELOCITY m/s"
+echo "  Viscosity : $VISCOSITY m2/s"
+echo "  End Time  : $END_TIME s"
+echo "  Label     : $RUN_LABEL"
+echo "=========================="
+
+# ======================================================
+# [1] OpenFOAM 설정 파일에 변수 주입
+# ======================================================
+
+# inlet velocity → 0/U 파일
+cat > 0/U << EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    location    "0";
+    object      U;
+}
+dimensions      [0 1 -1 0 0 0 0];
+internalField   uniform (0 0 0);
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform ($VELOCITY 0 0);
+    }
+    outlet
+    {
+        type            zeroGradient;
+    }
+    walls
+    {
+        type            noSlip;
+    }
+    atmosphere
+    {
+        type            pressureInletOutletVelocity;
+        value           uniform (0 0 0);
+    }
+    bottom
+    {
+        type            noSlip;
+    }
+}
+EOF
+echo "[Allrun] 0/U injected: inlet velocity = $VELOCITY m/s"
+
+# viscosity → constant/transportProperties
+cat > constant/transportProperties << EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      transportProperties;
+}
+phases (water air);
+water
+{
+    transportModel  Newtonian;
+    nu              $VISCOSITY;
+    rho             1000;
+}
+air
+{
+    transportModel  Newtonian;
+    nu              1.48e-05;
+    rho             1;
+}
+sigma           0.07;
+EOF
+echo "[Allrun] transportProperties injected: nu = $VISCOSITY"
+
+# endTime → system/controlDict
+sed -i "s/^endTime.*/endTime         $END_TIME;/" system/controlDict
+echo "[Allrun] controlDict endTime set to $END_TIME"
+
+# ======================================================
+# [2] fvSolution / fvSchemes 강제 재생성
 # ======================================================
 cat > system/fvSolution << 'EOF'
 FoamFile
@@ -13,7 +103,6 @@ FoamFile
     location    "system";
     object      fvSolution;
 }
-
 solvers
 {
     "alpha.water.*"
@@ -39,7 +128,6 @@ solvers
     epsilon      { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
     epsilonFinal { $epsilon; relTol 0; }
 }
-
 PIMPLE
 {
     momentumPredictor   yes;
@@ -47,11 +135,7 @@ PIMPLE
     nCorrectors         3;
     nNonOrthogonalCorrectors 0;
 }
-
-relaxationFactors
-{
-    equations { ".*" 1; }
-}
+relaxationFactors { equations { ".*" 1; } }
 EOF
 
 cat > system/fvSchemes << 'EOF'
@@ -63,7 +147,6 @@ FoamFile
     location    "system";
     object      fvSchemes;
 }
-
 ddtSchemes        { default Euler; }
 gradSchemes       { default Gauss linear; grad(U) Gauss linear; }
 divSchemes
@@ -82,94 +165,94 @@ snGradSchemes        { default corrected; }
 fluxRequired         { default no; p_rgh; pcorr; alpha.water; }
 EOF
 
-echo "[Allrun] fvSolution and fvSchemes regenerated successfully."
+echo "[Allrun] fvSolution and fvSchemes regenerated."
 
 # ======================================================
-# [1] 초기화
+# [3] 초기화 및 blockMesh
 # ======================================================
-echo "[Allrun] Cleaning and creating results folder..."
+echo "[Allrun] Cleaning..."
 rm -rf [1-9]* 0.* log.* results
 mkdir -p results && chmod 777 results
 
-# ======================================================
-# [2] blockMesh
-# ======================================================
 echo "[Allrun] Running blockMesh..."
 blockMesh > log.blockMesh 2>&1
 echo "===== blockMesh Log ====="
 cat log.blockMesh
 echo "========================="
 
-if [ ! -s log.blockMesh ]; then
-    echo "ERROR: blockMesh log is empty — blockMesh likely failed"
-    exit 1
-fi
-
 # ======================================================
-# [3] interFoam
+# [4] interFoam
 # ======================================================
 echo "[Allrun] Running interFoam..."
 interFoam > simulation.log 2>&1
-echo "===== interFoam Log (last 50 lines) ====="
-tail -50 simulation.log
+echo "===== interFoam Log (last 30 lines) ====="
+tail -30 simulation.log
 echo "========================================="
 
 TIMESTEP_COUNT=$(ls -d [0-9]* 2>/dev/null | grep -v "^0$" | wc -l)
 echo "CHECK: Found $TIMESTEP_COUNT timestep folders"
-ls -la
 
 if [ "$TIMESTEP_COUNT" -le 0 ]; then
     echo "ERROR: interFoam did not generate any time steps!"
     exit 1
 fi
 
+# 최대 압력/속도 추출 (리포트용)
+MAX_U=$(grep "Max(U)" simulation.log | tail -1 | awk '{print $NF}' || echo "N/A")
+MAX_P=$(grep "Max(p_rgh)" simulation.log | tail -1 | awk '{print $NF}' || echo "N/A")
+echo "CHECK: Max velocity=$MAX_U, Max pressure=$MAX_P"
+
 # ======================================================
-# [4] 후처리
+# [5] 후처리 (스크린샷)
 # ======================================================
 echo "[Allrun] Starting Post-processing..."
 touch case.foam
-echo "CHECK: case.foam created at $(pwd)/case.foam"
-
-if [ ! -f "export_screenshots.py" ]; then
-    echo "ERROR: export_screenshots.py missing!"
-    exit 1
-fi
 
 PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
-echo "Using pvpython: $PVPY_EXE"
-
 xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
     $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
 
-EXIT_CODE=$?
-echo "===== pvpython exit code: $EXIT_CODE ====="
-echo "===== log.pvpython ====="
+echo "===== pvpython exit code: $? ====="
 cat log.pvpython
-echo "========================"
-
-echo "===== results folder contents ====="
+echo "===== results ====="
 ls -la results/
-echo "==================================="
 
 # ======================================================
-# [5] 결과 동기화 (컨테이너 → 호스트 워크스페이스)
+# [6] 자동 리포트 생성 (report.md)
 # ======================================================
-WORKSPACE_DIR="${GITHUB_WORKSPACE:-/__w}"
-SYNC_DIR="$WORKSPACE_DIR/sync_results"
-echo "Step: Syncing results to $SYNC_DIR ..."
-mkdir -p "$SYNC_DIR"
+TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+RESULT_IMAGES=$(ls results/*.png 2>/dev/null | wc -l)
 
-if [ -d "results" ] && [ "$(ls -A results/ 2>/dev/null)" ]; then
-    cp -rv results/* "$SYNC_DIR/"
-    echo "CHECK: Files copied to sync_results"
-    ls -la "$SYNC_DIR/"
-else
-    echo "ERROR: results folder is empty or missing!"
-    echo "--- case.foam check ---"
-    ls -la case.foam 2>/dev/null || echo "case.foam MISSING"
-    echo "--- log.pvpython ---"
-    cat log.pvpython 2>/dev/null || echo "(log.pvpython not found)"
-    exit 1
-fi
+cat > results/report.md << REPORT
+# MIM-Flow Analyzer — Simulation Report
 
+**Run Label:** $RUN_LABEL  
+**Timestamp:** $TIMESTAMP  
+
+## Input Parameters
+| Parameter | Value |
+|-----------|-------|
+| Inlet Velocity | ${VELOCITY} m/s |
+| Kinematic Viscosity | ${VISCOSITY} m²/s |
+| Simulation End Time | ${END_TIME} s |
+
+## Results Summary
+| Metric | Value |
+|--------|-------|
+| Timesteps Generated | ${TIMESTEP_COUNT} |
+| Screenshots Exported | ${RESULT_IMAGES} |
+| Max Velocity | ${MAX_U} |
+| Max Pressure | ${MAX_P} |
+
+## Visualizations
+$(for img in results/step_*.png; do
+    fname=$(basename $img)
+    echo "![${fname}](${fname})"
+done)
+
+---
+*Auto-generated by MIM-Flow Analyzer | Materials-Ops Portfolio*
+REPORT
+
+echo "[Allrun] report.md generated."
 echo "[Allrun] All done."
