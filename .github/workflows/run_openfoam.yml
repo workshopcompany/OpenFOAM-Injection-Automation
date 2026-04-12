@@ -21,14 +21,12 @@ on:
         required: false
 
 env:
-  # Node.js 20 지원 중단 대응 및 최신 런타임 강제 사용
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-sim:
     runs-on: ubuntu-latest
     container:
-      # 컨테이너 환경을 사용하여 설치 시간 단축
       image: opencfd/openfoam-run:2312
       options: --user root
 
@@ -44,26 +42,37 @@ jobs:
             xvfb libgl1-mesa-glx libglu1-mesa libxcursor1 \
             python3-pip \
             tzdata
-          # Jinja2 설치 (환경에 따라 최적화)
-          pip3 install jinja2 || pip3 install jinja2 --break-system-packages
+          pip3 install jinja2 --break-system-packages || pip3 install jinja2
 
       - name: Run OpenFOAM Simulation
         shell: bash
         working-directory: OpenFOAM/case
         env:
-          INPUT_VELOCITY: ${{ github.event.inputs.velocity || '2.5' }}
-          INPUT_VISCOSITY: ${{ github.event.inputs.viscosity || '1e-6' }}
-          INPUT_END_TIME: ${{ github.event.inputs.end_time || '5' }}
-          INPUT_RUN_LABEL: ${{ github.event.inputs.run_label || 'auto-run' }}
+          INPUT_VELOCITY: ${{ github.event.inputs.velocity }}
+          INPUT_VISCOSITY: ${{ github.event.inputs.viscosity }}
+          INPUT_END_TIME: ${{ github.event.inputs.end_time }}
         run: |
           set -e
-          # OpenFOAM 환경 변수 로드
+          # OpenFOAM 환경 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
-          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
+          echo ">>> [MIM-Ops] 파라미터 매핑 시작"
+          echo "Target Velocity: $INPUT_VELOCITY"
+          echo "Target Viscosity: $INPUT_VISCOSITY"
+          echo "Target EndTime: $INPUT_END_TIME"
+
+          # 1. 0/U 파일 수정 (입구 유속 주입)
+          # inlet 경계조건 블록을 찾아 value uniform (X 0 0) 형태로 변경
+          sed -i "/inlet/,/}/ s/value           uniform (.* 0 0);/value           uniform ($INPUT_VELOCITY 0 0);/" 0/U
           
-          # 실행 권한 부여 및 Allrun 스크립트 실행
+          # 2. constant/transportProperties 수정 (점도 주입)
+          # nu [0 2 -1 0 0 0 0] 뒤의 수치를 변경
+          sed -i "s/nu.*\[0 2 -1 0 0 0 0\].*;/nu [0 2 -1 0 0 0 0] $INPUT_VISCOSITY;/" constant/transportProperties
+
+          # 3. system/controlDict 수정 (해석 종료 시간 주입)
+          sed -i "s/endTime         .*;/endTime         $INPUT_END_TIME;/" system/controlDict
+
+          # 실행 권한 부여 및 Allrun 실행
           chmod +x Allrun
           ./Allrun
 
@@ -72,8 +81,5 @@ jobs:
         if: always()
         with:
           name: OpenFOAM-Web-Dashboard
-          # 컨테이너 내부 경로 문제를 피하기 위해 레포지토리 루트 기준 상대 경로를 직접 사용합니다.
-          # OpenFOAM/case/results 폴더에 생성된 모든 리포트와 이미지를 업로드합니다.
           path: OpenFOAM/case/results/
-          # 결과 파일이 없을 경우 에러를 내지 않고 워크플로우를 유지하려면 아래 옵션 추가
           if-no-files-found: warn
