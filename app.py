@@ -2,146 +2,164 @@ import streamlit as st
 import requests
 import json
 import time
-import google.generativeai as genai
+from datetime import datetime
 
-# --- 1. SECURITY CONFIGURATION ---
-# IMPORTANT: Do not hardcode keys. 
-# Local: Create '.streamlit/secrets.toml'
-# Streamlit Cloud: Set in 'Settings > Secrets'
-try:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-    ZAPIER_WEBHOOK_URL = st.secrets["ZAPIER_WEBHOOK_URL"]
-    
-    # Gemini AI Setup
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-except Exception as e:
-    st.error("Missing Secrets: Please configure GEMINI_API_KEY and ZAPIER_WEBHOOK_URL.")
-    st.stop()
+# ── 설정 ──────────────────────────────────────────────
+GITHUB_TOKEN  = st.secrets["GITHUB_TOKEN"]
+GITHUB_OWNER  = st.secrets["GITHUB_OWNER"]   # e.g. "workshopcompany"
+GITHUB_REPO   = st.secrets["GITHUB_REPO"]    # e.g. "OpenFOAM-Injection-Automation"
+WORKFLOW_ID   = "run_openfoam.yml"
 
-# --- 2. MATERIAL DATABASE ---
-MATERIAL_DB = {
-    "MIM (Metal Injection Molding)": {
-        "metals": ["SUS630 (17-4PH)", "Inconel", "Ti", "Al", "Cu"],
-        "binders": ["Wax-base", "POM-base"]
-    },
-    "Super Engineering Plastics": ["PEEK", "PPS"],
-    "Hot & Bio (Eco/EV)": ["PLA", "PHA", "EV Thermal Plastic"],
-    "General Plastics": ["ABS", "PC", "PP", "POM", "PA66+GF30", "PC+ABS"]
+HEADERS = {
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
 }
 
-st.set_page_config(page_title="MIM AI Simulator", layout="wide")
+# ── 페이지 설정 ────────────────────────────────────────
+st.set_page_config(
+    page_title="MIM-Flow Analyzer",
+    page_icon="🌊",
+    layout="wide"
+)
 
-# --- 3. AI LOGIC FUNCTION ---
-def get_ai_injection_setup(material_name):
-    prompt = f"""
-    You are an expert injection molding engineer. 
-    Provide optimal simulation parameters for {material_name}.
-    MIM-specific constraints: 
-    - If Wax-base: Nozzle 175C, Mold 35C, Speed 30-40mm/s.
-    - If POM-base: Nozzle 180C, Mold 80C, Speed 40-50mm/s.
-    
-    Return ONLY a JSON object:
-    {{
-        "density": <float in kg/m3>,
-        "thermal_conductivity": <float in W/mK>,
-        "heat_capacity": <float in J/kgK>,
-        "nozzle_temp": <int in Celsius>,
-        "mold_temp": <int in Celsius>,
-        "injection_speed": <int in mm/s>,
-        "gate_qty": 1,
-        "gate_loc": "[0.001, 0.001, 0.001]"
-    }}
-    """
-    try:
-        response = model.generate_content(prompt)
-        json_str = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(json_str)
-    except Exception as e:
-        st.error(f"AI Suggestion Error: {e}")
-        return None
+st.title("🌊 MIM-Flow Analyzer")
+st.caption("Materials-Ops Portfolio | Auto-CFD Module v1.0")
+st.divider()
 
-# --- 4. UI LAYOUT ---
-st.title("🚀 MIM & Plastic Injection AI Simulator")
-st.caption("14+ Years Materials Engineering Expertise Integrated")
-st.markdown("---")
+# ── 사이드바: 입력 파라미터 ────────────────────────────
+with st.sidebar:
+    st.header("⚙️ Simulation Parameters")
 
-col1, col2 = st.columns(2)
+    velocity = st.slider(
+        "Inlet Velocity (m/s)",
+        min_value=0.5, max_value=10.0,
+        value=2.5, step=0.5
+    )
+    viscosity = st.selectbox(
+        "Fluid (Kinematic Viscosity)",
+        options={
+            "Water (1e-6)": "1e-6",
+            "Oil (1e-4)":   "1e-4",
+            "Air (1.5e-5)": "1.5e-5"
+        }.keys()
+    )
+    viscosity_map = {
+        "Water (1e-6)": "1e-6",
+        "Oil (1e-4)":   "1e-4",
+        "Air (1.5e-5)": "1.5e-5"
+    }
+    end_time = st.slider(
+        "Simulation End Time (s)",
+        min_value=1, max_value=20,
+        value=5, step=1
+    )
+    run_label = st.text_input(
+        "Run Label",
+        value=f"run-{datetime.now().strftime('%m%d-%H%M')}"
+    )
+
+    st.divider()
+    run_button = st.button("🚀 Run Simulation", type="primary", use_container_width=True)
+
+# ── 메인: 상태 및 결과 ─────────────────────────────────
+col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("1. Geometry & Gate Upload")
-    uploaded_file = st.file_uploader("Upload STL File", type=['stl'])
-    if uploaded_file:
-        # AUTOMATICALLY RENAME TO mold.stl FOR OPENFOAM CONSISTENCY
-        uploaded_file.name = "mold.stl"
-        st.info(f"File processed as: **{uploaded_file.name}**")
+    st.subheader("📊 Current Parameters")
+    st.json({
+        "velocity":  f"{velocity} m/s",
+        "viscosity": viscosity_map[viscosity],
+        "end_time":  f"{end_time} s",
+        "label":     run_label
+    })
 
 with col2:
-    st.subheader("2. Material Selection")
-    category = st.selectbox("Select Category", list(MATERIAL_DB.keys()))
-    
-    if category == "MIM (Metal Injection Molding)":
-        m = st.selectbox("Metal Type", MATERIAL_DB[category]["metals"])
-        b = st.selectbox("Binder System", MATERIAL_DB[category]["binders"])
-        target_material = f"{m} {b}"
+    st.subheader("📈 Reynolds Number Preview")
+    L = 0.05  # characteristic length (m) — 채널 높이
+    nu = float(viscosity_map[viscosity])
+    Re = velocity * L / nu
+    st.metric("Re", f"{Re:,.0f}")
+    if Re < 2300:
+        st.success("🟢 Laminar Flow")
+    elif Re < 4000:
+        st.warning("🟡 Transitional Flow")
     else:
-        target_material = st.selectbox("Material Type", MATERIAL_DB[category])
+        st.error("🔴 Turbulent Flow")
 
-# --- 5. AI SUGGESTION & FORM ---
-st.markdown("---")
-st.subheader("3. AI-Powered Process Optimization")
+st.divider()
 
-if st.button("Generate Optimized Setup"):
-    with st.spinner("Gemini AI calculating optimal parameters..."):
-        setup_data = get_ai_injection_setup(target_material)
-        if setup_data:
-            st.session_state['current_setup'] = setup_data
+# ── 시뮬레이션 트리거 ──────────────────────────────────
+def trigger_workflow(velocity, viscosity, end_time, run_label):
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/workflows/{WORKFLOW_ID}/dispatches"
+    payload = {
+        "ref": "main",
+        "inputs": {
+            "velocity":   str(velocity),
+            "viscosity":  viscosity_map[viscosity],
+            "end_time":   str(end_time),
+            "run_label":  run_label
+        }
+    }
+    res = requests.post(url, headers=HEADERS, json=payload)
+    return res.status_code == 204
 
-if 'current_setup' in st.session_state:
-    setup = st.session_state['current_setup']
-    
-    with st.form("confirm_setup"):
-        st.warning("⚡ AI suggested the following parameters. Adjust if needed.")
-        
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("#### 🧪 Material Properties")
-            rho = st.number_input("Density (kg/m³)", value=float(setup['density']))
-            k = st.number_input("Thermal Cond. (W/m·K)", value=float(setup['thermal_conductivity']))
-            cp = st.number_input("Heat Capacity (J/kg·K)", value=float(setup['heat_capacity']))
-            
-        with c2:
-            st.markdown("#### ⚙️ Machine Settings")
-            t_n = st.number_input("Nozzle Temperature (℃)", value=int(setup['nozzle_temp']))
-            t_m = st.number_input("Mold Temperature (℃)", value=int(setup['mold_temp']))
-            v_i = st.number_input("Injection Speed (mm/s)", value=int(setup['injection_speed']))
-            
-        with c3:
-            st.markdown("#### 🎯 Gate Setup")
-            g_q = st.number_input("Number of Gates", value=int(setup['gate_qty']))
-            g_l = st.text_input("Gate Coordinates [X, Y, Z]", value=setup['gate_loc'])
+def get_latest_run():
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/runs?per_page=1"
+    res = requests.get(url, headers=HEADERS)
+    runs = res.json().get("workflow_runs", [])
+    return runs[0] if runs else None
 
-        if st.form_submit_button("Approve & Trigger Simulation", type="primary"):
-            final_payload = {
-                "material": target_material,
-                "properties": {"rho": rho, "k": k, "cp": cp},
-                "machine": {"nozzle": t_n, "mold": t_m, "speed": v_i},
-                "gate": {"qty": g_q, "loc": g_l}
-            }
-            # Send to GitHub Actions via Zapier
-            try:
-                requests.post(ZAPIER_WEBHOOK_URL, json=final_payload)
-                st.success("✅ Job dispatched! Check GitHub Actions for progress.")
-                st.session_state['sim_status'] = "Running"
-            except Exception as e:
-                st.error(f"Webhook Error: {e}")
+def get_latest_artifact_url():
+    url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/actions/artifacts?per_page=1"
+    res = requests.get(url, headers=HEADERS)
+    artifacts = res.json().get("artifacts", [])
+    if artifacts:
+        return artifacts[0]["archive_download_url"], artifacts[0]["id"]
+    return None, None
 
-# --- 6. RESULTS VISUALIZATION ---
-st.markdown("---")
-if st.session_state.get('sim_status') == "Running":
-    st.subheader("4. Real-time Flow & Thermal Visualization")
-    st.info("Generating filling sequences and thermal gradient maps...")
-    
-    step = st.slider("Select Filling Step (1-10)", 1, 10, 1)
-    # Placeholder: Replace with actual GitHub artifact URL logic later
-    st.image(f"https://via.placeholder.com/1000x500.png?text=Step+{step}:+Filling+Pattern+%26+Thermal+Map", use_container_width=True)
+if run_button:
+    with st.status("🔄 Submitting simulation...", expanded=True) as status:
+        st.write("Sending parameters to GitHub Actions...")
+        success = trigger_workflow(velocity, viscosity, end_time, run_label)
+
+        if not success:
+            status.update(label="❌ Failed to trigger workflow", state="error")
+            st.error("GitHub API 호출 실패. GITHUB_TOKEN 권한을 확인하세요.")
+            st.stop()
+
+        st.write("✅ Workflow triggered! Waiting for completion...")
+        time.sleep(5)
+
+        # 완료 대기 (최대 10분)
+        for i in range(60):
+            run = get_latest_run()
+            if run:
+                run_status     = run.get("status")
+                run_conclusion = run.get("conclusion")
+                st.write(f"  [{i*10}s] status: {run_status} | conclusion: {run_conclusion}")
+
+                if run_status == "completed":
+                    if run_conclusion == "success":
+                        status.update(label="✅ Simulation complete!", state="complete")
+                    else:
+                        status.update(label=f"❌ Simulation failed: {run_conclusion}", state="error")
+                    break
+            time.sleep(10)
+
+# ── 결과 표시 ──────────────────────────────────────────
+st.subheader("🖼️ Latest Simulation Results")
+
+artifact_url, artifact_id = get_latest_artifact_url()
+
+if artifact_id:
+    st.info(f"Artifact ID: `{artifact_id}` — GitHub Actions에서 다운로드 가능")
+    st.markdown(
+        f"[📦 Download Results](https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/actions)",
+        unsafe_allow_html=False
+    )
+else:
+    st.warning("아직 실행된 결과가 없습니다. 시뮬레이션을 실행해보세요.")
+
+st.divider()
+st.caption("MIM-Flow Analyzer · Materials-Ops Portfolio · Auto-CFD Module v1.0")
