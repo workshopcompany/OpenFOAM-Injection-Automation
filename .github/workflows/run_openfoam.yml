@@ -16,7 +16,6 @@ on:
 jobs:
   run-sim:
     runs-on: ubuntu-latest
-    # Change to 'dev' image to ensure all tools (surfaceTransformPoints, etc.) are available
     container:
       image: opencfd/openfoam-dev:2312
       options: --user root
@@ -25,17 +24,27 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Run Simulation
+      - name: Run Simulation with Detailed Logging
         shell: bash
         working-directory: OpenFOAM/case
+        env:
+          VELOCITY: ${{ github.event.inputs.velocity }}
+          END_TIME: ${{ github.event.inputs.end_time }}
         run: |
-          # CRITICAL: Source OpenFOAM environment
-          if [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ]; then
-            . /usr/lib/openfoam/openfoam2312/etc/bashrc
-          fi
+          # 1. Load OpenFOAM environment
+          echo ">>> Loading OpenFOAM v2312 environment..."
+          . /usr/lib/openfoam/openfoam2312/etc/bashrc
           
+          # 2. Setup permissions
           chmod +x Allrun
-          ./Allrun
+          
+          # 3. Execute and capture error logs
+          echo ">>> Starting Allrun script..."
+          ./Allrun || { 
+            echo "❌ Simulation Failed at Allrun. Printing last 20 lines of solver log:";
+            tail -n 20 logs/solver.log;
+            exit 1; 
+          }
 
       - name: Upload Artifacts
         if: always()
