@@ -13,8 +13,8 @@ def get_secret(key):
         st.error(f"⚠️ 보안 설정(Secrets)에 **{key}**가 등록되지 않았습니다.")
         return None
 
-# Secrets에서 값 가져오기
-ZAPIER_WEBHOOK_URL = get_secret("ZAPIER_WEB_URL")
+# app.py 상단 설정 부분을 이렇게 수정하세요
+ZAPIER_WEBHOOK_URL = get_secret("ZAPIER_WEBHOOK_URL") # _WEB_URL에서 _WEBHOOK_URL로 수정
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
 
 REPO_OWNER = "workshopcompany"
