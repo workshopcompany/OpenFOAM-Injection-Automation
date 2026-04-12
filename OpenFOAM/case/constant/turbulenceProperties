@@ -1,0 +1,30 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  2312
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      turbulenceProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+simulationType  RAS; // Reynolds-Averaged Simulation
+
+RAS
+{
+    // 표준 k-epsilon 모델 (MIM 공정 등 일반적인 산업 유동에 가장 많이 쓰임)
+    RASModel        kEpsilon;
+
+    turbulence      on;
+
+    printCoeffs     on;
+}
+
+// ************************************************************************* //
