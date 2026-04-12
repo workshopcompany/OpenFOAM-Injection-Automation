@@ -9,7 +9,6 @@ jobs:
   run-sim:
     runs-on: ubuntu-latest
     env:
-      # Node.js 20 경고 해결
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     container: 
       image: opencfd/openfoam-run:2312
@@ -22,7 +21,7 @@ jobs:
       - name: Install Post-Processing Dependencies
         run: |
           apt-get update
-          # ParaView와 가상 화면 실행을 위한 필수 패키지 설치
+          # ParaView와 가상 화면 실행을 위한 필수 패키지들을 모두 설치합니다.
           apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
       
       - name: Run OpenFOAM Simulation
@@ -31,27 +30,24 @@ jobs:
         run: |
           bash << 'SCRIPT_END'
           set -e
+          # OpenFOAM 환경 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          # ✅ 핵심: pvpython의 실제 위치를 찾아 환경변수로 등록
-          REAL_PVPYTHON=$(find /usr/bin -name "pvpython" | head -n 1)
-          if [ -z "$REAL_PVPYTHON" ]; then
-            echo "Error: pvpython not found in /usr/bin. Checking alternative paths..."
-            REAL_PVPYTHON=$(which pvpython || echo "/usr/bin/pvpython")
-          fi
-          export PVPYTHON_BIN=$REAL_PVPYTHON
-          echo "Using pvpython path: $PVPYTHON_BIN"
+          # ✅ pvpython의 절대 경로를 미리 파악합니다.
+          PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
+          export PVPYTHON_PATH
+          echo "Using pvpython at: $PVPYTHON_PATH"
           
           chmod +x Allrun
           
-          echo "Starting Simulation..."
           # xvfb-run을 통해 가상 모니터 환경에서 Allrun 실행
-          xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" ./Allrun
+          # --server-args 설정을 통해 렌더링에 필요한 충분한 메모리를 확보합니다.
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
-          echo "===== DEBUG: pvpython log output ====="
+          echo "===== DEBUG: log.pvpython output ====="
           cat log.pvpython || echo "No log.pvpython found"
           
-          echo "===== DEBUG: screenshots folder check ====="
+          echo "===== DEBUG: screenshots check ====="
           ls -la screenshots/
           SCRIPT_END
       
