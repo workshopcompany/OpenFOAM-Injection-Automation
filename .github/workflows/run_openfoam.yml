@@ -1,25 +1,31 @@
-name: OpenFOAM Simulation
+name: MIM-Ops Flow Analysis
 on:
   workflow_dispatch:
     inputs:
-      velocity:
-        description: 'Inlet Velocity (m/s)'
-        default: '2.5'
+      material:
+        description: '수지 재료명 (예: PP, ABS, Nylon66)'
+        default: 'PP'
         required: true
-      viscosity:
-        description: 'Kinematic Viscosity (m2/s)'
-        default: '1e-6'
+      velocity:
+        description: '사출 속도 (m/s)'
+        default: '0.05'
+        required: true
+      melt_temp:
+        description: '용융 온도 (°C)'
+        default: '230'
+        required: true
+      mold_temp:
+        description: '금형 온도 (°C)'
+        default: '40'
         required: true
       end_time:
-        description: 'Simulation End Time (s)'
-        default: '5'
+        description: '시뮬레이션 종료 시간 (s)'
+        default: '2'
         required: true
-      run_label:
-        description: 'Run Label (for report)'
-        default: 'default-run'
-        required: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-sim:
     runs-on: ubuntu-latest
@@ -27,66 +33,47 @@ jobs:
       image: opencfd/openfoam-run:2312
       options: --user root
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update && apt-get install -y --no-install-recommends \
-            python3-pip \
-            jq \
-            tzdata
+            python3-pip jq tzdata
           pip3 install jinja2 --break-system-packages || pip3 install jinja2
 
-      - name: Run OpenFOAM Simulation
+      - name: Run simulation
         shell: bash
         working-directory: OpenFOAM/case
         env:
-          RAW_V: ${{ github.event.inputs.velocity }}
-          RAW_N: ${{ github.event.inputs.viscosity }}
-          RAW_E: ${{ github.event.inputs.end_time }}
+          MATERIAL:  ${{ github.event.inputs.material }}
+          VELOCITY:  ${{ github.event.inputs.velocity }}
+          MELT_TEMP: ${{ github.event.inputs.melt_temp }}
+          MOLD_TEMP: ${{ github.event.inputs.mold_temp }}
+          END_TIME:  ${{ github.event.inputs.end_time }}
         run: |
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
 
-          echo ">>> [MIM-Ops] JSON 파싱 시작 (Safe Mode)"
+          # 숫자 정제
+          FINAL_VELOCITY=$(echo "$VELOCITY"  | sed 's/[^0-9.eE-]*//g')
+          FINAL_END_TIME=$(echo "$END_TIME"  | sed 's/[^0-9.eE-]*//g')
+          FINAL_MELT=$(echo "$MELT_TEMP"     | sed 's/[^0-9.eE-]*//g')
+          FINAL_MOLD=$(echo "$MOLD_TEMP"     | sed 's/[^0-9.eE-]*//g')
 
-          if echo "$RAW_V" | jq -e . >/dev/null 2>&1; then
-            echo "JSON input detected."
-            V_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_V" '.velocity // $default')
-            N_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_N" '.viscosity // $default')
-            E_VAL=$(echo "$RAW_V" | jq -r --arg default "$RAW_E" '.end_time // $default')
-          else
-            echo "Standard text input detected."
-            V_VAL=$RAW_V
-            N_VAL=$RAW_N
-            E_VAL=$RAW_E
-          fi
+          echo "MATERIAL=${MATERIAL} | V=${FINAL_VELOCITY} | Tmelt=${FINAL_MELT} | Tmold=${FINAL_MOLD} | T=${FINAL_END_TIME}"
 
-          FINAL_VELOCITY=$(echo "$V_VAL" | sed 's/[^0-9.eE-]*//g')
-          FINAL_VISCOSITY=$(echo "$N_VAL" | sed 's/[^0-9.eE-]*//g')
-          FINAL_END_TIME=$(echo "$E_VAL" | sed 's/[^0-9.eE-]*//g')
-
-          echo "Final Cleaned Values -> Velocity: $FINAL_VELOCITY, Viscosity: $FINAL_VISCOSITY, EndTime: $FINAL_END_TIME"
-
-          # 0/U 수정
-          sed -i "/inlet/,/}/ s/value[[:space:]]*uniform[[:space:]]*(.* 0 0);/value           uniform ($FINAL_VELOCITY 0 0);/" 0/U
-
-          # constant/transportProperties 수정 (차원 표기 형식에 맞춤)
-          sed -i "s/nu[[:space:]]*\[0 2 -1 0 0 0 0\][[:space:]]*[0-9.eE-]*;/nu              [0 2 -1 0 0 0 0] $FINAL_VISCOSITY;/" constant/transportProperties
-
-          # ❌ controlDict sed 완전 제거 — Allrun이 직접 생성하므로 불필요
-
-          echo ">>> 파일 수정 완료. Allrun 실행."
           chmod +x Allrun
+          VELOCITY=$FINAL_VELOCITY \
+          END_TIME=$FINAL_END_TIME \
+          MELT_TEMP=$FINAL_MELT \
+          MOLD_TEMP=$FINAL_MOLD \
+          ./Allrun
 
-          # Allrun에 파라미터 환경변수로 전달
-          VELOCITY=$FINAL_VELOCITY VISCOSITY=$FINAL_VISCOSITY END_TIME=$FINAL_END_TIME ./Allrun
-
-      - name: Upload Artifact
+      - name: Upload results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: OpenFOAM-Web-Dashboard
+          name: openfoam-results
           path: OpenFOAM/case/results/
