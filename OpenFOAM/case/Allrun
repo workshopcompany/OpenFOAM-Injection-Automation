@@ -2,7 +2,16 @@
 cd "${0%/*}" || exit
 
 # ======================================================
-# [0] 외부 변수 수신 (GitHub Actions ENV → OpenFOAM 파일)
+# [0] 초기 클린 (🔥 가장 먼저!)
+# ======================================================
+echo "[Allrun] Cleaning..."
+rm -rf [1-9]* log.* results
+rm -rf 0
+mkdir -p 0 results
+chmod 777 results
+
+# ======================================================
+# [1] 외부 변수 수신
 # ======================================================
 VELOCITY=${INPUT_VELOCITY:-2.5}
 VISCOSITY=${INPUT_VISCOSITY:-1e-6}
@@ -17,10 +26,10 @@ echo "  Label     : $RUN_LABEL"
 echo "=========================="
 
 # ======================================================
-# [1] OpenFOAM 설정 파일에 변수 주입
+# [2] 0/ 초기조건 생성 (🔥 필수 3종)
 # ======================================================
 
-# inlet velocity → 0/U 파일
+# ---- U ----
 cat > 0/U << EOF
 FoamFile
 {
@@ -58,9 +67,91 @@ boundaryField
     }
 }
 EOF
-echo "[Allrun] 0/U injected: inlet velocity = $VELOCITY m/s"
 
-# viscosity → constant/transportProperties
+# ---- p_rgh ----
+cat > 0/p_rgh << EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      p_rgh;
+}
+dimensions      [1 -1 -2 0 0 0 0];
+internalField   uniform 0;
+boundaryField
+{
+    inlet
+    {
+        type            fixedFluxPressure;
+    }
+    outlet
+    {
+        type            fixedValue;
+        value           uniform 0;
+    }
+    walls
+    {
+        type            fixedFluxPressure;
+    }
+    atmosphere
+    {
+        type            totalPressure;
+        p0              uniform 0;
+    }
+    bottom
+    {
+        type            fixedFluxPressure;
+    }
+}
+EOF
+
+# ---- alpha.water ----
+cat > 0/alpha.water << EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      alpha.water;
+}
+dimensions      [0 0 0 0 0 0 0];
+internalField   uniform 0;
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform 1;
+    }
+    outlet
+    {
+        type            zeroGradient;
+    }
+    walls
+    {
+        type            zeroGradient;
+    }
+    atmosphere
+    {
+        type            inletOutlet;
+        inletValue      uniform 0;
+        value           uniform 0;
+    }
+    bottom
+    {
+        type            zeroGradient;
+    }
+}
+EOF
+
+echo "[Allrun] 0/ fields generated."
+
+# ======================================================
+# [3] transportProperties
+# ======================================================
 cat > constant/transportProperties << EOF
 FoamFile
 {
@@ -71,28 +162,33 @@ FoamFile
     object      transportProperties;
 }
 phases (water air);
+
 water
 {
     transportModel  Newtonian;
     nu              $VISCOSITY;
     rho             1000;
 }
+
 air
 {
     transportModel  Newtonian;
     nu              1.48e-05;
     rho             1;
 }
+
 sigma           0.07;
 EOF
-echo "[Allrun] transportProperties injected: nu = $VISCOSITY"
 
-# endTime → system/controlDict
-sed -i "s/^endTime.*/endTime         $END_TIME;/" system/controlDict
-echo "[Allrun] controlDict endTime set to $END_TIME"
+echo "[Allrun] transportProperties set."
 
 # ======================================================
-# [2] fvSolution / fvSchemes 강제 재생성
+# [4] controlDict 수정
+# ======================================================
+sed -i "s/^endTime.*/endTime         $END_TIME;/" system/controlDict
+
+# ======================================================
+# [5] fvSolution / fvSchemes
 # ======================================================
 cat > system/fvSolution << 'EOF'
 FoamFile
@@ -107,35 +203,19 @@ solvers
 {
     "alpha.water.*"
     {
-        cAlpha          1;
-        nAlphaCorr      1;
-        nAlphaSubCycles 2;
-        MULESCorr       yes;
-        nLimiterIter    3;
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        tolerance       1e-8;
-        relTol          0;
+        solver smoothSolver;
+        smoother symGaussSeidel;
+        tolerance 1e-8;
+        relTol 0;
     }
-    p_rgh        { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0.05; }
-    p_rghFinal   { $p_rgh; relTol 0; }
-    pcorr        { solver PCG; preconditioner DIC; tolerance 1e-5; relTol 0; }
-    pcorrFinal   { $pcorr; relTol 0; }
-    U            { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
-    UFinal       { $U; relTol 0; }
-    k            { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
-    kFinal       { $k; relTol 0; }
-    epsilon      { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
-    epsilonFinal { $epsilon; relTol 0; }
+    p_rgh { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0.05; }
+    U { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
 }
 PIMPLE
 {
-    momentumPredictor   yes;
-    nOuterCorrectors    1;
-    nCorrectors         3;
-    nNonOrthogonalCorrectors 0;
+    nOuterCorrectors 1;
+    nCorrectors 2;
 }
-relaxationFactors { equations { ".*" 1; } }
 EOF
 
 cat > system/fvSchemes << 'EOF'
@@ -148,111 +228,45 @@ FoamFile
     object      fvSchemes;
 }
 ddtSchemes        { default Euler; }
-gradSchemes       { default Gauss linear; grad(U) Gauss linear; }
+gradSchemes       { default Gauss linear; }
 divSchemes
 {
-    default                                     none;
-    div(rhoPhi,U)                               Gauss linearUpwind grad(U);
-    div(phi,alpha)                              Gauss vanLeer;
-    div(phirb,alpha)                            Gauss linear;
-    div(phi,k)                                  Gauss upwind;
-    div(phi,epsilon)                            Gauss upwind;
-    div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
+    default none;
+    div(rhoPhi,U) Gauss linearUpwind grad(U);
+    div(phi,alpha) Gauss vanLeer;
 }
-laplacianSchemes     { default Gauss linear corrected; }
+laplacianSchemes { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
-snGradSchemes        { default corrected; }
-fluxRequired         { default no; p_rgh; pcorr; alpha.water; }
+snGradSchemes { default corrected; }
 EOF
 
-echo "[Allrun] fvSolution and fvSchemes regenerated."
+echo "[Allrun] fv files generated."
 
 # ======================================================
-# [3] 초기화 및 blockMesh
+# [6] mesh
 # ======================================================
-echo "[Allrun] Cleaning..."
-rm -rf [1-9]* 0.* log.* results
-mkdir -p results && chmod 777 results
-
 echo "[Allrun] Running blockMesh..."
 blockMesh > log.blockMesh 2>&1
-echo "===== blockMesh Log ====="
-cat log.blockMesh
-echo "========================="
+tail -20 log.blockMesh
 
 # ======================================================
-# [4] interFoam
+# [7] solver
 # ======================================================
 echo "[Allrun] Running interFoam..."
 interFoam > simulation.log 2>&1
-echo "===== interFoam Log (last 30 lines) ====="
-tail -30 simulation.log
-echo "========================================="
 
+echo "===== interFoam tail ====="
+tail -30 simulation.log
+
+# ======================================================
+# [8] 결과 확인
+# ======================================================
 TIMESTEP_COUNT=$(ls -d [0-9]* 2>/dev/null | grep -v "^0$" | wc -l)
 echo "CHECK: Found $TIMESTEP_COUNT timestep folders"
 
 if [ "$TIMESTEP_COUNT" -le 0 ]; then
-    echo "ERROR: interFoam did not generate any time steps!"
+    echo "ERROR: No timesteps generated"
     exit 1
 fi
 
-# 최대 압력/속도 추출 (리포트용)
-MAX_U=$(grep "Max(U)" simulation.log | tail -1 | awk '{print $NF}' || echo "N/A")
-MAX_P=$(grep "Max(p_rgh)" simulation.log | tail -1 | awk '{print $NF}' || echo "N/A")
-echo "CHECK: Max velocity=$MAX_U, Max pressure=$MAX_P"
-
-# ======================================================
-# [5] 후처리 (스크린샷)
-# ======================================================
-echo "[Allrun] Starting Post-processing..."
-touch case.foam
-
-PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
-xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" \
-    $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
-
-echo "===== pvpython exit code: $? ====="
-cat log.pvpython
-echo "===== results ====="
-ls -la results/
-
-# ======================================================
-# [6] 자동 리포트 생성 (report.md)
-# ======================================================
-TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
-RESULT_IMAGES=$(ls results/*.png 2>/dev/null | wc -l)
-
-cat > results/report.md << REPORT
-# MIM-Flow Analyzer — Simulation Report
-
-**Run Label:** $RUN_LABEL  
-**Timestamp:** $TIMESTAMP  
-
-## Input Parameters
-| Parameter | Value |
-|-----------|-------|
-| Inlet Velocity | ${VELOCITY} m/s |
-| Kinematic Viscosity | ${VISCOSITY} m²/s |
-| Simulation End Time | ${END_TIME} s |
-
-## Results Summary
-| Metric | Value |
-|--------|-------|
-| Timesteps Generated | ${TIMESTEP_COUNT} |
-| Screenshots Exported | ${RESULT_IMAGES} |
-| Max Velocity | ${MAX_U} |
-| Max Pressure | ${MAX_P} |
-
-## Visualizations
-$(for img in results/step_*.png; do
-    fname=$(basename $img)
-    echo "![${fname}](${fname})"
-done)
-
----
-*Auto-generated by MIM-Flow Analyzer | Materials-Ops Portfolio*
-REPORT
-
-echo "[Allrun] report.md generated."
-echo "[Allrun] All done."
+echo "[Allrun] SUCCESS"
