@@ -2,8 +2,8 @@ name: OpenFOAM PimpleFoam Simulation
 
 on:
   push:
-    branches: [ "main" ]  # 메인에 푸시될 때마다 실행
-  workflow_dispatch:      # [Actions] 탭에서 버튼으로 수동 실행 가능하게 함
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   run-sim:
@@ -11,21 +11,21 @@ jobs:
     container: 
       image: opencfd/openfoam-run:2312
       options: --user root
-
+    
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Install ParaView (for pvpython)
         run: |
           apt-get update
           apt-get install -y paraview
-
+      
       - name: Run OpenFOAM and Post-processing
-        shell: bash  # bash 명시
+        shell: bash
         run: |
-          source /opt/openfoam10/etc/bashrc
+          source /usr/bin/openfoam2312
           ./Allrun
-
+      
       - name: Upload Screenshots
         uses: actions/upload-artifact@v4
         with:
