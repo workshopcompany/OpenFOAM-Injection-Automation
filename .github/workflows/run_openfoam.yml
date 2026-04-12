@@ -5,52 +5,59 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-sim:
     runs-on: ubuntu-latest
-    container: 
+    container:
       image: opencfd/openfoam-run:2312
       options: --user root
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Install Post-Processing Dependencies
         run: |
-          apt-get update && apt-get install -y paraview python3-paraview xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
-      
+          apt-get update && apt-get install -y \
+            paraview python3-paraview \
+            xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
+
       - name: Run OpenFOAM Simulation
         shell: bash
         working-directory: OpenFOAM/case
         run: |
-          bash << 'SCRIPT_END'
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
-          
-          # [체크포인트 1] 환경 변수 설정
+
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
           export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           echo "CHECK: PVPYTHON_PATH is $PVPYTHON_PATH"
-          
-          # [체크포인트 2] 실행 및 권한
+
           chmod +x Allrun
-          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
-          
-          # [체크포인트 3] 결과물 물리적 복사 (가장 중요)
-          # 컨테이너 전용 경로가 아닌 호스트 공유 경로(${{ github.workspace }})로 강제 복사
+          ./Allrun
+
+      - name: Sync Results to Workspace
+        if: always()
+        shell: bash
+        working-directory: OpenFOAM/case
+        run: |
           echo "Step: Syncing results to workspace..."
           mkdir -p ${{ github.workspace }}/sync_results
-          if [ -d "results" ]; then
+
+          if [ -d "results" ] && [ "$(ls -A results/ 2>/dev/null)" ]; then
             cp -rv results/* ${{ github.workspace }}/sync_results/
             echo "CHECK: Files copied to sync_results"
+            ls -la ${{ github.workspace }}/sync_results/
           else
-            echo "ERROR: 'results' folder not found inside container!"
+            echo "ERROR: results folder is empty or missing!"
+            ls -la results/ 2>/dev/null || echo "results/ does not exist"
             exit 1
           fi
-          SCRIPT_END
-      
+
       - name: Upload 3D Interactive Results
         uses: actions/upload-artifact@v4
         if: always()
