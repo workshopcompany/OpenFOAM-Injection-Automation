@@ -4,6 +4,23 @@ on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      velocity:
+        description: 'Inlet Velocity (m/s)'
+        default: '2.5'
+        required: true
+      viscosity:
+        description: 'Kinematic Viscosity (m2/s)'
+        default: '1e-6'
+        required: true
+      end_time:
+        description: 'Simulation End Time (s)'
+        default: '5'
+        required: true
+      run_label:
+        description: 'Run Label (for report)'
+        default: 'default-run'
+        required: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -19,24 +36,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Post-Processing Dependencies
+      - name: Install Dependencies
         run: |
           apt-get update && apt-get install -y \
             paraview python3-paraview \
-            xvfb libgl1-mesa-glx libglu1-mesa libxcursor1
+            xvfb libgl1-mesa-glx libglu1-mesa libxcursor1 \
+            python3-pip
+          pip3 install jinja2 --break-system-packages
 
       - name: Run OpenFOAM Simulation
         shell: bash
         working-directory: OpenFOAM/case
+        env:
+          INPUT_VELOCITY: ${{ github.event.inputs.velocity || '2.5' }}
+          INPUT_VISCOSITY: ${{ github.event.inputs.viscosity || '1e-6' }}
+          INPUT_END_TIME: ${{ github.event.inputs.end_time || '5' }}
+          INPUT_RUN_LABEL: ${{ github.event.inputs.run_label || 'auto-run' }}
         run: |
           set -e
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
-
           export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
           export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
           export PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           echo "CHECK: PVPYTHON_PATH is $PVPYTHON_PATH"
-
+          echo "CHECK: velocity=$INPUT_VELOCITY, viscosity=$INPUT_VISCOSITY, endTime=$INPUT_END_TIME"
           chmod +x Allrun
           ./Allrun
 
@@ -45,20 +68,17 @@ jobs:
         shell: bash
         working-directory: OpenFOAM/case
         run: |
-          echo "Step: Syncing results to workspace..."
           mkdir -p ${{ github.workspace }}/sync_results
-
           if [ -d "results" ] && [ "$(ls -A results/ 2>/dev/null)" ]; then
             cp -rv results/* ${{ github.workspace }}/sync_results/
-            echo "CHECK: Files copied to sync_results"
+            echo "CHECK: Files copied"
             ls -la ${{ github.workspace }}/sync_results/
           else
-            echo "ERROR: results folder is empty or missing!"
-            ls -la results/ 2>/dev/null || echo "results/ does not exist"
+            echo "ERROR: results folder empty"
             exit 1
           fi
 
-      - name: Upload 3D Interactive Results
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
