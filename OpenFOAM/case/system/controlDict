@@ -15,7 +15,7 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     interFoam; // pimpleFoam에서 변경
+application     buoyantPimpleFoam; // pimpleFoam에서 interFoam 변경
 
 startFrom       startTime;
 startTime       0;
