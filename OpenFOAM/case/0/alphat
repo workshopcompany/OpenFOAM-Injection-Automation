@@ -36,7 +36,7 @@ boundaryField
     "wall.*"
     {
         type            alphatJayatillekeWallFunction;
-        Prt             0.85;          // turbulent Prandtl number
+        Prt             0.85;
         value           uniform 0;
     }
 
