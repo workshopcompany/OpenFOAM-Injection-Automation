@@ -37,16 +37,16 @@ jobs:
           PVPYTHON_PATH=$(which pvpython || echo "/usr/bin/pvpython")
           export PVPYTHON_PATH
           
-          mkdir -p web_data
+          # 결과물을 모을 통합 폴더 생성
+          mkdir -p results
           chmod +x Allrun
           
           # 2. 실행
           echo "Starting Simulation & Web Data Export..."
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24" ./Allrun
           
-          echo "===== DEBUG: Final Check ====="
-          ls -la screenshots/
-          ls -la web_data/
+          echo "===== DEBUG: Final Check (Inside Container) ====="
+          ls -R results/
           SCRIPT_END
       
       - name: Upload 3D Interactive Results
@@ -54,8 +54,6 @@ jobs:
         if: always()
         with:
           name: OpenFOAM-Web-Dashboard
-          # 스크린샷과 3D 웹 데이터를 모두 포함합니다.
-          path: |
-            OpenFOAM/case/screenshots/
-            OpenFOAM/case/web_data/
-          if-no-files-found: warn
+          # 여러 경로 대신 통합된 results 폴더 하나만 지정합니다.
+          path: OpenFOAM/case/results/
+          if-no-files-found: error
