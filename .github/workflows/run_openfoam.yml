@@ -20,26 +20,36 @@ jobs:
           apt-get update
           apt-get install -y paraview python3-vtk9
       
+      # ✅ 디버그 단계 추가
+      - name: Debug case structure
+        run: |
+          echo "===== CURRENT DIR ====="
+          pwd
+          echo "===== FILE TREE ====="
+          ls -R
+      
       - name: Run OpenFOAM Simulation
         shell: bash
         working-directory: OpenFOAM/case
         run: |
-          # HERE document로 전체 실행
           bash << 'SCRIPT_END'
-          set -e  # 에러 발생 시 중단
+          set -e
           
-          # OpenFOAM 환경 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          # 스크린샷 폴더 생성
+          echo "===== RUN DIR ====="
+          pwd
+          echo "===== CASE FILES ====="
+          ls -R
+          
           mkdir -p screenshots
           
-          # 격자 생성 및 시뮬레이션
           blockMesh
           snappyHexMesh -overwrite
-          pimpleFoam
           
-          # 후처리
+          # ✅ 핵심 수정 (solver 변경)
+          buoyantPimpleFoam
+          
           pvpython export_screenshots.py
           SCRIPT_END
       
