@@ -15,20 +15,21 @@ FoamFile
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
-application     buoyantPimpleFoam; // pimpleFoam에서 interFoam 변경
+// ✅ 솔버 이름을 interFoam으로 정확히 지정합니다.
+application     interFoam;
 
 startFrom       startTime;
 startTime       0;
 stopAt          endTime;
 endTime         5;
 
-// 시간 간격을 0.001에서 0.0001로 줄여서 안정성을 높입니다.
+// 시간 간격 설정
 deltaT          0.0001; 
 
-// Courant Number를 체크하여 자동으로 시간 간격을 조절하는 옵션 (강력 추천)
+// 다상 유동 해석의 수렴성을 위한 자동 시간 간격 조절
 adjustTimeStep  yes;
 maxCo           0.5;
-maxAlphaCo      0.5; // interFoam 전용 옵션 추가
+maxAlphaCo      0.5; // interFoam(VOF) 해석의 핵심 안정성 지표
 
 writeControl    timeStep;
 writeInterval   100;
@@ -36,5 +37,7 @@ purgeWrite      0;
 writeFormat     ascii;
 writePrecision  6;
 writeCompression off;
+
+runTimeModifiable true;
 
 // ************************************************************************* //
