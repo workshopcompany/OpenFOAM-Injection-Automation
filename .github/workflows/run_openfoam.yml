@@ -5,13 +5,6 @@ on:
     paths:
       - 'OpenFOAM/case/constant/transportProperties'
   workflow_dispatch:
-    inputs:
-      velocity:
-        description: 'Injection Velocity (m/s)'
-        default: '0.05'
-      end_time:
-        description: 'Simulation End Time (s)'
-        default: '0.1'
 
 jobs:
   run-sim:
@@ -24,21 +17,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Run Simulation with Trace
+      - name: Run Solver with Logging
         shell: bash
         working-directory: OpenFOAM/case
-        env:
-          # Inputs are mapped to Env for Allrun to use
-          VELOCITY: ${{ github.event.inputs.velocity }}
-          END_TIME: ${{ github.event.inputs.end_time }}
         run: |
           # 1. Load OpenFOAM environment
           . /usr/lib/openfoam/openfoam2312/etc/bashrc
           
-          # 2. Trace and Execute
+          # 2. Setup permissions and CRLF fix
+          sed -i 's/\r$//' Allrun
           chmod +x Allrun
-          set -x # 모든 실행 명령어를 로그에 출력
-          ./Allrun || (echo "❌ Allrun Failed! Check solver.log below:" && tail -n 50 logs/solver.log && exit 1)
+          
+          # 3. Execute Allrun and capture exit code
+          echo ">>> Starting Pipeline execution..."
+          ./Allrun || (echo "❌ Allrun failed. Printing solver.log:" && tail -n 50 logs/solver.log && exit 1)
 
       - name: Upload Artifacts
         if: always()
