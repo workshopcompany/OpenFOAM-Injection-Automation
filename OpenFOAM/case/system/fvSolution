@@ -22,6 +22,7 @@ solvers
         cAlpha              1;
         nAlphaCorr          2;
         nAlphaSubCycles     1;
+        nLimiterIter        3;
         MULESCorr           yes;
         alphaApplyPrevCorr  yes;
 
@@ -60,7 +61,7 @@ solvers
         relTol          0;
     }
 
-    U
+    "(U|k|epsilon|omega|nut|alphat)"
     {
         solver          smoothSolver;
         smoother        symGaussSeidel;
@@ -69,7 +70,7 @@ solvers
         nSweeps         1;
     }
 
-    UFinal
+    "(U|k|epsilon|omega|nut|alphat)Final"
     {
         $U;
         relTol          0;
