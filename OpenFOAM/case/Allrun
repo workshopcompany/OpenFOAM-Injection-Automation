@@ -2,7 +2,7 @@
 cd "${0%/*}" || exit 1
 
 # ======================================================
-# [0] 초기 클린 (🔥 반드시 맨 먼저)
+# [0] 초기 클린
 # ======================================================
 echo "[Allrun] Cleaning case..."
 rm -rf [1-9]* log.* results
@@ -11,22 +11,16 @@ mkdir -p 0 results
 chmod 777 results
 
 # ======================================================
-# [1] 외부 변수
+# [1] 변수 설정
 # ======================================================
 VELOCITY=${INPUT_VELOCITY:-2.5}
 VISCOSITY=${INPUT_VISCOSITY:-1e-6}
 END_TIME=${INPUT_END_TIME:-5}
-RUN_LABEL=${INPUT_RUN_LABEL:-"auto-run"}
 
-echo "[Allrun] === Run Config ==="
-echo "Velocity   : $VELOCITY m/s"
-echo "Viscosity  : $VISCOSITY m2/s"
-echo "End Time   : $END_TIME s"
-echo "Label      : $RUN_LABEL"
-echo "================================"
+echo "[Allrun] Velocity=$VELOCITY | Viscosity=$VISCOSITY | EndTime=$END_TIME"
 
 # ======================================================
-# [2] controlDict 강제 재생성 (🔥 핵심)
+# [2] controlDict 강제 생성 (🔥 핵심)
 # ======================================================
 cat > system/controlDict << EOF
 FoamFile
@@ -69,143 +63,106 @@ maxDeltaT       1;
 // ************************************************************************* //
 EOF
 
-echo "[Allrun] controlDict regenerated."
+echo "[Allrun] controlDict created"
+
+# 🔥 덮어쓰기 방지
+chmod 444 system/controlDict
 
 # ======================================================
-# [3] 0/ 초기조건 (🔥 interFoam 필수 3종)
+# [3] DEBUG: 실제 controlDict 확인
+# ======================================================
+echo "=============================="
+echo "[DEBUG] controlDict CONTENT"
+echo "=============================="
+nl -ba system/controlDict
+echo "=============================="
+
+echo "[DEBUG] controlDict HASH"
+md5sum system/controlDict
+
+# ======================================================
+# [4] 초기조건 생성
 # ======================================================
 
-# ---- U ----
+# U
 cat > 0/U << EOF
 FoamFile
 {
-    version     2.0;
-    format      ascii;
-    class       volVectorField;
-    location    "0";
-    object      U;
+    version 2.0;
+    format ascii;
+    class volVectorField;
+    location "0";
+    object U;
 }
-dimensions      [0 1 -1 0 0 0 0];
-internalField   uniform (0 0 0);
+dimensions [0 1 -1 0 0 0 0];
+internalField uniform (0 0 0);
 boundaryField
 {
-    inlet
-    {
-        type fixedValue;
-        value uniform ($VELOCITY 0 0);
-    }
-    outlet
-    {
-        type zeroGradient;
-    }
-    walls
-    {
-        type noSlip;
-    }
-    atmosphere
-    {
-        type pressureInletOutletVelocity;
-        value uniform (0 0 0);
-    }
-    bottom
-    {
-        type noSlip;
-    }
+    inlet { type fixedValue; value uniform ($VELOCITY 0 0); }
+    outlet { type zeroGradient; }
+    walls { type noSlip; }
+    atmosphere { type pressureInletOutletVelocity; value uniform (0 0 0); }
+    bottom { type noSlip; }
 }
 EOF
 
-# ---- p_rgh ----
+# p_rgh
 cat > 0/p_rgh << EOF
 FoamFile
 {
-    version     2.0;
-    format      ascii;
-    class       volScalarField;
-    location    "0";
-    object      p_rgh;
+    version 2.0;
+    format ascii;
+    class volScalarField;
+    location "0";
+    object p_rgh;
 }
-dimensions      [1 -1 -2 0 0 0 0];
-internalField   uniform 0;
+dimensions [1 -1 -2 0 0 0 0];
+internalField uniform 0;
 boundaryField
 {
-    inlet
-    {
-        type fixedFluxPressure;
-    }
-    outlet
-    {
-        type fixedValue;
-        value uniform 0;
-    }
-    walls
-    {
-        type fixedFluxPressure;
-    }
-    atmosphere
-    {
-        type totalPressure;
-        p0 uniform 0;
-    }
-    bottom
-    {
-        type fixedFluxPressure;
-    }
+    inlet { type fixedFluxPressure; }
+    outlet { type fixedValue; value uniform 0; }
+    walls { type fixedFluxPressure; }
+    atmosphere { type totalPressure; p0 uniform 0; }
+    bottom { type fixedFluxPressure; }
 }
 EOF
 
-# ---- alpha.water ----
+# alpha.water
 cat > 0/alpha.water << EOF
 FoamFile
 {
-    version     2.0;
-    format      ascii;
-    class       volScalarField;
-    location    "0";
-    object      alpha.water;
+    version 2.0;
+    format ascii;
+    class volScalarField;
+    location "0";
+    object alpha.water;
 }
-dimensions      [0 0 0 0 0 0 0];
-internalField   uniform 0;
+dimensions [0 0 0 0 0 0 0];
+internalField uniform 0;
 boundaryField
 {
-    inlet
-    {
-        type fixedValue;
-        value uniform 1;
-    }
-    outlet
-    {
-        type zeroGradient;
-    }
-    walls
-    {
-        type zeroGradient;
-    }
-    atmosphere
-    {
-        type inletOutlet;
-        inletValue uniform 0;
-        value uniform 0;
-    }
-    bottom
-    {
-        type zeroGradient;
-    }
+    inlet { type fixedValue; value uniform 1; }
+    outlet { type zeroGradient; }
+    walls { type zeroGradient; }
+    atmosphere { type inletOutlet; inletValue uniform 0; value uniform 0; }
+    bottom { type zeroGradient; }
 }
 EOF
 
-echo "[Allrun] 0/ fields generated."
+echo "[Allrun] 0/ fields created"
 
 # ======================================================
-# [4] transportProperties
+# [5] 물성
 # ======================================================
 cat > constant/transportProperties << EOF
 FoamFile
 {
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "constant";
-    object      transportProperties;
+    version 2.0;
+    format ascii;
+    class dictionary;
+    location "constant";
+    object transportProperties;
 }
 
 phases (water air);
@@ -227,10 +184,8 @@ air
 sigma 0.07;
 EOF
 
-echo "[Allrun] transportProperties set."
-
 # ======================================================
-# [5] fvSolution
+# [6] fvSolution
 # ======================================================
 cat > system/fvSolution << EOF
 FoamFile
@@ -241,7 +196,6 @@ FoamFile
     location "system";
     object fvSolution;
 }
-
 solvers
 {
     "alpha.water.*"
@@ -251,24 +205,9 @@ solvers
         tolerance 1e-8;
         relTol 0;
     }
-
-    p_rgh
-    {
-        solver PCG;
-        preconditioner DIC;
-        tolerance 1e-7;
-        relTol 0.05;
-    }
-
-    U
-    {
-        solver smoothSolver;
-        smoother symGaussSeidel;
-        tolerance 1e-6;
-        relTol 0;
-    }
+    p_rgh { solver PCG; preconditioner DIC; tolerance 1e-7; relTol 0.05; }
+    U { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-6; relTol 0; }
 }
-
 PIMPLE
 {
     nOuterCorrectors 1;
@@ -277,7 +216,7 @@ PIMPLE
 EOF
 
 # ======================================================
-# [6] fvSchemes
+# [7] fvSchemes
 # ======================================================
 cat > system/fvSchemes << EOF
 FoamFile
@@ -288,36 +227,28 @@ FoamFile
     location "system";
     object fvSchemes;
 }
-
 ddtSchemes { default Euler; }
-
 gradSchemes { default Gauss linear; }
-
 divSchemes
 {
     default none;
     div(rhoPhi,U) Gauss linearUpwind grad(U);
     div(phi,alpha) Gauss vanLeer;
 }
-
 laplacianSchemes { default Gauss linear corrected; }
-
 interpolationSchemes { default linear; }
-
 snGradSchemes { default corrected; }
 EOF
 
-echo "[Allrun] fv files generated."
-
 # ======================================================
-# [7] mesh
+# [8] mesh
 # ======================================================
 echo "[Allrun] Running blockMesh..."
 blockMesh > log.blockMesh 2>&1
 tail -20 log.blockMesh
 
 # ======================================================
-# [8] solver
+# [9] solver
 # ======================================================
 echo "[Allrun] Running interFoam..."
 interFoam > simulation.log 2>&1
@@ -326,7 +257,7 @@ echo "===== interFoam tail ====="
 tail -30 simulation.log
 
 # ======================================================
-# [9] 결과 확인
+# [10] 결과 확인
 # ======================================================
 TIMESTEP_COUNT=$(ls -d [0-9]* 2>/dev/null | grep -v "^0$" | wc -l)
 echo "CHECK: Found $TIMESTEP_COUNT timestep folders"
