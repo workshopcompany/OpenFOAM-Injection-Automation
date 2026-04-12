@@ -9,19 +9,21 @@ jobs:
   run-sim:
     runs-on: ubuntu-latest
     env:
-      # Node.js 20 지원 중단 경고 해결을 위한 설정
+      # Node.js 20 지원 중단 경고 해결 및 최신 환경 강제 적용
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     container: 
       image: opencfd/openfoam-run:2312
       options: --user root
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - name: Install ParaView
+      - name: Install Post-Processing Dependencies
         run: |
           apt-get update
-          apt-get install -y paraview python3-vtk9
+          # ParaView와 가상 디스플레이(xvfb), 그래픽 라이브러리 설치
+          apt-get install -y paraview python3-vtk9 xvfb libgl1-mesa-glx
       
       - name: Run OpenFOAM Simulation
         shell: bash
@@ -29,32 +31,34 @@ jobs:
         run: |
           bash << 'SCRIPT_END'
           set -e
+          # OpenFOAM 환경 로드
           source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
           
-          # Allrun 실행 전 screenshots 폴더 선제 생성
-          mkdir -p screenshots
-          
+          # 1. 실행 권한 부여
           chmod +x Allrun
-          ./Allrun
           
-          # 후처리 결과 확인용 로그
-          echo "===== Generated Results ====="
-          ls -R
-          echo "===== Screenshot Folder Content ====="
-          ls -la screenshots/
+          # 2. 가상 디스플레이(xvfb) 상에서 Allrun 실행
+          # - 모니터가 없는 서버 환경에서 ParaView 렌더링을 가능하게 합니다.
+          # - Allrun 내부에 interFoam 실행과 pvpython 실행이 포함되어 있어야 합니다.
+          echo "Starting Simulation and Post-processing with Xvfb..."
+          xvfb-run --auto-servernum --server-args="-screen 0 1024x768x24" ./Allrun
+          
+          # 3. 결과물 생성 확인 로그
+          echo "===== Generated Files Check ====="
+          ls -R screenshots/ || echo "No screenshots directory found"
           SCRIPT_END
       
-      - name: Check Results
+      - name: Check for Images
         if: always()
         run: |
-          # 이미지가 실제로 어디에 있는지 검색
-          find OpenFOAM/case -name "*.png" -o -name "*.jpg"
+          echo "Searching for generated images..."
+          find OpenFOAM/case/screenshots -name "*.png" -o -name "*.jpg" || echo "No images found"
       
-      - name: Upload Screenshots
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: flow-results
-          # 경로를 더 확실하게 지정
+          name: flow-simulation-results
+          # Allrun에서 생성한 screenshots 폴더 전체를 업로드
           path: OpenFOAM/case/screenshots/
           if-no-files-found: warn
