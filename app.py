@@ -4,29 +4,37 @@ import os
 import sys
 import pandas as pd
 import matplotlib.pyplot as plt
-import requests  # Zapier 전송을 위해 추가
+import requests
 
-# Import AI Script
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'scripts'))
-from gemini_advisor import get_material_properties
+# --- PATH SETUP ---
+# 현재 파일(app.py)이 루트에 있으므로, scripts 및 OpenFOAM 폴더는 같은 레벨에 있습니다.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_DIR = os.path.join(BASE_DIR, 'scripts')
 
-st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
+# scripts 폴더를 시스템 경로에 추가하여 gemini_advisor를 찾을 수 있게 함
+if SCRIPTS_DIR not in sys.path:
+    sys.path.append(SCRIPTS_DIR)
+
+try:
+    from gemini_advisor import get_material_properties
+except ImportError:
+    st.error("❌ 'gemini_advisor.py' not found in /scripts folder. Please check your GitHub structure.")
+
+# OpenFOAM 관련 경로 설정
+CASE_DIR = os.path.join(BASE_DIR, "OpenFOAM", "case")
+STL_DIR = os.path.join(CASE_DIR, "constant", "triSurface")
 
 # --- SECRETS SETUP ---
-# Streamlit Cloud의 Settings > Secrets 또는 로컬의 .streamlit/secrets.toml에서 불러옴
 try:
     ZAPIER_WEBHOOK_URL = st.secrets["ZAPIER_URL"]
 except Exception:
     ZAPIER_WEBHOOK_URL = None
-    st.warning("⚠️ ZAPIER_URL not found in Secrets. Zapier integration will be disabled.")
+    st.warning("⚠️ ZAPIER_URL not found in Streamlit Secrets. Zapier integration is disabled.")
 
+# --- UI CONFIG ---
+st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops: AI-Powered Flow Analysis")
-st.caption("Integrated Pipeline: STL Upload → AI Config → Zapier Sync → OpenFOAM")
-
-# --- PATH SETUP ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CASE_DIR = os.path.join(BASE_DIR, "OpenFOAM", "case")
-STL_DIR = os.path.join(CASE_DIR, "constant", "triSurface")
+st.caption("Cloud Pipeline: GitHub Root → Zapier → OpenFOAM Engine")
 
 # --- SIDEBAR: INPUT ---
 with st.sidebar:
@@ -38,7 +46,7 @@ with st.sidebar:
         os.makedirs(STL_DIR, exist_ok=True)
         with open(os.path.join(STL_DIR, "part.stl"), "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.success("Part saved to constant/triSurface/")
+        st.success(f"File saved to: {os.path.relpath(STL_DIR)}")
 
     # Material & AI Advisor
     mat_name = st.text_input("Material Name", value="PP")
@@ -61,18 +69,16 @@ with st.sidebar:
         etime = st.number_input("Analysis Time (s)", value=2.0)
 
         if st.button("🚀 Run Simulation", type="primary"):
-            # 1. Store parameters in session state
             st.session_state["run_params"] = {
                 "nu": nu, "rho": rho, "tmelt": tmelt, "tmold": tmold, 
                 "vel": vel, "etime": etime, "mat": mat_name
             }
             
-            # 2. Send Data to Zapier (Webhook)
+            # Zapier Webhook Sync
             if ZAPIER_WEBHOOK_URL:
-                with st.spinner("Syncing with Zapier..."):
+                with st.spinner("Syncing data to Zapier..."):
                     try:
-                        payload = st.session_state["run_params"]
-                        resp = requests.post(ZAPIER_WEBHOOK_URL, json=payload, timeout=5)
+                        resp = requests.post(ZAPIER_WEBHOOK_URL, json=st.session_state["run_params"], timeout=5)
                         if resp.status_code == 200:
                             st.toast("✅ Zapier Sync Successful!", icon="🌐")
                         else:
@@ -97,8 +103,8 @@ if st.session_state.get("exec"):
         "END_TIME": str(params["etime"])
     }
 
-    # Execution (Bash Allrun)
     try:
+        # 쉘 스크립트 실행 (OpenFOAM 환경이 구축된 서버에서만 작동)
         proc = subprocess.Popen(["bash", "Allrun"], cwd=CASE_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         logs = []
         for line in proc.stdout:
@@ -115,12 +121,12 @@ if st.session_state.get("exec"):
             with t2: st.subheader("Pressure Distribution"); _plot_demo()
             with t3: 
                 st.subheader("Gemini AI Analysis")
-                st.write(f"**Material:** {params['mat']} | **Risk Level:** Low")
-                st.info("AI Insight: The parameters have been synced to GitHub via Zapier for version control.")
+                st.write(f"**Material:** {params['mat']} | **Status:** Data Synced to GitHub")
+                st.info("The configuration was updated via Zapier. Check GitHub Actions for the full solver log.")
         else:
-            st.error("Simulation failed. Check logs.")
+            st.error("Simulation engine not found or failed. Ensure OpenFOAM is installed.")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Execution Error: {e}")
 
 def _plot_demo():
     import numpy as np
