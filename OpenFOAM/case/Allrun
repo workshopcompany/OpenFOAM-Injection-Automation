@@ -1,34 +1,44 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 초기화 및 폴더 생성 체크
 echo "[Allrun] Cleaning and creating results folder..."
 rm -rf [1-9]* 0.* log.* results
 mkdir -p results && chmod 777 results
 
-# 2. 해석 단계 (각 단계 후 로그 파일 체크)
+# blockMesh 실행 + 로그 즉시 출력
 echo "[Allrun] Running blockMesh..."
 blockMesh > log.blockMesh 2>&1
+echo "===== blockMesh Log ====="
+cat log.blockMesh
+echo "========================="
 [ ! -s log.blockMesh ] && echo "ERROR: blockMesh failed" && exit 1
 
+# interFoam 실행 + 로그 즉시 출력
 echo "[Allrun] Running interFoam..."
 interFoam > simulation.log 2>&1
-# 해석 완료 파일(타임스텝 폴더)이 하나라도 생겼는지 체크
-if [ $(ls -d [0-9]* 2>/dev/null | wc -l) -le 1 ]; then
+echo "===== interFoam Log (last 50 lines) ====="
+tail -50 simulation.log
+echo "========================================="
+
+# 타임스텝 체크
+TIMESTEP_COUNT=$(ls -d [0-9]* 2>/dev/null | grep -v "^0$" | wc -l)
+echo "CHECK: Found $TIMESTEP_COUNT timestep folders"
+ls -la
+
+if [ "$TIMESTEP_COUNT" -le 0 ]; then
     echo "ERROR: interFoam did not generate any time steps!"
     exit 1
 fi
 
-# 3. 후처리 실행 (디버깅 모드)
+# 후처리
 echo "[Allrun] Starting Post-processing..."
 touch case.foam
 if [ -f "export_screenshots.py" ]; then
     PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
     echo "Using: $PVPY_EXE"
     $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
-    
-    # [체크포인트] 파이썬 실행 결과 확인
     echo "===== Post-processing Result Check ====="
+    cat log.pvpython
     ls -la results/
     echo "========================================"
 else
