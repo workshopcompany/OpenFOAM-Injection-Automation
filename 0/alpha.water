@@ -1,0 +1,28 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      alpha.water;
+}
+
+dimensions      [0 0 0 0 0 0 0];
+internalField   uniform 0; // Starts empty
+
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform 1; // Injection starts
+    }
+    outlet
+    {
+        type            zeroGradient;
+    }
+    walls
+    {
+        type            zeroGradient;
+    }
+}
