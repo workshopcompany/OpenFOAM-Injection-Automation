@@ -15,32 +15,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install ParaView (for pvpython)
+      - name: Install ParaView
         run: |
           apt-get update
           apt-get install -y paraview python3-vtk9
       
-      - name: Run OpenFOAM and Post-processing
+      - name: Run OpenFOAM Simulation
         shell: bash
+        working-directory: OpenFOAM/case
         run: |
-          cd OpenFOAM/case
-          chmod +x Allrun
-          bash -c "source /usr/bin/openfoam2312 && ./Allrun"
+          # HERE document로 전체 실행
+          bash << 'SCRIPT_END'
+          set -e  # 에러 발생 시 중단
+          
+          # OpenFOAM 환경 로드
+          source /usr/lib/openfoam/openfoam2312/etc/bashrc 2>/dev/null || true
+          
+          # 스크린샷 폴더 생성
+          mkdir -p screenshots
+          
+          # 격자 생성 및 시뮬레이션
+          blockMesh
+          snappyHexMesh -overwrite
+          pimpleFoam
+          
+          # 후처리
+          pvpython export_screenshots.py
+          SCRIPT_END
       
-      - name: Debug - Check results
-        shell: bash
+      - name: Check Results
         if: always()
         run: |
-          echo "=== Screenshots folder ==="
-          ls -la OpenFOAM/case/screenshots/ 2>/dev/null || echo "No screenshots folder"
-          
-          echo ""
-          echo "=== All PNG/JPG files ==="
-          find OpenFOAM/case -type f \( -name "*.png" -o -name "*.jpg" \) -ls || echo "No images"
-          
-          echo ""
-          echo "=== VTK files (simulation output) ==="
-          find OpenFOAM/case -name "*.vtk" -o -name "*.foam" || echo "No VTK files"
+          find OpenFOAM/case -name "*.png" -o -name "*.jpg"
+          ls -la OpenFOAM/case/screenshots/ || echo "No screenshots"
       
       - name: Upload Screenshots
         uses: actions/upload-artifact@v4
