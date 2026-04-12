@@ -26,4 +26,16 @@ boundaryField
         type            fixedValue;
         value           uniform 353.15; // Mold Temp
     }
+    atmosphere
+    {
+        type            totalPressure;
+        p0              uniform 0;
+        value           uniform 0;
+    }
+
+    bottom
+    {
+        type            fixedFluxPressure;
+        value           uniform 0;
+    }
 }
