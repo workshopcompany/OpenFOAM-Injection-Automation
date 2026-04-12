@@ -29,12 +29,13 @@ gradSchemes
 
 divSchemes
 {
-    default                         none;
-    div(rhoPhi,U)                   Gauss linearUpwind grad(U);
-    div(phi,alpha.water)            Gauss vanLeer;
-    div(phirb,alpha.water)          Gauss linear;
-    div(phirb,alpha)                Gauss linear;
-    div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
+    default                                     none;
+    div(rhoPhi,U)                               Gauss linearUpwind grad(U);
+    div(phi,alpha.water)                        Gauss vanLeer;
+    div(phi,alpha)                              Gauss vanLeer;
+    div(phirb,alpha.water)                      Gauss linear;
+    div(phirb,alpha)                            Gauss linear;
+    div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
 }
 
 laplacianSchemes
