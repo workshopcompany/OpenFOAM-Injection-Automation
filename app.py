@@ -4,6 +4,7 @@ import zipfile
 import io
 import os
 import time
+import json
 
 # --- 1. 설정 및 보안 (Secrets 안전하게 불러오기) ---
 def get_secret(key):
@@ -13,8 +14,8 @@ def get_secret(key):
         st.error(f"⚠️ 보안 설정(Secrets)에 **{key}**가 등록되지 않았습니다.")
         return None
 
-# app.py 상단 설정 부분을 이렇게 수정하세요
-ZAPIER_WEBHOOK_URL = get_secret("ZAPIER_WEBHOOK_URL") # _WEB_URL에서 _WEBHOOK_URL로 수정
+# 설정된 이름에 맞춰 Secrets 로드
+ZAPIER_WEBHOOK_URL = get_secret("ZAPIER_WEBHOOK_URL") 
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
 
 REPO_OWNER = "workshopcompany"
@@ -23,26 +24,47 @@ ARTIFACT_NAME = "OpenFOAM-Web-Dashboard"
 
 st.set_page_config(page_title="MIM-Ops Dashboard", layout="wide")
 
-# 필수 설정이 없으면 경고 메시지 출력 후 중단
+# 필수 설정이 없으면 중단
 if not ZAPIER_WEBHOOK_URL or not GITHUB_TOKEN:
-    st.warning("💡 Streamlit Cloud의 **Settings > Secrets**에 `ZAPIER_WEB_URL`과 `GITHUB_TOKEN`을 입력해주세요.")
+    st.warning("💡 Streamlit Cloud의 **Settings > Secrets** 설정을 확인해주세요.")
     st.stop()
 
 # --- 2. 핵심 로직 함수 ---
 
 def trigger_simulation(velocity, viscosity, end_time, label):
-    """Zapier Webhook을 통해 GitHub Actions 실행 요청"""
+    """Zapier Webhook을 통해 GitHub Actions 실행 요청 (로그 포함)"""
     payload = {
         "velocity": str(velocity),
         "viscosity": str(viscosity),
         "end_time": str(end_time),
         "run_label": label
     }
+    
+    # UI에 전송 상태 로그 출력
+    log_placeholder = st.empty()
+    with log_placeholder.container():
+        st.write("---")
+        st.write("🔍 **통신 디버그 로그**")
+        st.info(f"📤 Zapier로 보내는 데이터: `{json.dumps(payload)}`")
+    
     try:
         res = requests.post(ZAPIER_WEBHOOK_URL, json=payload)
+        
+        with log_placeholder.container():
+            st.write("---")
+            st.write("🔍 **통신 디버그 로그**")
+            st.info(f"📤 Zapier로 보내는 데이터: `{json.dumps(payload)}`")
+            if res.status_code == 200:
+                st.success(f"✅ Zapier 전송 성공! (Status: {res.status_code})")
+                st.write("📥 Zapier 응답 메시지:")
+                st.code(res.text)
+            else:
+                st.error(f"❌ Zapier 전송 실패 (Status: {res.status_code})")
+                st.code(res.text)
+        
         return res.status_code == 200
     except Exception as e:
-        st.error(f"연결 오류: {e}")
+        st.error(f"🚨 연결 오류: {e}")
         return False
 
 def fetch_latest_artifact():
@@ -86,12 +108,7 @@ with st.sidebar:
     run_label = st.text_input("프로젝트 명", value=f"MIM_Project_{int(time.time())}")
     
     if st.button("🚀 시뮬레이션 시작", use_container_width=True):
-        with st.spinner("GitHub로 명령을 전송 중..."):
-            if trigger_simulation(vel, vis, etime, run_label):
-                st.success("해석이 시작되었습니다!")
-                st.toast("GitHub Actions 실행 중...")
-            else:
-                st.error("트리거 실패. Webhook URL을 확인하세요.")
+        trigger_simulation(vel, vis, etime, run_label)
 
 st.divider()
 main_col, side_col = st.columns([2, 1])
