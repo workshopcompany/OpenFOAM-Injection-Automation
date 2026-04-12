@@ -1,13 +1,15 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 2. 스크린샷 폴더 생성
-mkdir -p screenshots
+# 이전 실행 결과 및 로그 삭제 (깨끗한 상태에서 시작)
+rm -rf [1-9]* 0.* log.* simulation.log screenshots
+cp -r 0.orig 0 2>/dev/null || true # 0.orig가 있다면 0으로 복사
 
-# 3. 격자 생성 및 해석 실행
+# 격자 생성 및 해석
 blockMesh
 snappyHexMesh -overwrite
 interFoam > simulation.log 2>&1
+# ... 이하 동일
 
 # 4. 후처리 (스크린샷)
 pvpython export_screenshots.py
