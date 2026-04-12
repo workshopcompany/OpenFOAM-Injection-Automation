@@ -7,7 +7,7 @@ mkdir -p screenshots
 # 3. 격자 생성 및 해석 실행
 blockMesh
 snappyHexMesh -overwrite
-pimpleFoam
+interFoam > simulation.log 2>&1
 
 # 4. 후처리 (스크린샷)
 pvpython export_screenshots.py
