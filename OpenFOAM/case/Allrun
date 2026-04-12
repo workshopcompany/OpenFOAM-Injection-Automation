@@ -1,50 +1,37 @@
 #!/bin/bash
 cd "${0%/*}" || exit
 
-# 1. 초기화
-echo "Step 1: Cleaning and preparing results folder..."
-rm -rf [1-9]* 0.* log.* simulation.log results
-mkdir -p results
-chmod 777 results
+# 1. 초기화 및 폴더 생성 체크
+echo "[Allrun] Cleaning and creating results folder..."
+rm -rf [1-9]* 0.* log.* results
+mkdir -p results && chmod 777 results
 
-# 2. 초기 조건 설정
-[ -d "0.orig" ] && cp -r 0.orig 0
-
-# 3. 격자 생성 및 해석
-echo "Step 2: Mesh generation..."
+# 2. 해석 단계 (각 단계 후 로그 파일 체크)
+echo "[Allrun] Running blockMesh..."
 blockMesh > log.blockMesh 2>&1
-snappyHexMesh -overwrite > log.snappyHexMesh 2>&1
+[ ! -s log.blockMesh ] && echo "ERROR: blockMesh failed" && exit 1
 
-echo "Step 3: Running interFoam simulation..."
-unset application
+echo "[Allrun] Running interFoam..."
 interFoam > simulation.log 2>&1
-
-# 4. 후처리 준비
-echo "Step 4: Preparing Post-processing..."
-touch case.foam
-
-# 5. 후처리 실행 (pvpython)
-if [ -f "export_screenshots.py" ]; then
-    echo "Step 5: Running pvpython post-processing..."
-    # 환경변수 확인 및 단일 실행
-    PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
-    
-    # 쉘 환경 변수 재선언 (안정성 확보)
-    export PYTHONPATH=$PYTHONPATH:/usr/lib/python3/dist-packages
-    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/x86_64-linux-gnu
-    
-    # 파이썬 스크립트 실행
-    $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
-    
-    # 결과 요약 및 권한 재조정
-    echo "===== Post-processing Complete ====="
-    chmod -R 777 results/
-    FILE_COUNT=$(ls -1 results/ | wc -l)
-    echo "Total files in results/: $FILE_COUNT"
-    ls -la results/
-else
-    echo "Error: export_screenshots.py not found"
+# 해석 완료 파일(타임스텝 폴더)이 하나라도 생겼는지 체크
+if [ $(ls -d [0-9]* 2>/dev/null | wc -l) -le 1 ]; then
+    echo "ERROR: interFoam did not generate any time steps!"
     exit 1
 fi
 
-echo "All processes finished successfully."
+# 3. 후처리 실행 (디버깅 모드)
+echo "[Allrun] Starting Post-processing..."
+touch case.foam
+if [ -f "export_screenshots.py" ]; then
+    PVPY_EXE=${PVPYTHON_PATH:-/usr/bin/pvpython}
+    echo "Using: $PVPY_EXE"
+    $PVPY_EXE export_screenshots.py > log.pvpython 2>&1
+    
+    # [체크포인트] 파이썬 실행 결과 확인
+    echo "===== Post-processing Result Check ====="
+    ls -la results/
+    echo "========================================"
+else
+    echo "ERROR: export_screenshots.py missing!"
+    exit 1
+fi
