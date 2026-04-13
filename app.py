@@ -1,7 +1,8 @@
 import streamlit as st
-import os, json, time, uuid, requests
-from datetime import datetime
-import numpy as np
+import streamlit.components.v1 as components
+import os, time, uuid, requests
+import json
+import json as _json
 import zipfile
 import io
 import glob
@@ -676,8 +677,6 @@ def make_mold_trace(mold_trimesh, opacity=0.10, show_legend=True):
 #    → 각 step의 Plotly figure JSON을 Python에서 직렬화해두고,
 #      JS setTimeout 루프로 Plotly.react() 를 호출하는 방식으로 해결.
 # ─────────────────────────────────────────────────────────────
-import streamlit.components.v1 as components
-import json as _json
 
 vtk_dir = "VTK"
 
