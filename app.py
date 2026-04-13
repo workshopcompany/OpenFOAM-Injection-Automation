@@ -527,52 +527,58 @@ import re  # 파일명 숫자 정렬을 위해 추가
 import pyvista as pv
 from stpyvista import stpyvista
 
-# 3. 3D Flow Visualization (Optimized for case_XX.vtm)
+import plotly.graph_objects as go
+
+# 3. 3D Flow Visualization (Plotly Version - No System Packages Required)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
     
-    # Debug: Search for all vtm/vtk files in subdirectories
-    all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
+    # Find .vtm or .vtk files
+    all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + \
+                glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
     
-    with st.expander("🔍 Search Debug Log"):
-        st.write(f"Search Path: `{os.path.abspath(vtk_dir)}`")
-        st.write(f"Found Files: {[os.path.basename(f) for f in all_files]}")
-
-    # Filter for 'case' results, excluding boundary or metadata files
+    # Filter for results (case_XX.vtm)
     target_files = [f for f in all_files if "case" in os.path.basename(f)]
     
     if target_files:
-        # Sort by timestep number (extract digits from filename)
         target_files.sort(key=lambda x: int(re.findall(r'(\d+)', x)[-1]) if re.findall(r'(\d+)', x) else 0)
         latest_file = target_files[-1]
-        st.info(f"Rendering: `{os.path.basename(latest_file)}`")
+        st.info(f"Rendering (Browser-side): `{os.path.basename(latest_file)}`")
         
         try:
-            # Force start Xvfb for headless rendering
-            if 'xvfb_active' not in st.session_state:
-                pv.start_xvfb()
-                st.session_state['xvfb_active'] = True
-            
-            # Read and merge MultiBlock (VTM) datasets
+            # Load mesh using PyVista (Server-side reading only)
             mesh = pv.read(latest_file)
             if isinstance(mesh, pv.MultiBlock):
                 mesh = mesh.combine()
-                
-            plotter = pv.Plotter(window_size=[600, 400])
-            plotter.background_color = "white"
             
-            # Use alpha.water for coloring if present
-            scalars = "alpha.water" if "alpha.water" in mesh.array_names else None
-            plotter.add_mesh(mesh, scalars=scalars, cmap="Blues", color="lightblue", show_scalar_bar=True)
+            # Extract geometry for Plotly (No Xvfb needed here)
+            # This converts the 3D data into points and triangles for the browser
+            surf = mesh.extract_surface()
+            points = surf.points
+            faces = surf.faces.reshape(-1, 4)[:, 1:]
             
-            plotter.view_isometric()
-            # Unique key prevents the 5-minute freeze bug
-            stpyvista(plotter, key=f"render_{os.path.getmtime(latest_file)}")
+            # Create Plotly 3D Figure
+            fig = go.Figure(data=[
+                go.Mesh3d(
+                    x=points[:, 0], y=points[:, 1], z=points[:, 2],
+                    i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+                    opacity=0.5,
+                    color='lightblue'
+                )
+            ])
+            
+            fig.update_layout(
+                scene=dict(aspectmode='data'),
+                margin=dict(r=0, l=0, b=0, t=0)
+            )
+            
+            # Display in Streamlit
+            st.plotly_chart(fig, use_container_width=True)
             
         except Exception as e:
             st.error(f"Visualization Error: {e}")
     else:
-        st.warning("No 'case_*.vtm' files found. Check the Search Debug Log above.")
+        st.warning("No 'case_*.vtm' files found.")
 else:
-    st.error("VTK directory not found. Please sync data first.")
+    st.error("VTK directory not found.")
