@@ -62,18 +62,14 @@ jobs:
           END_TIME:  ${{ github.event.client_payload.etime     || github.event.inputs.end_time  || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # set -e 제거 — 에러 직접 핸들링으로 전체 로그 보장
-
-          # ── OpenFOAM 환경 로드 ──────────────────
+          # OpenFOAM 환경 로드
           [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && \
             . /usr/lib/openfoam/openfoam2312/etc/bashrc || true
           [ -f /opt/openfoam2312/etc/bashrc ] && \
             . /opt/openfoam2312/etc/bashrc || true
 
-          # ── 디렉토리 보장 ───────────────────────
           mkdir -p logs results
 
-          # ── 숫자 정제 ───────────────────────────
           FINAL_V=$(echo "$VELOCITY"   | sed 's/[^0-9.eE-]*//g')
           FINAL_NU=$(echo "$VISCOSITY" | sed 's/[^0-9.eE-]*//g')
           FINAL_RHO=$(echo "$DENSITY"  | sed 's/[^0-9.eE-]*//g')
@@ -86,7 +82,6 @@ jobs:
           echo ">>> V=${FINAL_V} | nu=${FINAL_NU} | rho=${FINAL_RHO}"
           echo ">>> Tmelt=${FINAL_TM} | Tmold=${FINAL_TW} | T_end=${FINAL_T}"
 
-          # ── Allrun 실행 (실패해도 계속 진행) ───
           chmod +x Allrun
           VELOCITY=$FINAL_V    \
           VISCOSITY=$FINAL_NU  \
@@ -98,7 +93,6 @@ jobs:
           ./Allrun 2>&1 | tee logs/solver_detailed.log
           ALLRUN_EXIT=${PIPESTATUS[0]}
 
-          # ── 후처리 (성공 여부 무관) ─────────────
           touch case.foam
           echo "SIGNAL_ID=${SIGNAL_ID}"   >> results/meta.txt
           echo "ALLRUN_EXIT=${ALLRUN_EXIT}" >> results/meta.txt
@@ -109,15 +103,23 @@ jobs:
             echo ">>> [MIM-Ops] ❌ Pipeline failed (exit=${ALLRUN_EXIT}). Check logs."
           fi
 
-          # ── 실패해도 exit 0으로 로그 업로드 보장
           exit 0
+
+      - name: Prepare Clean Artifacts (results.txt + logs.zip + VTK/)
+        if: always()
+        run: |
+          # Allrun에서 이미 생성한 파일들을 루트로 복사
+          cp -f OpenFOAM/case/results.txt . 2>/dev/null || true
+          cp -f OpenFOAM/case/logs.zip . 2>/dev/null || true
+          cp -rf OpenFOAM/case/VTK . 2>/dev/null || true
 
       - name: Upload Simulation Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mim-results-${{ github.event.client_payload.signal_id || 'manual' }}
+          name: simulation-results
           path: |
-            OpenFOAM/case/logs/
-            OpenFOAM/case/results/
-            OpenFOAM/case/case.foam
+            results.txt
+            logs.zip
+            VTK/
+          retention-days: 5
