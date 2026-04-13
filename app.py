@@ -5,6 +5,7 @@ import numpy as np
 import zipfile
 import io
 
+
 try:
     import trimesh
     HAS_TRIMESH = True
@@ -521,53 +522,62 @@ if os.path.exists("logs.zip"):
             mime="application/zip"
         )
 
-# 3. 3D Flow Visualization (VTK folder)
-import glob # 파일 검색을 위해 필요 (상단 import 부분에 없으면 추가)
+import glob
+import re  # 파일명 숫자 정렬을 위해 추가
+import pyvista as pv
+from stpyvista import stpyvista
 
+# 3. 3D Flow Visualization (VTK folder)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
     
-    # VTK 폴더 내의 모든 .vtk 파일 검색
+    # .vtm (MultiBlock) 과 .vtk 파일을 모두 검색
+    vtm_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True)
     vtk_files = glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
+    all_vis_files = vtm_files + vtk_files
     
-    # alpha.water (유체 형태) 관련 파일만 필터링 (가장 중요한 데이터)
-    water_files = [f for f in vtk_files if "alpha.water" in f]
+    # alpha.water 관련 파일만 필터링
+    water_files = [f for f in all_vis_files if "alpha.water" in f]
     
-    # 만약 alpha.water 파일이 따로 없다면 전체 vtk 파일 중 선택
     if not water_files:
-        water_files = vtk_files
+        water_files = all_vis_files
         
     if water_files:
-        # 파일명 기준으로 정렬하여 가장 마지막 시간(최종 결과)의 파일 선택
-        water_files.sort()
-        latest_vtk = water_files[-1]
+        # 파일명 끝의 숫자(타임스텝)를 기준으로 올바르게 정렬 (예: 4 < 40)
+        def extract_number(filename):
+            match = re.search(r'_(\d+)\.vt[km]', filename)
+            return int(match.group(1)) if match else 0
+            
+        water_files.sort(key=extract_number)
+        latest_file = water_files[-1]
         
-        st.write(f"렌더링 중인 파일: `{os.path.basename(latest_vtk)}`")
+        st.write(f"렌더링 중인 파일: `{os.path.basename(latest_file)}`")
         
         try:
             with st.spinner("3D 캔버스를 렌더링 중입니다. (1~2초 소요)"):
-                # PyVista로 3D 메쉬 로드
-                mesh = pv.read(latest_vtk)
+                # PyVista로 3D 메쉬 로드 (.vtm 지원)
+                mesh = pv.read(latest_file)
                 
-                # 캔버스 크기 및 설정
+                # MultiBlock 데이터인 경우 하나의 메쉬로 결합 (렌더링 오류 방지)
+                if isinstance(mesh, pv.MultiBlock):
+                    mesh = mesh.combine()
+                
                 plotter = pv.Plotter(window_size=[600, 400])
                 plotter.background_color = "white"
                 
-                # alpha.water 필드가 메쉬에 포함되어 있다면 파란색 계열로 맵핑
+                # alpha.water 필드가 메쉬에 포함되어 있다면 맵핑
                 if "alpha.water" in mesh.array_names:
                     plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues", show_scalar_bar=True)
                 else:
-                    # 기본 색상으로 렌더링
                     plotter.add_mesh(mesh, color="lightblue", show_edges=True)
                 
-                # 시점 초기화
                 plotter.view_isometric()
                 
-                # Streamlit 화면에 출력 (stpyvista 호출)
+                # Streamlit 화면에 출력
                 stpyvista(plotter)
                 
         except Exception as e:
             st.error(f"3D 렌더링 중 오류 발생: {e}")
     else:
-        st.warning("VTK 폴더는 다운로드되었으나, 읽을 수 있는 .vtk 파일이 없습니다.")
+        st.warning("VTK 폴더에 읽을 수 있는 시각화 파일(.vtm 또는 .vtk)이 없습니다.")
