@@ -21,8 +21,8 @@ echo "========================================"
 
 mkdir -p logs results system constant 0
 
-# ── 이전 결과 정리 ────────────────────────
-rm -rf processor* postProcessing VTK simulation_results.zip 2>/dev/null || true
+# 이전 결과 정리
+rm -rf processor* postProcessing VTK simulation_results.zip logs.zip results.txt 2>/dev/null || true
 find . -maxdepth 1 -regextype posix-extended \
   -regex '\./[0-9]+(\.[0-9]+)?' -not -name '0' \
   -type d -exec rm -rf {} + 2>/dev/null || true
@@ -30,12 +30,10 @@ find . -maxdepth 1 -regextype posix-extended \
 PIPELINE_OK=true
 
 # ══════════════════════════════════════════
-# 설정 파일 생성
+# 설정 파일 생성 (기존 코드 그대로)
 # ══════════════════════════════════════════
-
 echo "[Allrun] 설정 파일 생성 시작..."
 
-# ── controlDict ───────────────────────────
 cat > system/controlDict << CTRL_EOF
 FoamFile
 {
@@ -64,11 +62,9 @@ adjustTimeStep  yes;
 maxCo           0.5;
 maxAlphaCo      0.5;
 maxDeltaT       0.01;
-// ************************************************************************* //
 CTRL_EOF
 echo "[Allrun] ✅ controlDict 생성"
 
-# ── transportProperties ───────────────────
 cat > constant/transportProperties << TP_EOF
 FoamFile
 {
@@ -92,11 +88,9 @@ air
     rho             [1 -3 0 0 0 0 0] 1.2;
 }
 sigma           [1 0 -2 0 0 0 0] 0.4;
-// ************************************************************************* //
 TP_EOF
 echo "[Allrun] ✅ transportProperties 생성"
 
-# ── turbulenceProperties ──────────────────
 cat > constant/turbulenceProperties << 'TURB_EOF'
 FoamFile
 {
@@ -107,11 +101,9 @@ FoamFile
     object      turbulenceProperties;
 }
 simulationType  laminar;
-// ************************************************************************* //
 TURB_EOF
 echo "[Allrun] ✅ turbulenceProperties 생성"
 
-# ── g (중력) ──────────────────────────────
 cat > constant/g << 'G_EOF'
 FoamFile
 {
@@ -123,11 +115,9 @@ FoamFile
 }
 dimensions      [0 1 -2 0 0 0 0];
 value           (0 -9.81 0);
-// ************************************************************************* //
 G_EOF
 echo "[Allrun] ✅ g 생성"
 
-# ── 0/p_rgh ───────────────────────────────
 cat > 0/p_rgh << 'P_EOF'
 FoamFile
 {
@@ -146,11 +136,8 @@ boundaryField
     walls        { type fixedFluxPressure; value uniform 0; }
     frontAndBack { type empty; }
 }
-// ************************************************************************* //
 P_EOF
-echo "[Allrun] ✅ p_rgh 생성"
 
-# ── 0/p ───────────────────────────────────
 cat > 0/p << 'P2_EOF'
 FoamFile
 {
@@ -169,11 +156,8 @@ boundaryField
     walls        { type calculated; value uniform 0; }
     frontAndBack { type empty; }
 }
-// ************************************************************************* //
 P2_EOF
-echo "[Allrun] ✅ p 생성"
 
-# ── 0/alpha.water ─────────────────────────
 cat > 0/alpha.water << 'A_EOF'
 FoamFile
 {
@@ -192,11 +176,8 @@ boundaryField
     walls        { type zeroGradient; }
     frontAndBack { type empty; }
 }
-// ************************************************************************* //
 A_EOF
-echo "[Allrun] ✅ alpha.water 생성"
 
-# ── 0/U ───────────────────────────────────
 cat > 0/U << U_EOF
 FoamFile
 {
@@ -215,11 +196,9 @@ boundaryField
     walls        { type noSlip; }
     frontAndBack { type empty; }
 }
-// ************************************************************************* //
 U_EOF
-echo "[Allrun] ✅ 0/U 생성"
+echo "[Allrun] ✅ 0/ boundary files 생성"
 
-# ── fvSchemes ─────────────────────────────
 cat > system/fvSchemes << 'FS_EOF'
 FoamFile
 {
@@ -245,11 +224,9 @@ laplacianSchemes { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
 snGradSchemes    { default corrected; }
 fluxRequired     { default no; p_rgh; pcorr; alpha.water; }
-// ************************************************************************* //
 FS_EOF
 echo "[Allrun] ✅ fvSchemes 생성"
 
-# ── fvSolution ────────────────────────────
 cat > system/fvSolution << 'FSO_EOF'
 FoamFile
 {
@@ -317,77 +294,73 @@ PIMPLE
     pRefValue           0;
 }
 relaxationFactors { equations { ".*" 1; } }
-// ************************************************************************* //
 FSO_EOF
 echo "[Allrun] ✅ fvSolution 생성"
 
 echo "[Allrun] 모든 설정 파일 생성 완료"
 echo "========================================"
 
-# ══════════════════════════════════════════
 # blockMesh
-# ══════════════════════════════════════════
 echo "[Allrun] blockMesh 실행..."
 blockMesh 2>&1 | tee logs/blockMesh.log
 BLOCKMESH_EXIT=${PIPESTATUS[0]}
 
 if [ "$BLOCKMESH_EXIT" -ne 0 ]; then
-    echo "[Allrun] ❌ blockMesh 실패 (exit=${BLOCKMESH_EXIT})"
+    echo "[Allrun] ❌ blockMesh 실패"
     PIPELINE_OK=false
 else
     echo "[Allrun] ✅ blockMesh 완료"
 fi
 
-# ══════════════════════════════════════════
-# interFoam (blockMesh 성공 시만 실행)
-# ══════════════════════════════════════════
+# interFoam
 if [ "$PIPELINE_OK" = true ]; then
     echo "[Allrun] interFoam 실행..."
     interFoam 2>&1 | tee logs/interFoam.log
     INTERFOAM_EXIT=${PIPESTATUS[0]}
 
-    echo "========================================"
-    echo "=== interFoam 마지막 30줄 ==="
-    tail -30 logs/interFoam.log
-    echo "========================================"
-
     if [ "$INTERFOAM_EXIT" -ne 0 ]; then
-        echo "[Allrun] ❌ interFoam 실패 (exit=${INTERFOAM_EXIT})"
+        echo "[Allrun] ❌ interFoam 실패"
         PIPELINE_OK=false
     else
         echo "[Allrun] ✅ interFoam 완료"
     fi
-else
-    echo "[Allrun] ⏭️ blockMesh 실패로 interFoam 건너뜀"
 fi
 
-# ══════════════════════════════════════════
-# 결과 검증 및 메타데이터
-# ══════════════════════════════════════════
+# 결과 검증
 TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
-echo "[Allrun] 타임스텝 폴더: ${TIMESTEPS}개"
-
 LAST_TIME=""
 if [ "$TIMESTEPS" -gt 0 ]; then
     LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d | sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
 fi
 
 # ══════════════════════════════════════════
-# 🚀 웹 시각화 및 다운로드용 후처리 (Update)
+# 🚀 웹 시각화용 결과물 정리 (요청하신 구조 exactly 적용)
 # ══════════════════════════════════════════
-echo "[Allrun] 후처리 시작: 웹 시각화 데이터 생성 중..."
+echo "[Allrun] 📂 결과물 정리 시작..."
 
-if [ "$TIMESTEPS" -gt 0 ]; then
-    # 1. ParaView 없이 웹에서 보기 위한 VTK 변환
-    foamToVTK 2>&1 | tee logs/foamToVTK.log
-    
-    # 2. 결과 다운로드를 위한 압축 파일 생성
-    # [0-9]* : 모든 시간 스텝 폴더 포함
-    zip -r simulation_results.zip [0-9]* constant system case.foam VTK 2>/dev/null
-    
-    echo "[Allrun] ✅ VTK 변환 및 압축 완료 (simulation_results.zip)"
+if [ "$PIPELINE_OK" = true ]; then
+    # 1. VTK 생성 (웹 3D 표시용)
+    foamToVTK -ascii 2>&1 | tee logs/foamToVTK.log
+
+    # 2. results.txt 생성 (Streamlit에서 바로 표시)
+    if [ -f results/meta.txt ]; then
+        cp results/meta.txt ./results.txt
+    else
+        touch results.txt
+    fi
+    echo "Simulation Status: $( [ "$PIPELINE_OK" = true ] && echo "Success" || echo "Failed" )" >> ./results.txt
+    echo "Finish Time: $(date)" >> ./results.txt
+    echo "Last Time Step: ${LAST_TIME}" >> ./results.txt
+    echo "Time Steps: ${TIMESTEPS}" >> ./results.txt
+
+    # 3. logs.zip 생성 (로그 다운로드용)
+    if [ -d logs ]; then
+        zip -r logs.zip logs/*.log 2>/dev/null || true
+    fi
+
+    echo "[Allrun] ✅ 모든 파일 준비 완료 (results.txt, logs.zip, VTK/)"
 else
-    echo "[Allrun] ⚠️ 결과 폴더가 없어 후처리를 건너뜁니다."
+    echo "[Allrun] ⚠️ PIPELINE_OK=false → 후처리 생략"
 fi
 
 # 메타데이터 기록
@@ -402,13 +375,11 @@ END_TIME=${END_TIME}
 LAST_TIME=${LAST_TIME}
 TIMESTEPS=${TIMESTEPS}
 PIPELINE_OK=${PIPELINE_OK}
-ZIP_CREATED=$( [ -f simulation_results.zip ] && echo "true" || echo "false" )
 META_EOF
 
 echo "========================================"
 if [ "$PIPELINE_OK" = true ] && [ "$TIMESTEPS" -gt 0 ]; then
     echo "[Allrun] ✅ 시뮬레이션 및 후처리 최종 성공"
-    echo "[Allrun] 타임스텝: ${TIMESTEPS}개 | 마지막: ${LAST_TIME}"
 else
     echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
 fi
