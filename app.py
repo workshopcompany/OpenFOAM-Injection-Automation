@@ -8,8 +8,7 @@ import glob
 import re  # 파일명 숫자 정렬을 위해 추가
 
 import plotly.graph_objects as go
-
-
+import meshio  # ✅ added for VTK reading (meshio-based)
 
 
 try:
@@ -23,7 +22,6 @@ try:
     HAS_PLOTLY = True
 except ImportError:
     HAS_PLOTLY = False
-
 
 
 # Custom CSS to make titles and headers slightly smaller
@@ -527,9 +525,7 @@ if os.path.exists("logs.zip"):
             mime="application/zip"
         )
 
-
-
-# 3. 3D Flow Visualization (Plotly Version - No System Packages Required)
+# 3. 3D Flow Visualization (Plotly + meshio Version)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
@@ -538,47 +534,47 @@ if os.path.exists(vtk_dir):
     all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + \
                 glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
     
-    # Filter for results (case_XX.vtm)
+    # Filter for results (case_XX.vtm / case_XX.vtk)
     target_files = [f for f in all_files if "case" in os.path.basename(f)]
     
     if target_files:
-        target_files.sort(key=lambda x: int(re.findall(r'(\d+)', x)[-1]) if re.findall(r'(\d+)', x) else 0)
+        target_files.sort(
+            key=lambda x: int(re.findall(r'(\d+)', x)[-1]) if re.findall(r'(\d+)', x) else 0
+        )
         latest_file = target_files[-1]
         st.info(f"Rendering (Browser-side): `{os.path.basename(latest_file)}`")
         
         try:
-            # Load mesh using PyVista (Server-side reading only)
-            mesh = pv.read(latest_file)
-            if isinstance(mesh, pv.MultiBlock):
-                mesh = mesh.combine()
-            
-            # Extract geometry for Plotly (No Xvfb needed here)
-            # This converts the 3D data into points and triangles for the browser
-            surf = mesh.extract_surface()
-            points = surf.points
-            faces = surf.faces.reshape(-1, 4)[:, 1:]
-            
-            # Create Plotly 3D Figure
-            fig = go.Figure(data=[
-                go.Mesh3d(
-                    x=points[:, 0], y=points[:, 1], z=points[:, 2],
-                    i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-                    opacity=0.5,
-                    color='lightblue'
+            # ✅ Load mesh using meshio (no PyVista, no system VTK dependency)
+            mesh = meshio.read(latest_file)
+            points = mesh.points
+
+            # Use triangle or tetra cells if available
+            cells = mesh.cells_dict.get("triangle") or mesh.cells_dict.get("tetra")
+
+            if cells is None:
+                st.error("No triangle/tetra cells found in VTK file.")
+            else:
+                fig = go.Figure(data=[
+                    go.Mesh3d(
+                        x=points[:, 0], y=points[:, 1], z=points[:, 2],
+                        i=cells[:, 0], j=cells[:, 1], k=cells[:, 2],
+                        opacity=0.5,
+                        color='lightblue'
+                    )
+                ])
+                
+                fig.update_layout(
+                    scene=dict(aspectmode='data'),
+                    margin=dict(r=0, l=0, b=0, t=0)
                 )
-            ])
-            
-            fig.update_layout(
-                scene=dict(aspectmode='data'),
-                margin=dict(r=0, l=0, b=0, t=0)
-            )
-            
-            # Display in Streamlit
-            st.plotly_chart(fig, use_container_width=True)
+                
+                # Display in Streamlit
+                st.plotly_chart(fig, use_container_width=True)
             
         except Exception as e:
             st.error(f"Visualization Error: {e}")
     else:
-        st.warning("No 'case_*.vtm' files found.")
+        st.warning("No 'case_*.vtm' or 'case_*.vtk' files found.")
 else:
     st.error("VTK directory not found.")
