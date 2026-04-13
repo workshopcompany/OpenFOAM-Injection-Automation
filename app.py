@@ -15,6 +15,16 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
+# Custom CSS to make titles and headers slightly smaller
+st.markdown("""
+<style>
+    .stApp h1 { font-size: 2.2rem !important; }
+    .stApp h2 { font-size: 1.55rem !important; }
+    .stApp h3 { font-size: 1.3rem !important; }
+    .stMetricLabel { font-size: 1.1rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
 # ══════════════════════════════════════════
 # Basic Settings
 # ══════════════════════════════════════════
@@ -37,6 +47,7 @@ _init("last_signal_id", None)
 _init("mesh", None)
 _init("props", None)
 _init("props_confirmed", False)
+_init("process_confirmed", False)          # ← 새로 추가
 _init("mat_name", "PA66+30GF")
 _init("last_vel_mms", 80.0)
 _init("last_etime", 0.5)
@@ -178,7 +189,6 @@ with st.sidebar:
     vy = st.number_input("Gate Y", value=st.session_state["gy"], step=0.1, key="gy")
     vz = st.number_input("Gate Z", value=st.session_state["gz"], step=0.1, key="gz")
 
-    # Snap gate to mesh surface
     mesh = st.session_state.get("mesh")
     if mesh is not None and HAS_TRIMESH:
         snap, _, _ = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])
@@ -208,7 +218,6 @@ with st.sidebar:
         st.session_state["props"] = props
         st.session_state["props_confirmed"] = False
 
-    # Material display + edit
     if st.session_state["props"]:
         p = st.session_state["props"]
         st.caption(f"🟢 Source: {p.get('source', 'Gemini recommendation')}")
@@ -250,14 +259,14 @@ with st.sidebar:
                     st.session_state["props_confirmed"] = True
                     st.toast("Material Properties Confirmed!", icon="✅")
             with col2:
-                if st.button("🔄 Reset", use_container_width=True):
+                if st.button("🔄 Reset Properties", use_container_width=True):
                     st.session_state["props"] = None
                     st.session_state["props_confirmed"] = False
                     st.rerun()
 
     st.divider()
 
-    # ── 4. Process Condition ──────────────
+    # ── 4. Process Conditions ──────────────
     st.header("⚙️ 4. Process Conditions")
 
     if st.button("🤖 Optimize Process", use_container_width=True):
@@ -281,15 +290,28 @@ with st.sidebar:
     st.session_state["last_vel_mms"] = vel_mms
     st.session_state["last_etime"]   = etime
 
-    if not st.session_state["props_confirmed"]:
-        st.warning("⚠️ Please get AI material recommendation and click ✅ Confirm Properties")
+    # ★★★ 공정조건 확정 버튼 (요청하신 대로 추가) ★★★
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Confirm Process Conditions", use_container_width=True):
+            st.session_state["process_confirmed"] = True
+            st.toast("Process Conditions Confirmed!", icon="✅")
+    with col2:
+        if st.button("🔄 Reset Process", use_container_width=True):
+            st.session_state["process_confirmed"] = False
+            st.rerun()
+
+    # 경고 메시지
+    if not st.session_state.get("process_confirmed", False):
+        st.warning("⚠️ Please click ✅ Confirm Process Conditions")
 
     st.divider()
 
     # ── Run Button ──────────────────────────
     run_disabled = (
         st.session_state["sim_running"] or
-        not st.session_state["props_confirmed"]
+        not st.session_state["props_confirmed"] or
+        not st.session_state.get("process_confirmed", False)
     )
 
     if st.button(
@@ -428,13 +450,11 @@ with col_log:
 # ── Bottom Status ───────────────────────
 st.info(f"📍 Final Gate Position: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f})")
 
-if st.session_state["props_confirmed"] and props_f:
+if st.session_state["props_confirmed"] and st.session_state.get("process_confirmed", False) and props_f:
     st.caption(
-        f"ℹ️ Material properties confirmed: nu={props_f['nu']:.2e} | "
-        f"rho={props_f['rho']} kg/m³ | "
-        f"Tmelt={props_f['Tmelt']}°C | "
-        f"Tmold={props_f['Tmold']}°C | "
-        f"Source: {props_f.get('source', 'Gemini recommendation')}"
+        f"ℹ️ Properties & Process confirmed | "
+        f"nu={props_f['nu']:.2e} | rho={props_f['rho']} kg/m³ | "
+        f"Tmelt={props_f['Tmelt']}°C | Tmold={props_f['Tmold']}°C"
     )
 else:
-    st.caption("ℹ️ Get AI material recommendation in the sidebar and confirm properties before running simulation.")
+    st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
