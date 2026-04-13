@@ -393,5 +393,8 @@ else
     echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
 fi
 echo "========================================"
-
+# Allrun 마지막에 추가
+foamToVTK
+# 결과 폴더를 zip으로 압축 (다운로드용)
+zip -r simulation_results.zip [0-9]* constant system case.foam
 exit 0
