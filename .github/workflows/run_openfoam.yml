@@ -27,15 +27,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Simulation Environment
-        # 디렉토리 생성 및 필수 딕셔너리(transportProperties, alpha.water) 자동 생성
+        # 디렉토리 생성 및 필수 파일(transportProperties, alpha.water) 자동 보정
         shell: bash
         run: |
           echo ">>> Preparing directories and constant files..."
-          # 로그 및 결과 폴더 강제 생성
+          # 로그 및 결과 폴더 강제 생성 (기존 유지)
           mkdir -p OpenFOAM/case/logs
           mkdir -p OpenFOAM/case/results
 
-          # [기존 기능 유지] transportProperties 재구축 (interFoam 전용 phases 포함)
+          # [기존 기능 유지] transportProperties 재구축 (interFoam 전용)
           cat <<EOF > OpenFOAM/case/constant/transportProperties
           FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object transportProperties; }
           
@@ -58,7 +58,7 @@ jobs:
           sigma           0.07;
           EOF
 
-          # [추가된 에러 방지 로직] alpha.water 파일이 없어서 발생한 solver.log 에러 해결 
+          # [에러 해결 로직 1] 누락된 alpha.water 초기 조건 파일 강제 생성
           cat <<EOF > OpenFOAM/case/0/alpha.water
           FoamFile { version 2.0; format ascii; class volScalarField; location "0"; object alpha.water; }
           dimensions [0 0 0 0 0 0 0];
@@ -70,8 +70,14 @@ jobs:
               frontAndBack { type empty; }
           }
           EOF
-          echo "✅ Critical file alpha.water created to prevent FATAL ERROR."
-          echo "✅ environment setup complete."
+
+          # [에러 해결 로직 2] fvSolution 내 alpha.water 수치해석 설정 자동 주입
+          # solver.log의 "Entry alpha.water not found in dictionary" 에러를 해결합니다.
+          if [ -f OpenFOAM/case/system/fvSolution ]; then
+            sed -i '/solvers/a \    "alpha.water.*"\n    {\n        nAlphaCorr      1;\n        nAlphaSubCycles 1;\n        cAlpha          1;\n        MULESCorr       yes;\n        nLimiterIter    3;\n        solver          smoothSolver;\n        smoother        symGaussSeidel;\n        tolerance       1e-8;\n        relTol          0;\n    }' OpenFOAM/case/system/fvSolution
+          fi
+          
+          echo "✅ Critical simulation dictionaries sanitized."
 
       - name: Execute Solver Pipeline
         shell: bash -l {0}
@@ -82,37 +88,36 @@ jobs:
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
           echo ">>> [MIM-Ops] Signal ID: $SIGNAL_ID"
+          echo ">>> [MIM-Ops] Injection Velocity: $VELOCITY"
           echo ">>> [MIM-Ops] End Time Setting: $END_TIME"
 
-          # 1. OpenFOAM 환경 로딩 (경로 이중 확인)
+          # 1. OpenFOAM 환경 로딩 (경로 이중 확인 유지)
           if [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ]; then
               . /usr/lib/openfoam/openfoam2312/etc/bashrc
           elif [ -f /opt/openfoam2312/etc/bashrc ]; then
               . /opt/openfoam2312/etc/bashrc
           fi
 
-          # 2. 필수 필드(p_rgh) 생성 확인 (기존 로직 유지) [cite: 11]
+          # 2. 필수 필드(p_rgh) 생성 확인 (기존 로직 유지)
           if [ ! -f 0/p_rgh ] && [ -f 0/p ]; then
               echo ">>> Creating missing p_rgh from p field..."
               cp 0/p 0/p_rgh
           fi
 
-          # 3. Allrun 실행 및 실시간 로그 기록 (화면 출력 + 파일 저장)
+          # 3. Allrun 실행 및 실시간 로그 기록 (tee를 통한 이중 저장)
           chmod +x Allrun
           echo ">>> Running interFoam solver pipeline..."
           ./Allrun 2>&1 | tee logs/solver_detailed.log
 
-          # 4. Paraview 및 웹 시각화용 빈 파일 생성
+          # 4. Paraview 확인용 파일 생성
           touch case.foam
           echo ">>> [MIM-Ops] Pipeline process finished."
 
       - name: Upload Artifacts
-        # 성공/실패 여부와 관계없이 모든 시뮬레이션 결과 데이터를 수집합니다.
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: full-sim-results-${{ github.event.client_payload.signal_id || 'manual' }}
-          # 유동 해석 데이터(숫자 폴더)를 포함한 전체 경로 수집
           path: |
             OpenFOAM/case/
             !OpenFOAM/case/platforms/
