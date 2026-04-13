@@ -1,9 +1,22 @@
+# UI Framework
 streamlit
+
+# AI & Data Processing
 google-generativeai
 pandas
-numpy==1.26.4
+numpy
+
+# Visualization
 matplotlib
-plotly
-trimesh
+
+# OpenFOAM Data Handling (Optional for future 3D view)
+pyvista
+streamlit-stl
+
 requests
-meshio
+stpyvista
+plotly
+scipy
+rtree
+trimesh  # STL 파일을 읽고 좌표를 계산하는 데 필요
+
