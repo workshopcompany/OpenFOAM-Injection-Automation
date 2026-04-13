@@ -2,62 +2,89 @@ import streamlit as st
 import os
 import sys
 import requests
-import numpy as np
 from streamlit_stl import stl_from_file
 
-# --- 경로 및 설정 ---
+# --- 경로 및 기본 설정 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_DIR = os.path.join(BASE_DIR, 'scripts')
+if SCRIPTS_DIR not in sys.path:
+    sys.path.append(SCRIPTS_DIR)
+
+# AI Advisor 로드
+try:
+    from gemini_advisor import get_material_properties
+except ImportError:
+    st.error("❌ 'scripts/gemini_advisor.py' missing.")
+
 ZAPIER_WEBHOOK_URL = st.secrets.get("ZAPIER_URL", None)
 
-st.set_page_config(page_title="MIM-Ops: Gate Selector", layout="wide")
-st.title("🔬 Gate Location & Process Control")
+# --- UI 설정 ---
+st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
+st.title("🔬 MIM-Ops: AI-Powered Flow Analysis")
 
-# 3D 모델 경로
-stl_path = os.path.join(BASE_DIR, "OpenFOAM/case/constant/triSurface/part.stl")
+# --- 원본 레이아웃 복구 (Sidebar 유지) ---
+with st.sidebar:
+    st.header("📂 1. Geometry & Material")
+    
+    # [복구] STL 파일 업로드 부분
+    uploaded_file = st.file_uploader("Upload STL (mm)", type=["stl"])
+    if uploaded_file:
+        stl_path = os.path.join(BASE_DIR, "OpenFOAM/case/constant/triSurface/part.stl")
+        os.makedirs(os.path.dirname(stl_path), exist_ok=True)
+        with open(stl_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success("✅ STL uploaded successfully.")
 
-col1, col2 = st.columns([1, 1.5])
+    # [복구] 기존 재질 및 AI 추천 섹션
+    st.subheader("🤖 AI Property Suggestion")
+    mat_name = st.text_input("Material Name", value="Stainless Steel 316L")
+    if st.button("Get AI Recommendation"):
+        st.session_state["props"] = get_material_properties(mat_name)
+    
+    props = st.session_state.get("props", {"nu": 1e-6, "rho": 7800.0})
 
-with col1:
-    st.header("📍 1. Gate Position")
-    st.write("모델을 보며 게이트 위치(빨간색 점)를 조정하세요.")
-    
-    # 3D 좌표 슬라이더 (사용자가 마우스로 위치 변경)
-    # 모델의 크기에 따라 min/max 값을 조정할 수 있습니다.
-    gx = st.slider("Gate X (mm)", -100.0, 100.0, 0.0, 0.5)
-    gy = st.slider("Gate Y (mm)", -100.0, 100.0, 0.0, 0.5)
-    gz = st.slider("Gate Z (mm)", -100.0, 100.0, 0.0, 0.5)
-    
-    st.info(f"선택된 좌표: ({gx}, {gy}, {gz})")
-    
     st.divider()
-    
+
+    # [복구] 기존 공정 조건 섹션 (압력과 시간 조건 반영)
     st.header("⚙️ 2. Process Conditions")
-    press_mpa = st.number_input("Injection Pressure (MPa)", 10.0, 200.0, 50.0)
-    etime = st.slider("Analysis Time (s)", 0.5, 3.0, 2.0, 0.1)
+    nu = st.number_input("Viscosity (m2/s)", value=float(props["nu"]), format="%.2e")
+    
+    # 사용자 요청 반영: 압력 기반 및 최대 3초 해석 시간
+    press_mpa = st.number_input("Injection Pressure (MPa)", min_value=1.0, max_value=200.0, value=50.0)
+    etime = st.number_input("Analysis Time (s)", min_value=0.1, max_value=3.0, value=2.0)
 
-    if st.button("🚀 Start Simulation with this Gate", type="primary"):
-        # 선택된 좌표와 압력 조건을 전송
-        payload = {
-            "press": press_mpa * 1e6,
-            "etime": etime,
-            "gate_x": gx, "gate_y": gy, "gate_z": gz
-        }
-        # requests.post(ZAPIER_WEBHOOK_URL, json=payload)
-        st.success(f"좌표 ({gx}, {gy}, {gz})에서 해석을 시작합니다!")
+    # [신규] 게이트 위치 슬라이더 (3D 뷰어와 연동)
+    st.subheader("📍 Gate Selection (mm)")
+    gx = st.slider("Gate X", -50.0, 50.0, 0.0)
+    gy = st.slider("Gate Y", -50.0, 50.0, 0.0)
+    gz = st.slider("Gate Z", -50.0, 50.0, 0.0)
 
-with col2:
-    st.header("🎥 3D Live Preview")
-    if os.path.exists(stl_path):
-        # stl_from_file에 마커 기능을 지원하는 경우 (버전에 따라 상이)
-        # 현재는 모델 자체를 보여주며 슬라이더로 위치를 확정하는 방식입니다.
-        stl_from_file(
-            file_path=stl_path,
-            color="#CCCCCC",      # 모델은 연한 회색
-            material="flat",
-            auto_rotate=False
-        )
-        
-        # 시각적 피드백: 사용자가 현재 위치를 인지할 수 있도록 메트릭 표시
-        st.metric("Target Gate Z-Level", f"{gz} mm")
-    else:
-        st.warning("STL 파일을 먼저 업로드해주세요.")
+    if st.button("🚀 Run Cloud Simulation", type="primary"):
+        if ZAPIER_WEBHOOK_URL:
+            payload = {
+                "press": press_mpa * 1e6,
+                "etime": etime,
+                "nu": nu,
+                "gate": {"x": gx, "y": gy, "z": gz},
+                "mat": mat_name
+            }
+            requests.post(ZAPIER_WEBHOOK_URL, json=payload)
+            st.toast("✅ Action Triggered!")
+            st.session_state["exec"] = True
+
+# --- 메인 화면: 3D 뷰어 (사용자가 모델을 보며 슬라이더 조정) ---
+st.header("🎥 3D Geometry Analysis")
+if uploaded_file:
+    # [추가] 형상만 강조하는 3D 시각화 (flat 모드)
+    stl_from_file(
+        file_path=os.path.join(BASE_DIR, "OpenFOAM/case/constant/triSurface/part.stl"), 
+        color="#888888", 
+        material="flat", 
+        auto_rotate=False
+    )
+    st.info(f"현재 설정된 게이트 좌표: X={gx}, Y={gy}, Z={gz} (빨간색 화살표 위치로 지정됨)")
+else:
+    st.info("왼쪽 사이드바에서 STL 파일을 업로드하면 여기에 3D 모델이 나타납니다.")
+
+if st.session_state.get("exec"):
+    st.success("🏃 Cloud Solver: Running Simulation... Check GitHub Actions.")
