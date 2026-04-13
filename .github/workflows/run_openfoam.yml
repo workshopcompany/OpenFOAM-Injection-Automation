@@ -1,11 +1,8 @@
 name: MIM-Ops Flow Analysis
 
 on:
-  # 1. 외부 신호(Zapier/Streamlit) 트리거
   repository_dispatch:
     types: [mim_ops_trigger]
-  
-  # 2. GitHub UI 수동 실행 및 파라미터 입력
   workflow_dispatch:
     inputs:
       velocity:
@@ -29,12 +26,11 @@ jobs:
       - name: Setup Simulation Environment
         shell: bash
         run: |
-          echo ">>> Preparing directories and fixing dimension errors..."
+          echo ">>> Preparing directories and fixing dictionary errors..."
           mkdir -p OpenFOAM/case/logs
           mkdir -p OpenFOAM/case/results
-          mkdir -p OpenFOAM/case/constant
 
-          # 1. transportProperties 생성 (기존 유지)
+          # 1. [기존 유지] transportProperties 생성
           cat <<EOF > OpenFOAM/case/constant/transportProperties
           FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object transportProperties; }
           phases (water air);
@@ -43,14 +39,7 @@ jobs:
           sigma 0.07;
           EOF
 
-          # 2. 중력(g) 파일 생성 (기존 유지)
-          cat <<EOF > OpenFOAM/case/constant/g
-          FoamFile { version 2.0; format ascii; class uniformDimensionedVectorField; location "constant"; object g; }
-          dimensions [0 1 -2 0 0 0 0];
-          value (0 -9.81 0);
-          EOF
-
-          # 3. 0/alpha.water 초기 조건 생성 (기존 유지)
+          # 2. [기존 유지] 0/alpha.water 초기 조건 파일 생성
           cat <<EOF > OpenFOAM/case/0/alpha.water
           FoamFile { version 2.0; format ascii; class volScalarField; location "0"; object alpha.water; }
           dimensions [0 0 0 0 0 0 0];
@@ -63,27 +52,49 @@ jobs:
           }
           EOF
 
-          # 4. [핵심 수정] 압력 필드(p, p_rgh)의 단위를 비압축성(m^2/s^2)으로 강제 변환
-          # interFoam은 압력을 밀도로 나눈 값을 사용하므로 [1 -1 -2 ...]가 아닌 [0 2 -2 ...]이어야 합니다.
-          for f in OpenFOAM/case/0/p OpenFOAM/case/0/p_rgh; do
-            if [ -f "$f" ]; then
-              echo "Fixing dimensions in $f"
-              sed -i 's/dimensions.*\[1 -1 -2 0 0 0 0\]/dimensions [0 2 -2 0 0 0 0]/g' "$f"
-            fi
-          done
+          # 3. [추가] 중력(g) 파일 생성 (Dimension Error 해결 필수 항목)
+          mkdir -p OpenFOAM/case/constant
+          cat <<EOF > OpenFOAM/case/constant/g
+          FoamFile { version 2.0; format ascii; class uniformDimensionedVectorField; location "constant"; object g; }
+          dimensions [0 1 -2 0 0 0 0];
+          value (0 -9.81 0);
+          EOF
 
-          # 5. fvSolution 파일 재작성 (기존 유지)
+          # 4. [기존 유지] fvSolution 문법 에러 해결을 위해 파일을 새로 작성
           cat <<EOF > OpenFOAM/case/system/fvSolution
           FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSolution; }
           solvers
           {
-              "alpha.water.*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-8; relTol 0; nAlphaCorr 1; nAlphaSubCycles 1; }
-              "p_rgh.*" { solver GAMG; tolerance 1e-7; relTol 0.01; smoother DIC; }
-              "(U|k|epsilon|omega|f|v2).*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-05; relTol 0.1; }
+              "alpha.water.*"
+              {
+                  nAlphaCorr      1;
+                  nAlphaSubCycles 1;
+                  cAlpha          1;
+                  MULESCorr       yes;
+                  nLimiterIter    3;
+                  solver          smoothSolver;
+                  smoother        symGaussSeidel;
+                  tolerance       1e-8;
+                  relTol          0;
+              }
+              "p_rgh.*"
+              {
+                  solver          GAMG;
+                  tolerance       1e-07;
+                  relTol          0.01;
+                  smoother        DIC;
+              }
+              "(U|k|epsilon|omega|f|v2).*"
+              {
+                  solver          smoothSolver;
+                  smoother        symGaussSeidel;
+                  tolerance       1e-05;
+                  relTol          0.1;
+              }
           }
           PIMPLE { nOuterCorrectors 1; nCorrectors 2; nNonOrthogonalCorrectors 0; }
           EOF
-          echo "✅ Environment setup complete with dimension fix."
+          echo "✅ fvSolution re-written to fix syntax errors."
 
       - name: Execute Solver Pipeline
         shell: bash -l {0}
@@ -93,27 +104,31 @@ jobs:
           END_TIME: ${{ github.event.client_payload.etime || github.event.inputs.end_time || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # 1. OpenFOAM 환경 로드
+          # OpenFOAM 환경 로드
           [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && . /usr/lib/openfoam/openfoam2312/etc/bashrc
           [ -f /opt/openfoam2312/etc/bashrc ] && . /opt/openfoam2312/etc/bashrc
 
-          # 2. p_rgh 필드 복사 (단위 수정 후 복사되도록 순서 보장)
-          if [ ! -f 0/p_rgh ] && [ -f 0/p ]; then 
-            cp 0/p 0/p_rgh
-          fi
+          # [단위 수정 로직 추가] p와 p_rgh의 단위를 비압축성(m^2/s^2)으로 변환
+          # 이 부분이 없으면 interFoam이 실행되지 않고 중단됩니다.
+          for f in 0/p 0/p_rgh; do
+            if [ -f "$f" ]; then
+              sed -i 's/dimensions.*\[1 -1 -2 0 0 0 0\]/dimensions [0 2 -2 0 0 0 0]/g' "$f"
+            fi
+          done
 
-          # 3. Allrun 실행 및 실시간 로그 기록
+          # p_rgh 필드 복사 로직 유지
+          [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh
+
+          # Allrun 실행 및 실시간 로그 기록 유지
           chmod +x Allrun
           echo ">>> Running interFoam solver..."
-          ./Allrun 2>&1 | tee logs/solver.log
+          ./Allrun 2>&1 | tee logs/solver_detailed.log
 
-          # 4. 시각화용 파일 생성
+          # 시각화용 파일 생성
           touch case.foam
-          echo ">>> [MIM-Ops] Pipeline process finished."
 
       - name: Upload Artifacts
         if: always()
-        uses: always() # 실패하더라도 로그 확인을 위해 업로드
         uses: actions/upload-artifact@v4
         with:
           name: full-sim-results-${{ github.event.client_payload.signal_id || 'manual' }}
