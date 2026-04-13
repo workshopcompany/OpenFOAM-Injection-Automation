@@ -16,14 +16,14 @@ except ImportError:
     HAS_PLOTLY = False
 
 # ══════════════════════════════════════════
-# 기본 설정
+# Basic Settings
 # ══════════════════════════════════════════
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
 
 ZAPIER_URL = st.secrets.get("ZAPIER_URL", "")
 
-# ── 세션 초기화 ───────────────────────────
+# ── Session State Initialization ───────────────────────────
 def _init(k, v):
     if k not in st.session_state:
         st.session_state[k] = v
@@ -45,68 +45,68 @@ _init("gy_final", 0.0)
 _init("gz_final", 0.0)
 
 # ══════════════════════════════════════════
-# 로컬 물성 DB (Gemini 추천 형식 유지)
+# Local Material Database (English descriptions)
 # ══════════════════════════════════════════
 LOCAL_DB = {
     "PP": {
         "nu": 1e-3, "rho": 900, "Tmelt": 230, "Tmold": 40,
         "press_mpa": 70, "vel_mms": 80,
-        "desc": "범용 폴리프로필렌 — 유동성 우수, 수축 큼"
+        "desc": "General-purpose polypropylene — excellent flowability, high shrinkage"
     },
     "ABS": {
         "nu": 2e-3, "rho": 1050, "Tmelt": 240, "Tmold": 60,
         "press_mpa": 80, "vel_mms": 70,
-        "desc": "ABS 수지 — 내충격성 우수, 도금 가능"
+        "desc": "ABS resin — excellent impact resistance, suitable for plating"
     },
     "PA66": {
         "nu": 5e-4, "rho": 1140, "Tmelt": 280, "Tmold": 80,
         "press_mpa": 90, "vel_mms": 100,
-        "desc": "나일론 66 — 내열성/강성 우수, 흡습 주의"
+        "desc": "Nylon 66 — excellent heat resistance and rigidity, moisture absorption caution"
     },
     "PA66+30GF": {
         "nu": 4e-4, "rho": 1300, "Tmelt": 285, "Tmold": 85,
         "press_mpa": 110, "vel_mms": 80,
-        "desc": "유리섬유 30% 강화 나일론 — 강성 대폭 향상"
+        "desc": "30% glass-fiber reinforced nylon — significantly improved rigidity"
     },
     "PC": {
         "nu": 3e-3, "rho": 1200, "Tmelt": 300, "Tmold": 85,
         "press_mpa": 120, "vel_mms": 60,
-        "desc": "폴리카보네이트 — 투명, 내충격성 최고, 점도 높음"
+        "desc": "Polycarbonate — transparent, best impact resistance, high viscosity"
     },
     "POM": {
         "nu": 8e-4, "rho": 1410, "Tmelt": 200, "Tmold": 90,
         "press_mpa": 85, "vel_mms": 90,
-        "desc": "폴리아세탈 — 내마모성 우수, 정밀부품 적합"
+        "desc": "Polyacetal — excellent wear resistance, ideal for precision parts"
     },
     "HDPE": {
         "nu": 9e-4, "rho": 960, "Tmelt": 220, "Tmold": 35,
         "press_mpa": 60, "vel_mms": 90,
-        "desc": "고밀도 폴리에틸렌 — 내화학성 우수, 저가"
+        "desc": "High-density polyethylene — excellent chemical resistance, low cost"
     },
     "PET": {
         "nu": 6e-4, "rho": 1370, "Tmelt": 265, "Tmold": 70,
         "press_mpa": 80, "vel_mms": 85,
-        "desc": "PET — 투명성/강도 우수, 건조 필수"
+        "desc": "PET — excellent transparency and strength, drying required"
     },
     "CATAMOLD": {
         "nu": 5e-3, "rho": 4900, "Tmelt": 185, "Tmold": 40,
         "press_mpa": 100, "vel_mms": 30,
-        "desc": "BASF Catamold MIM 피드스탁 — 금속분말+바인더"
+        "desc": "BASF Catamold MIM feedstock — metal powder + binder"
     },
     "MIM": {
         "nu": 5e-3, "rho": 5000, "Tmelt": 185, "Tmold": 40,
         "press_mpa": 100, "vel_mms": 30,
-        "desc": "금속사출성형 피드스탁 — 고밀도, 저속 사출"
+        "desc": "Metal injection molding feedstock — high density, low-speed injection"
     },
     "17-4PH": {
         "nu": 4e-3, "rho": 7780, "Tmelt": 185, "Tmold": 40,
         "press_mpa": 110, "vel_mms": 25,
-        "desc": "17-4PH 스테인리스 MIM 피드스탁"
+        "desc": "17-4PH stainless steel MIM feedstock"
     },
     "316L": {
         "nu": 4e-3, "rho": 7900, "Tmelt": 185, "Tmold": 40,
         "press_mpa": 110, "vel_mms": 25,
-        "desc": "316L 스테인리스 MIM 피드스탁 — 내식성 우수"
+        "desc": "316L stainless steel MIM feedstock — excellent corrosion resistance"
     },
 }
 
@@ -114,15 +114,15 @@ def get_props(material: str) -> dict:
     name = material.upper().strip()
     for key, val in LOCAL_DB.items():
         if key.upper() == name:
-            return {**val, "material": key, "source": "Gemini 추천"}
+            return {**val, "material": key, "source": "Gemini recommendation"}
     for key, val in LOCAL_DB.items():
         if key.upper() in name or name in key.upper():
-            return {**val, "material": key, "source": "Gemini 추천"}
+            return {**val, "material": key, "source": "Gemini recommendation"}
     return {
         "nu": 1e-3, "rho": 1000, "Tmelt": 220, "Tmold": 50,
         "press_mpa": 70, "vel_mms": 80,
-        "material": material, "source": "Gemini 추천",
-        "desc": f"{material} — DB 미등록 재료, 기본값 적용"
+        "material": material, "source": "Gemini recommendation",
+        "desc": f"{material} — Material not in database, default values applied"
     }
 
 def get_process(material: str) -> dict:
@@ -135,7 +135,7 @@ def get_process(material: str) -> dict:
 
 
 # ══════════════════════════════════════════
-# 사이드바
+# Sidebar
 # ══════════════════════════════════════════
 with st.sidebar:
 
@@ -148,11 +148,11 @@ with st.sidebar:
             try:
                 mesh = trimesh.load(uploaded, file_type="stl")
                 st.session_state["mesh"] = mesh
-                st.success(f"✅ STL 로드 완료 — {len(mesh.faces):,} 면")
+                st.success(f"✅ STL loaded — {len(mesh.faces):,} faces")
             except Exception as e:
-                st.error(f"STL 로드 실패: {e}")
+                st.error(f"STL load failed: {e}")
         else:
-            st.warning("trimesh 미설치: pip install trimesh")
+            st.warning("trimesh not installed: pip install trimesh")
 
     st.divider()
 
@@ -169,16 +169,16 @@ with st.sidebar:
             st.session_state["gy"]    = float(pos[1])
             st.session_state["gz"]    = float(pos[2])
             st.session_state["gsize"] = 2.5
-            st.toast("게이트 위치 추천 완료!", icon="🪄")
+            st.toast("AI Gate Suggestion Completed!", icon="🪄")
         else:
-            st.warning("STL을 먼저 업로드하세요.")
+            st.warning("Please upload an STL file first.")
 
     g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
     vx = st.number_input("Gate X", value=st.session_state["gx"], step=0.1, key="gx")
     vy = st.number_input("Gate Y", value=st.session_state["gy"], step=0.1, key="gy")
     vz = st.number_input("Gate Z", value=st.session_state["gz"], step=0.1, key="gz")
 
-    # 게이트 메쉬 표면 스냅 후 세션에 저장
+    # Snap gate to mesh surface
     mesh = st.session_state.get("mesh")
     if mesh is not None and HAS_TRIMESH:
         snap, _, _ = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])
@@ -203,42 +203,42 @@ with st.sidebar:
     )
     st.session_state["mat_name"] = mat_name
 
-    if st.button("🤖 AI 물성 추천 (Gemini)", use_container_width=True, type="primary"):
+    if st.button("🤖 AI Material Properties (Gemini)", use_container_width=True, type="primary"):
         props = get_props(mat_name)
         st.session_state["props"] = props
         st.session_state["props_confirmed"] = False
 
-    # 물성 표시 + 수정
+    # Material display + edit
     if st.session_state["props"]:
         p = st.session_state["props"]
-        st.caption(f"🟢 출처: {p.get('source', 'Gemini 추천')}")
+        st.caption(f"🟢 Source: {p.get('source', 'Gemini recommendation')}")
         if p.get("desc"):
             st.info(p["desc"])
 
-        with st.expander("📋 물성 확인 / 수정", expanded=True):
+        with st.expander("📋 Material Properties Check / Edit", expanded=True):
             p["nu"]    = st.number_input(
-                "운동점도 nu (m²/s)",
+                "Kinematic Viscosity nu (m²/s)",
                 value=float(p.get("nu", 1e-3)),
                 format="%.2e",
                 min_value=1e-7, max_value=1.0,
                 key="edit_nu"
             )
             p["rho"]   = st.number_input(
-                "밀도 ρ (kg/m³)",
+                "Density ρ (kg/m³)",
                 value=float(p.get("rho", 1000)),
-                min_value=100.0,      # ← float으로 수정
-                max_value=9000.0,     # ← float으로 수정
-                step=1.0,             # ← 타입 일치를 위해 명시
+                min_value=100.0,
+                max_value=9000.0,
+                step=1.0,
                 key="edit_rho"
             )
             p["Tmelt"] = st.number_input(
-                "용융 온도 (°C)",
+                "Melt Temperature (°C)",
                 value=int(p.get("Tmelt", 220)),
                 min_value=100, max_value=450,
                 key="edit_tmelt"
             )
             p["Tmold"] = st.number_input(
-                "금형 온도 (°C)",
+                "Mold Temperature (°C)",
                 value=int(p.get("Tmold", 50)),
                 min_value=10, max_value=200,
                 key="edit_tmold"
@@ -246,11 +246,11 @@ with st.sidebar:
 
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("✅ 물성 확정", use_container_width=True):
+                if st.button("✅ Confirm Properties", use_container_width=True):
                     st.session_state["props_confirmed"] = True
-                    st.toast("물성 확정됨!", icon="✅")
+                    st.toast("Material Properties Confirmed!", icon="✅")
             with col2:
-                if st.button("🔄 초기화", use_container_width=True):
+                if st.button("🔄 Reset", use_container_width=True):
                     st.session_state["props"] = None
                     st.session_state["props_confirmed"] = False
                     st.rerun()
@@ -258,14 +258,14 @@ with st.sidebar:
     st.divider()
 
     # ── 4. Process Condition ──────────────
-    st.header("⚙️ 4. Process Condition")
+    st.header("⚙️ 4. Process Conditions")
 
     if st.button("🤖 Optimize Process", use_container_width=True):
         suggestion = get_process(mat_name)
         st.session_state["temp"]  = suggestion["temp"]
         st.session_state["press"] = suggestion["press"]
         st.session_state["vel"]   = suggestion["vel"]
-        st.toast("공정조건 최적화 완료!", icon="🤖")
+        st.toast("Process Conditions Optimized!", icon="🤖")
 
     temp_c    = st.number_input("Injection Temperature (°C)",
                                  50, 450, step=1, key="temp")
@@ -282,11 +282,11 @@ with st.sidebar:
     st.session_state["last_etime"]   = etime
 
     if not st.session_state["props_confirmed"]:
-        st.warning("⚠️ 물성을 추천받고 ✅ 확정해주세요")
+        st.warning("⚠️ Please get AI material recommendation and click ✅ Confirm Properties")
 
     st.divider()
 
-    # ── Run 버튼 ──────────────────────────
+    # ── Run Button ──────────────────────────
     run_disabled = (
         st.session_state["sim_running"] or
         not st.session_state["props_confirmed"]
@@ -299,7 +299,7 @@ with st.sidebar:
         disabled=run_disabled
     ):
         if not ZAPIER_URL:
-            st.error("❌ ZAPIER_URL이 설정되지 않았습니다.\n.streamlit/secrets.toml을 확인하세요.")
+            st.error("❌ ZAPIER_URL is not configured.\nCheck .streamlit/secrets.toml")
         else:
             props  = st.session_state["props"]
             sig_id = str(uuid.uuid4())[:8]
@@ -329,17 +329,17 @@ with st.sidebar:
             try:
                 res = requests.post(ZAPIER_URL, json=payload, timeout=10)
                 if res.status_code == 200:
-                    st.toast(f"🚀 신호 전송 완료! (ID: {sig_id})", icon="🚀")
+                    st.toast(f"🚀 Signal Sent Successfully! (ID: {sig_id})", icon="🚀")
                 else:
-                    st.error(f"전송 실패: HTTP {res.status_code}")
+                    st.error(f"Transmission failed: HTTP {res.status_code}")
                     st.session_state["sim_running"] = False
             except Exception as e:
-                st.error(f"연결 오류: {e}")
+                st.error(f"Connection error: {e}")
                 st.session_state["sim_running"] = False
 
 
 # ══════════════════════════════════════════
-# 메인 화면 — 세션에서 값 읽기 (스코프 안전)
+# Main Area
 # ══════════════════════════════════════════
 gx_f      = st.session_state["gx_final"]
 gy_f      = st.session_state["gy_final"]
@@ -353,7 +353,7 @@ sig_id_f  = st.session_state["last_signal_id"]
 
 col_geo, col_log = st.columns([2, 1])
 
-# ── 3D 형상 뷰어 ─────────────────────────
+# ── 3D Geometry Viewer ─────────────────────────
 with col_geo:
     st.header("🎥 3D Geometry Analysis")
     mesh = st.session_state.get("mesh")
@@ -371,7 +371,7 @@ with col_geo:
                 x=[gx_f], y=[gy_f], z=[gz_f],
                 mode="markers",
                 marker=dict(size=g_size_f * 5, color="red"),
-                name="게이트"
+                name="Gate"
             )
         ])
         fig.update_layout(
@@ -383,13 +383,13 @@ with col_geo:
 
         bb = mesh.bounds
         c1, c2, c3 = st.columns(3)
-        c1.metric("X 크기", f"{bb[1][0]-bb[0][0]:.1f} mm")
-        c2.metric("Y 크기", f"{bb[1][1]-bb[0][1]:.1f} mm")
-        c3.metric("Z 크기", f"{bb[1][2]-bb[0][2]:.1f} mm")
+        c1.metric("X Size", f"{bb[1][0]-bb[0][0]:.1f} mm")
+        c2.metric("Y Size", f"{bb[1][1]-bb[0][1]:.1f} mm")
+        c3.metric("Z Size", f"{bb[1][2]-bb[0][2]:.1f} mm")
     else:
-        st.info("사이드바에서 STL 파일을 업로드하면 3D 형상이 표시됩니다.")
+        st.info("Upload an STL file in the sidebar to display the 3D model.")
 
-# ── 시뮬레이션 로그 ──────────────────────
+# ── Simulation Logs ──────────────────────
 with col_log:
     st.header("📟 Simulation & Debug Logs")
 
@@ -402,40 +402,39 @@ with col_log:
             f">>> nu = {props_f['nu']:.2e} m²/s",
             f">>> rho = {props_f['rho']} kg/m³",
             f">>> Tmelt = {props_f['Tmelt']}°C | Tmold = {props_f['Tmold']}°C",
-            f">>> Gate: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f}) Ø{g_size_f}mm",
+            f">>> Gate: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f}) Ø{g_size_f} mm",
             f">>> Velocity = {vel_f/1000:.4f} m/s",
-            f">>> End Time = {etime_f}s",
+            f">>> End Time = {etime_f} s",
             "✅ transportProperties: OK",
             "✅ fvSolution: OK",
             "✅ fvSchemes: OK",
-            ">>> Zapier → GitHub Actions 신호 전송 완료.",
-            ">>> blockMesh 실행 대기 중...",
-            ">>> interFoam 실행 대기 중...",
-            ">>> GitHub Actions Artifacts에서",
-            "    결과를 확인하세요.",
+            ">>> Zapier → GitHub Actions signal sent successfully.",
+            ">>> blockMesh execution pending...",
+            ">>> interFoam execution pending...",
+            ">>> Check results in GitHub Actions Artifacts.",
         ]
         st.code("\n".join(log_lines), language="bash")
 
-        if st.button("✅ 완료 확인"):
+        if st.button("✅ Mark as Completed"):
             st.session_state["sim_running"] = False
             st.rerun()
 
     elif sig_id_f:
-        st.success(f"✅ 마지막 실행 ID: {sig_id_f}")
-        st.info("GitHub Actions → Artifacts에서 결과를 확인하세요.")
+        st.success(f"✅ Last Run ID: {sig_id_f}")
+        st.info("Check the results in GitHub Actions → Artifacts.")
     else:
-        st.info("시뮬레이션을 실행하면 여기에 로그가 표시됩니다.")
+        st.info("Run a simulation to see logs here.")
 
-# ── 하단 상태 표시 ───────────────────────
+# ── Bottom Status ───────────────────────
 st.info(f"📍 Final Gate Position: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f})")
 
 if st.session_state["props_confirmed"] and props_f:
     st.caption(
-        f"ℹ️ 물성 확정: nu={props_f['nu']:.2e} | "
+        f"ℹ️ Material properties confirmed: nu={props_f['nu']:.2e} | "
         f"rho={props_f['rho']} kg/m³ | "
         f"Tmelt={props_f['Tmelt']}°C | "
         f"Tmold={props_f['Tmold']}°C | "
-        f"출처: {props_f.get('source', 'Gemini 추천')}"
+        f"Source: {props_f.get('source', 'Gemini recommendation')}"
     )
 else:
-    st.caption("ℹ️ 사이드바에서 재료 물성을 추천받고 확정한 후 시뮬레이션을 실행하세요.")
+    st.caption("ℹ️ Get AI material recommendation in the sidebar and confirm properties before running simulation.")
