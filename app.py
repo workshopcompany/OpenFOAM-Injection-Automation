@@ -50,7 +50,7 @@ _init("last_signal_id", None)
 _init("mesh", None)
 _init("props", None)
 _init("props_confirmed", False)
-_init("process_confirmed", False)          # ← 새로 추가
+_init("process_confirmed", False)          # ← newly added
 _init("mat_name", "PA66+30GF")
 _init("last_vel_mms", 80.0)
 _init("last_etime", 0.5)
@@ -293,7 +293,7 @@ with st.sidebar:
     st.session_state["last_vel_mms"] = vel_mms
     st.session_state["last_etime"]   = etime
 
-    # ★★★ 공정조건 확정 버튼 (요청하신 대로 추가) ★★★
+    # ★★★ Confirm Process Conditions button ★★★
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Confirm Process Conditions", use_container_width=True):
@@ -304,7 +304,7 @@ with st.sidebar:
             st.session_state["process_confirmed"] = False
             st.rerun()
 
-    # 경고 메시지
+    # Warning message
     if not st.session_state.get("process_confirmed", False):
         st.warning("⚠️ Please click ✅ Confirm Process Conditions")
 
@@ -463,41 +463,36 @@ else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
 
 # ─────────────────────────────────────────────────────────────
-# MIM-Ops 시뮬레이션 결과 (추가된 부분 — 기존 코드는 완전히 그대로 유지)
+# MIM-Ops Simulation Results (Added section — original code kept completely intact)
 # ─────────────────────────────────────────────────────────────
-st.title("MIM-Ops 시뮬레이션 결과")
+st.title("MIM-Ops Simulation Results")
 
-# 1. 결과 다운로드 버튼 추가
+# 1. Download full simulation results
 zip_path = "simulation_results.zip"
 if os.path.exists(zip_path):
     with open(zip_path, "rb") as f:
         st.download_button(
-            label="📦 시뮬레이션 전체 결과 다운로드 (.zip)",
+            label="📦 Download Full Simulation Results (.zip)",
             data=f,
             file_name="simulation_results.zip",
             mime="application/zip"
         )
 
-# 2. 3D 시각화 (VTK 폴더의 데이터를 읽어옴)
+# 2. 3D Flow Visualization (reads data from VTK folder)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
-    st.subheader("3D 유동 시각화")
+    st.subheader("3D Flow Visualization")
    
-    # VTK 파일 목록 가져오기 (예: alpha.water 데이터)
-    # 실제 경로 구조에 맞춰 수정이 필요할 수 있습니다.
     try:
-        # 마지막 타임스텝의 VTK 파일을 로드하는 예시
-        # vtk_file = f"{vtk_dir}/boundary/inlet.vtk" (OpenFOAM 구조에 따라 다름)
-       
-        # 3D 렌더링 설정
+        # 3D rendering setup
         plotter = pv.Plotter(window_size=[600, 400])
-        # mesh = pv.read(vtk_file)
-        # plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues")
+        # Example: load the latest time step VTK file (adjust path to match your OpenFOAM structure)
+        # vtk_file = f"{vtk_dir}/.../alpha.water.vtk"   # ← modify according to your actual folder structure
        
-        # UI에 렌더링
+        # UI rendering
         # stpyvista(plotter)
-        st.info("VTK 데이터를 3D 캔버스에 렌더링하는 중입니다...")
+        st.info("Rendering VTK data to 3D canvas...")
     except Exception as e:
-        st.error(f"시각화 로드 중 오류 발생: {e}")
+        st.error(f"Error loading visualization: {e}")
 else:
-    st.warning("아직 시각화할 데이터가 없습니다. 시뮬레이션을 먼저 실행하세요.")
+    st.warning("No visualization data available yet. Please run a simulation first.")
