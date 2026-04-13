@@ -527,44 +527,36 @@ import re  # 파일명 숫자 정렬을 위해 추가
 import pyvista as pv
 from stpyvista import stpyvista
 
-# 3. 3D Flow Visualization (VTK folder)
+# 3. 3D Flow Visualization (Optimized for .vtm)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
-    
-    # 1. Detect .vtm (MultiBlock) and .vtk files
-    all_vis_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
-    water_files = [f for f in all_vis_files if "alpha.water" in f]
+    # Search for both .vtm and .vtk in all subfolders
+    files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
+    water_files = [f for f in files if "alpha.water" in f]
     
     if water_files:
-        # Sort by timestep number (e.g., _40, _42)
+        # Sort by timestep number (looks for _40.vtm, _42.vtm etc.)
         water_files.sort(key=lambda x: int(re.findall(r'_(\d+)', x)[-1]) if re.findall(r'_(\d+)', x) else 0)
         latest_file = water_files[-1]
-        st.caption(f"Rendering: `{os.path.basename(latest_file)}`")
+        st.caption(f"Rendering Final Result: `{os.path.basename(latest_file)}`")
         
         try:
-            # 2. Prevent freeze: Start virtual display for cloud servers
+            # Headless fix for cloud servers (prevents 5-minute freeze)
             if 'xvfb' not in st.session_state:
                 pv.start_xvfb(); st.session_state['xvfb'] = True
             
-            # 3. Read and Combine MultiBlock (.vtm)
+            # Read .vtm and combine blocks for rendering
             mesh = pv.read(latest_file)
-            if isinstance(mesh, pv.MultiBlock):
-                mesh = mesh.combine()
+            if isinstance(mesh, pv.MultiBlock): mesh = mesh.combine()
             
             plotter = pv.Plotter(window_size=[600, 400])
             plotter.background_color = "white"
-            
-            if "alpha.water" in mesh.array_names:
-                plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues", show_scalar_bar=True)
-            else:
-                plotter.add_mesh(mesh, color="lightblue", show_edges=True)
-                
+            plotter.add_mesh(mesh, scalars="alpha.water" if "alpha.water" in mesh.array_names else None, cmap="Blues", show_scalar_bar=True)
             plotter.view_isometric()
-            # 4. Use dynamic key to force refresh and avoid 5-min freeze
+            # Dynamic key prevents the browser from hanging
             stpyvista(plotter, key=f"viz_{os.path.getmtime(latest_file)}")
-            
         except Exception as e:
             st.error(f"Visualization Error: {e}")
     else:
-        st.warning("No .vtm or .vtk files found in VTK folder.")
+        st.warning("No .vtm or .vtk files found in VTK folder. Check folder structure.")
