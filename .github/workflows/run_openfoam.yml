@@ -1,15 +1,13 @@
 name: MIM-Ops Flow Analysis Professional
 
 on:
-  # 1. 외부 신호(Zapier/Streamlit) 트리거
   repository_dispatch:
     types: [mim_ops_trigger]
-  
-  # 2. GitHub UI 수동 실행
+
   workflow_dispatch:
     inputs:
       material:
-        description: 'Material Name (e.g., 17-4PH, 316L)'
+        description: 'Material Name (e.g., 17-4PH, 316L, PP, ABS)'
         default: '17-4PH'
       velocity:
         description: 'Injection Velocity (m/s)'
@@ -22,10 +20,10 @@ on:
         default: '7780'
       melt_temp:
         description: 'Melt Temperature (°C)'
-        default: '235'
+        default: '185'
       mold_temp:
         description: 'Mold Temperature (°C)'
-        default: '45'
+        default: '40'
       end_time:
         description: 'Simulation End Time (s)'
         default: '0.5'
@@ -59,78 +57,57 @@ jobs:
           VELOCITY:  ${{ github.event.client_payload.vel       || github.event.inputs.velocity  || '0.025' }}
           VISCOSITY: ${{ github.event.client_payload.viscosity || github.event.inputs.viscosity || '4e-3' }}
           DENSITY:   ${{ github.event.client_payload.density   || github.event.inputs.density   || '7780' }}
+          MELT_TEMP: ${{ github.event.client_payload.melt_temp || github.event.inputs.melt_temp || '185' }}
+          MOLD_TEMP: ${{ github.event.client_payload.mold_temp || github.event.inputs.mold_temp || '40' }}
           END_TIME:  ${{ github.event.client_payload.etime     || github.event.inputs.end_time  || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # 1. OpenFOAM 환경 로드
-          [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && . /usr/lib/openfoam/openfoam2312/etc/bashrc
-          [ -f /opt/openfoam2312/etc/bashrc ] && . /opt/openfoam2312/etc/bashrc
+          set -e
 
-          # 2. 숫자 데이터 정제
+          # ── OpenFOAM 환경 로드 ──────────────────
+          [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && \
+            . /usr/lib/openfoam/openfoam2312/etc/bashrc
+          [ -f /opt/openfoam2312/etc/bashrc ] && \
+            . /opt/openfoam2312/etc/bashrc
+
+          # ── 디렉토리 보장 ───────────────────────
+          mkdir -p logs results
+
+          # ── 숫자 정제 ───────────────────────────
           FINAL_V=$(echo "$VELOCITY"   | sed 's/[^0-9.eE-]*//g')
           FINAL_NU=$(echo "$VISCOSITY" | sed 's/[^0-9.eE-]*//g')
           FINAL_RHO=$(echo "$DENSITY"  | sed 's/[^0-9.eE-]*//g')
           FINAL_T=$(echo "$END_TIME"   | sed 's/[^0-9.eE-]*//g')
+          FINAL_TM=$(echo "$MELT_TEMP" | sed 's/[^0-9.eE-]*//g')
+          FINAL_TW=$(echo "$MOLD_TEMP" | sed 's/[^0-9.eE-]*//g')
 
           echo "=== MIM-Ops Simulation Pipeline Start ==="
-          
-          # 3. Allrun 실행 (메쉬 생성 및 사전 작업)
-          # 여기서 fvSolution이 덮어씌워질 수 있으므로, 실행 후 다시 고칠 것입니다.
+          echo ">>> Material: ${MATERIAL} | Signal ID: ${SIGNAL_ID}"
+          echo ">>> V=${FINAL_V} | nu=${FINAL_NU} | rho=${FINAL_RHO}"
+          echo ">>> Tmelt=${FINAL_TM} | Tmold=${FINAL_TW} | T_end=${FINAL_T}"
+
+          # ── Allrun 실행 ─────────────────────────
           chmod +x Allrun
-          echo ">>> [STEP 1] Running Allrun for Pre-processing..."
-          ./Allrun || echo "Allrun process had some errors, but proceeding to fix dictionaries..."
+          VELOCITY=$FINAL_V    \
+          VISCOSITY=$FINAL_NU  \
+          DENSITY=$FINAL_RHO   \
+          END_TIME=$FINAL_T    \
+          MELT_TEMP=$FINAL_TM  \
+          MOLD_TEMP=$FINAL_TW  \
+          MATERIAL=$MATERIAL   \
+          ./Allrun 2>&1 | tee logs/solver_detailed.log
 
-          # ----------------------------------------------------------------------
-          # 🔥 [REAL FIX] 구조적 해결: Allrun 이후 fvSolution 강제 Overwrite
-          # ----------------------------------------------------------------------
-          echo ">>> [STEP 2] Overwriting fvSolution with explicit dictionary..."
-          mkdir -p system
-          cat <<EOF > system/fvSolution
-          FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSolution; }
-          solvers {
-              "alpha.water.*" { 
-                  nAlphaCorr 1; 
-                  nAlphaSubCycles 1; 
-                  cAlpha 1; 
-                  MULESCorr yes; 
-                  nLimiterIter 3; 
-                  solver smoothSolver; 
-                  smoother symGaussSeidel; 
-                  tolerance 1e-8; 
-                  relTol 0; 
-              }
-              "p_rgh.*" { solver GAMG; tolerance 1e-07; relTol 0.01; smoother DIC; }
-              "(U|k|epsilon|omega|f|v2).*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-05; relTol 0.1; }
-          }
-          PIMPLE { nOuterCorrectors 1; nCorrectors 2; nNonOrthogonalCorrectors 0; }
-          EOF
-
-          # 4. 추가 안전 장치 (압력 단위 교정 및 p_rgh 생성)
-          for f in 0/p 0/p_rgh; do
-            if [ -f "$f" ]; then
-              sed -i 's/dimensions.*\[1 -1 -2 0 0 0 0\]/dimensions [0 2 -2 0 0 0 0]/g' "$f"
-            fi
-          done
-          [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh
-
-          # ----------------------------------------------------------------------
-          # 5. Solver 실행 (고쳐진 파일을 사용하여 interFoam 직접 호출)
-          # ----------------------------------------------------------------------
-          echo ">>> [STEP 3] Starting Solver execution (interFoam)..."
-          interFoam 2>&1 | tee logs/solver_detailed.log
-
-          # 6. 결과 후처리
+          # ── 후처리 ──────────────────────────────
           touch case.foam
-          mkdir -p results
           echo "SIGNAL_ID=${SIGNAL_ID}" >> results/meta.txt
-          echo ">>> [MIM-Ops] Solver process finished successfully."
+          echo ">>> [MIM-Ops] Pipeline finished successfully."
 
       - name: Upload Simulation Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-sim-results-${{ github.event.client_payload.signal_id || 'manual' }}
+          name: mim-results-${{ github.event.client_payload.signal_id || 'manual' }}
           path: |
-            OpenFOAM/case/
-            !OpenFOAM/case/platforms/
-            !OpenFOAM/case/dynamicCode/
+            OpenFOAM/case/logs/
+            OpenFOAM/case/results/
+            OpenFOAM/case/case.foam
