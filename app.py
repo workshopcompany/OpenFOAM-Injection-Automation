@@ -493,91 +493,111 @@ if st.session_state["props_confirmed"] and st.session_state.get("process_confirm
 else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
 
+
 # ─────────────────────────────────────────────────────────────
-# MIM-Ops Simulation Results (structured: results.txt + logs.zip + VTK/)
+# MIM-Ops Simulation Results (English Version)
 # ─────────────────────────────────────────────────────────────
-st.title("MIM-Ops Simulation Results")
-
-# Refresh button – downloads latest artifact and extracts files
-if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
-    with st.spinner("Fetching latest data from GitHub securely..."):
-        if sync_simulation_results():
-            st.success("Data synchronization complete! Loading visualization data.")
-            time.sleep(1)
-            st.rerun()
-
-# 1. Simulation Summary (results.txt)
-if os.path.exists("results.txt"):
-    with open("results.txt", "r") as f:
-        summary = f.read()
-    st.text_area("📄 Simulation Summary", summary, height=200)
-
-# 2. Logs download
-if os.path.exists("logs.zip"):
-    with open("logs.zip", "rb") as f:
-        st.download_button(
-            label="📂 Download All Logs (logs.zip)",
-            data=f,
-            file_name="logs.zip",
-            mime="application/zip"
-        )
-
+st.title("🔬 MIM-Ops Simulation Results")
 import glob
 import re  # 파일명 숫자 정렬을 위해 추가
 import pyvista as pv
 from stpyvista import stpyvista
 
-# 3. 3D Flow Visualization (VTK folder)
-vtk_dir = "VTK"
-if os.path.exists(vtk_dir):
-    st.subheader("3D Flow Visualization")
-    
-    # .vtm (MultiBlock) 과 .vtk 파일을 모두 검색
-    vtm_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True)
-    vtk_files = glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
-    all_vis_files = vtm_files + vtk_files
-    
-    # alpha.water 관련 파일만 필터링
-    water_files = [f for f in all_vis_files if "alpha.water" in f]
-    
-    if not water_files:
-        water_files = all_vis_files
+# 1. Action: Sync Data from GitHub
+if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
+    with st.spinner("Fetching latest data from GitHub securely..."):
+        if sync_simulation_results():
+            st.success("Data synchronization complete!")
+            time.sleep(1)
+            st.rerun()
+
+# Layout: Result Summary and 3D View
+col_text, col_viz = st.columns([1, 2])
+
+with col_text:
+    st.subheader("📄 Simulation Summary")
+    if os.path.exists("results.txt"):
+        with open("results.txt", "r") as f:
+            st.text_area("Final Parameters", f.read(), height=300)
+    else:
+        st.info("No summary file found. Please sync results.")
+
+with col_viz:
+    st.subheader("🌐 3D Flow Visualization")
+    vtk_dir = "VTK"
+    if os.path.exists(vtk_dir):
+        # 1. Find .vtm or .vtk files
+        all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + \
+                    glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
         
-    if water_files:
-        # 파일명 끝의 숫자(타임스텝)를 기준으로 올바르게 정렬 (예: 4 < 40)
-        def extract_number(filename):
-            match = re.search(r'_(\d+)\.vt[km]', filename)
-            return int(match.group(1)) if match else 0
+        water_files = [f for f in all_files if "alpha.water" in f]
+        
+        if water_files:
+            # Sort by timestep number
+            def extract_num(f):
+                match = re.search(r'_(\d+)\.vt', f)
+                return int(match.group(1)) if match else 0
+            water_files.sort(key=extract_num)
+            latest_file = water_files[-1]
             
-        water_files.sort(key=extract_number)
-        latest_file = water_files[-1]
-        
-        st.write(f"렌더링 중인 파일: `{os.path.basename(latest_file)}`")
-        
-        try:
-            with st.spinner("3D 캔버스를 렌더링 중입니다. (1~2초 소요)"):
-                # PyVista로 3D 메쉬 로드 (.vtm 지원)
+            st.caption(f"Rendering File: `{os.path.basename(latest_file)}`")
+            
+            try:
+                # Optimized Rendering Logic
+                pv.start_xvfb() # Necessary for cloud/headless environments
                 mesh = pv.read(latest_file)
-                
-                # MultiBlock 데이터인 경우 하나의 메쉬로 결합 (렌더링 오류 방지)
                 if isinstance(mesh, pv.MultiBlock):
                     mesh = mesh.combine()
                 
                 plotter = pv.Plotter(window_size=[600, 400])
                 plotter.background_color = "white"
                 
-                # alpha.water 필드가 메쉬에 포함되어 있다면 맵핑
                 if "alpha.water" in mesh.array_names:
                     plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues", show_scalar_bar=True)
                 else:
                     plotter.add_mesh(mesh, color="lightblue", show_edges=True)
                 
                 plotter.view_isometric()
+                stpyvista(plotter, key=f"pv_render_{latest_file}") # Unique key prevents freezing
                 
-                # Streamlit 화면에 출력
-                stpyvista(plotter)
-                
-        except Exception as e:
-            st.error(f"3D 렌더링 중 오류 발생: {e}")
+            except Exception as e:
+                st.error(f"Visualization Error: {e}")
+        else:
+            st.warning("No visualization files (.vtm/.vtk) detected in VTK folder.")
     else:
-        st.warning("VTK 폴더에 읽을 수 있는 시각화 파일(.vtm 또는 .vtk)이 없습니다.")
+        st.info("Waiting for VTK data...")
+
+# ─────────────────────────────────────────────────────────────
+# 🛡️ Debug & Log Console (New Section)
+# ─────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("🛠️ System Log Console")
+log_col1, log_col2 = st.columns(2)
+
+# 1. Solver Detailed Log
+with log_col1:
+    st.markdown("**Solver Execution Log**")
+    # We check for logs inside the extracted logs.zip or the temp folder
+    solver_log = "logs/solver_detailed.log"
+    if os.path.exists(solver_log):
+        with open(solver_log, "r") as f:
+            # Show only last 500 lines for performance
+            log_data = f.readlines()
+            st.code("".join(log_data[-500:]), language="bash")
+    else:
+        st.caption("No solver log available.")
+
+# 2. Pipeline/General Log
+with log_col2:
+    st.markdown("**VTK Conversion Log**")
+    vtk_log = "logs/foamToVTK.log"
+    if os.path.exists(vtk_log):
+        with open(vtk_log, "r") as f:
+            st.code(f.read(), language="bash")
+    else:
+        st.caption("No conversion log available.")
+
+# 3. Global Logs Download
+if os.path.exists("logs.zip"):
+    with open("logs.zip", "rb") as f:
+        st.download_button("📂 Download Full Log Archive (.zip)", f, "logs.zip")
