@@ -14,7 +14,7 @@ pyvista
 streamlit-stl
 
 requests
-
+stpyvista
 plotly
 scipy
 rtree
