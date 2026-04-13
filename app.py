@@ -155,9 +155,9 @@ def get_process(material: str) -> dict:
 def sync_simulation_results():
     # Configuration (update these values in .streamlit/secrets.toml)
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-    REPO_OWNER = "your-github-username"   # ← CHANGE THIS to your actual GitHub username (case-sensitive, e.g. 'minchul-kim')
+    REPO_OWNER = "workshopcompany"   # ← CHANGE THIS to your actual GitHub username (case-sensitive, e.g. 'minchul-kim')
     REPO_NAME = "OpenFOAM-Injection-Automation"
-    ARTIFACT_NAME = "simulation-results"   # Must match the name set in your GitHub Actions workflow
+    ARTIFACT_NAME = "mim-results-manual"   # Must match the name set in your GitHub Actions workflow
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
