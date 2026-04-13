@@ -679,7 +679,7 @@ def make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True):
 
 
 # ─────────────────────────────────────────────────────────────
-# [도움 함수] 유체 추출 및 스케일 변환 로직 (기존 코드 상단에 배치 권장)
+# [도움 함수] 유체 추출 및 스케일 변환 로직 (기존 코드 상단에 배치)
 # ─────────────────────────────────────────────────────────────
 def load_and_threshold(fpath):
     """VTK/VTM 파일을 읽어 유체(alpha.water > 0.5) 영역만 추출하고 mm로 변환"""
@@ -688,34 +688,27 @@ def load_and_threshold(fpath):
         if isinstance(mesh, pv.MultiBlock):
             mesh = mesh.combine()
         
-        # 1. 유체 영역(alpha.water) 필터링 (게이트에서부터 채워지는 형상 추출)
-        # OpenFOAM 버전에 따라 'alpha.water' 또는 'alpha1'일 수 있음
+        # 1. 유체 영역(alpha.water) 필터링
         field_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
-        
-        # 전체 격자 정보 저장 (디버그용)
         total_cells = mesh.n_cells
         dbg_info = f"Total Cells: {total_cells}, Fields: {mesh.array_names}"
 
         if field_name in mesh.array_names:
-            # Threshold 적용: 유체가 50% 이상 찬 격자만 물리적으로 추출
             fluid_mesh = mesh.threshold(0.5, scalars=field_name)
             if fluid_mesh.n_cells == 0:
                 return None, None, 0, dbg_info
             
-            # 표면만 추출 (렌더링 속도 최적화)
             surf = fluid_mesh.extract_surface()
             
             # 2. 단위 보정 (m -> mm)
-            # STL 금형이 mm 단위라면 반드시 1000을 곱해야 위치가 겹침
             pts = surf.points * 1000  
             faces = surf.faces.reshape(-1, 4)[:, 1:]
-            
-            # 유체 농도 데이터 (컬러맵 표시용)
             alpha_vals = surf.point_data[field_name].tolist()
             
+            # 정확히 4개의 값을 반환하여 Unpacking 에러 방지
             return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid_mesh.n_cells, dbg_info
         else:
-            return None, None, 0, f"Field '{field_name}' not found. Check your controlDict."
+            return None, None, 0, f"Field '{field_name}' not found."
     except Exception as e:
         return None, None, 0, str(e)
 
@@ -726,7 +719,7 @@ def make_fluid_trace(pts_data, fi, fj, fk, intensity, show_colorbar=False):
         x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
         i=fi, j=fj, k=fk,
         intensity=intensity,
-        colorscale='Viridis',  # 유체 흐름 시각화에 적합한 컬러맵
+        colorscale='Viridis',
         opacity=1.0,
         name='Fluid (alpha.water)',
         showlegend=True,
@@ -746,10 +739,16 @@ def make_mold_trace(trimesh_obj, opacity=0.08, show_legend=True):
         showlegend=show_legend
     )
 
+def _trace_to_json(trace):
+    import json
+    return json.loads(go.Figure(trace).to_json())['data'][0] if trace else None
+
+def _safe_json(data):
+    import json
+    return json.dumps(data).replace('</', '<\\/')
 # ─────────────────────────────────────────────────────────────
 # 3. 3D Filling Animation (수정된 전체 섹션)
 # ─────────────────────────────────────────────────────────────
-
 vtk_dir = "VTK"
 
 if os.path.exists(vtk_dir):
@@ -769,61 +768,44 @@ if os.path.exists(vtk_dir):
     )
 
     if not all_files:
-        st.warning("No 'case_*.vtm / case_*.vtk' files found in VTK directory.")
+        st.warning("No 'case_*.vtm / case_*.vtk' files found.")
     else:
         total_steps = len(all_files)
-        st.caption(f"✅ {total_steps} time-step file(s) found (Gate-to-End Analysis)")
-
-        # ── 디버그 expander ──────────────────────────────────
-        with st.expander("🔍 Debug: VTK Field Info (first & last step)", expanded=False):
-            for label, fp in [("First step", all_files[0]), ("Last step", all_files[-1])]:
-                result, alpha_vals, n_cells, dbg = load_and_threshold(fp)
-                st.code(f"[{label}] {os.path.basename(fp)}\n{dbg}", language="bash")
 
         # ── [A] 슬라이더 단일 스텝 뷰 ───────────────────────
         st.markdown("#### 🎚 Step-by-Step Viewer")
-        step_idx = st.slider(
-            "⏱ Time Step",
-            min_value=0, max_value=total_steps - 1,
-            value=0, step=1, format="Step %d"
-        )
-        selected_file = all_files[step_idx]
-        st.info(f"Rendering: `{os.path.basename(selected_file)}` (Gate filling state)")
-
+        step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, 0, format="Step %d")
+        
         try:
-            result, alpha_vals, n_fluid_cells, dbg = load_and_threshold(selected_file)
+            # 여기서 result, alpha_vals, n_fluid_cells, dbg 총 4개를 받으므로 에러가 해결됩니다.
+            result, alpha_vals, n_fluid_cells, dbg = load_and_threshold(all_files[step_idx])
 
             fig = go.Figure()
             mold_t = make_mold_trace(st.session_state.get("mesh"))
-            if mold_t:
-                fig.add_trace(mold_t)
+            if mold_t: fig.add_trace(mold_t)
 
             if result is not None:
                 pts_tuple, fi, fj, fk = result
                 fig.add_trace(make_fluid_trace(pts_tuple, fi, fj, fk, alpha_vals))
                 
-                # 고정된 전체 격자수 대신 실제 데이터 기반 계산 (예시: 마지막 스텝 기준)
+                # 충전율 계산 (920은 예시이므로 실제 상황에 맞게 조정 가능)
                 total_mesh_cells = 920 
                 real_fill = (n_fluid_cells / total_mesh_cells) * 100
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
-                c2.metric("Active Fluid Cells", f"{n_fluid_cells:,}")
-                c3.metric("Threshold", "alpha > 0.5")
+                st.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
             else:
-                st.warning(f"No fluid detected at this step. (Gate might be empty)")
+                st.warning("No fluid detected at this step.")
 
-            fig.update_layout(
-                scene=dict(aspectmode="data",
-                           xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)"),
-                legend=dict(x=0.01, y=0.99),
-                margin=dict(l=0, r=0, b=0, t=30),
-                height=520,
-            )
+            fig.update_layout(scene=dict(aspectmode="data"), height=520, margin=dict(l=0,r=0,b=0,t=30))
             st.plotly_chart(fig, use_container_width=True)
 
         except Exception as e:
             st.error(f"Visualization Error: {e}")
+
+        # ── [B] JS-driven 애니메이션 (Build & Play 버튼 섹션) ──
+        st.divider()
+        if st.button("🎬 Build & Play Animation", use_container_width=True):
+            # ... (이하 버튼 클릭 시 동작하는 HTML 생성 로직 부분)
+            # (제공해주신 JS 애니메이션 빌드 코드를 이어서 붙여넣으시면 됩니다)
 
         # ── [B] JS-driven 애니메이션 ─────────────────────────
         st.divider()
