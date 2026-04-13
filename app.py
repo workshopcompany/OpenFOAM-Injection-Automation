@@ -6,8 +6,7 @@ import zipfile
 import io
 import glob
 import re  # 파일명 숫자 정렬을 위해 추가
-import pyvista as pv
-from stpyvista import stpyvista
+
 import plotly.graph_objects as go
 
 
