@@ -54,7 +54,7 @@ jobs:
         working-directory: OpenFOAM/case
         env:
           MATERIAL:  ${{ github.event.client_payload.material  || github.event.inputs.material  || '17-4PH' }}
-          VELOCITY:  ${{ github.event.client_payload.vel       || github.event.inputs.velocity  || '0.025' }}
+          VELOCITY:  ${{ github.event.client_payload.velocity  || github.event.inputs.velocity  || '0.025' }}
           VISCOSITY: ${{ github.event.client_payload.viscosity || github.event.inputs.viscosity || '4e-3' }}
           DENSITY:   ${{ github.event.client_payload.density   || github.event.inputs.density   || '7780' }}
           MELT_TEMP: ${{ github.event.client_payload.melt_temp || github.event.inputs.melt_temp || '185' }}
@@ -94,7 +94,7 @@ jobs:
           ALLRUN_EXIT=${PIPESTATUS[0]}
 
           touch case.foam
-          echo "SIGNAL_ID=${SIGNAL_ID}"   >> results/meta.txt
+          echo "SIGNAL_ID=${SIGNAL_ID}"     >> results/meta.txt
           echo "ALLRUN_EXIT=${ALLRUN_EXIT}" >> results/meta.txt
 
           if [ "$ALLRUN_EXIT" -eq 0 ]; then
@@ -108,7 +108,6 @@ jobs:
       - name: Prepare Clean Artifacts (results.txt + logs.zip + VTK/)
         if: always()
         run: |
-          # Allrun에서 이미 생성한 파일들을 루트로 복사
           cp -f OpenFOAM/case/results.txt . 2>/dev/null || true
           cp -f OpenFOAM/case/logs.zip . 2>/dev/null || true
           cp -rf OpenFOAM/case/VTK . 2>/dev/null || true
