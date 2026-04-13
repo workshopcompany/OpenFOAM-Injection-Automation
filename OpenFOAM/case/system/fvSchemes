@@ -21,7 +21,7 @@ divSchemes
 {
     default             none;
     div(phi,U)          Gauss upwind;
-    div(phi,alpha)      Gauss interfaceCompression;
+    div(phi,alpha)      Gauss vanLeer;
     div(rho*phi,U)      Gauss upwind;
     div(phi,k)          Gauss upwind;
     div(phi,epsilon)    Gauss upwind;
