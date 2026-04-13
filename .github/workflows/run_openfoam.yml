@@ -1,15 +1,28 @@
 name: MIM-Ops Flow Analysis
 
 on:
-  push:
-    paths:
-      - 'OpenFOAM/case/constant/transportProperties'
+  # 1. 파일 변경(push) 트리거는 중복 실행의 주범이므로 제거하거나 주석 처리합니다.
+  # push:
+  #   paths:
+  #     - 'OpenFOAM/case/constant/transportProperties'
+
+  # 2. 외부(Zapier/Streamlit) Webhook 신호 수신
+  repository_dispatch:
+    types: [mim_ops_trigger]
+
+  # 3. GitHub UI에서 직접 수동 실행 가능하게 설정
   workflow_dispatch:
+    inputs:
+      velocity:
+        description: 'Injection Velocity'
+        default: '100'
+      end_time:
+        description: 'Simulation End Time'
+        default: '0.5'
 
 jobs:
   run-sim:
     runs-on: ubuntu-latest
-    # 방법 A (추천): 공식 컨테이너 사용
     container:
       image: opencfd/openfoam-dev:2312
       options: --user root
@@ -18,21 +31,35 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Check OpenFOAM Installation
+      - name: Sanitize OpenFOAM Dictionaries
+        # [중요] transportProperties 내의 'controlDict:' 같은 잘못된 문법을 자동 수정
         shell: bash
+        working-directory: OpenFOAM/case/constant
         run: |
-          echo ">>> Checking OpenFOAM path..."
-          ls -d /usr/lib/openfoam/openfoam* || ls -d /opt/openfoam* || echo "OpenFOAM NOT FOUND"
+          echo ">>> Sanitizing transportProperties formatting..."
+          if [ -f transportProperties ]; then
+            # 1. 'controlDict:' 로 시작하는 YAML 블록부터 파일 끝까지 삭제
+            sed -i '/controlDict:/,$d' transportProperties
+            # 2. 혹시 남아있을 수 있는 콜론(:) 제거 및 세미콜론(;) 확인
+            sed -i 's/://g' transportProperties
+            # 3. OpenFOAM 필수 헤더가 깨졌을 경우를 대비해 다시 확인 (선택 사항)
+            echo "✅ Format sanitized. Printing preview:"
+            head -n 20 transportProperties
+          fi
 
       - name: Execute Solver Pipeline
-        # 핵심: 로그인 쉘(-l)을 사용하여 환경 변수 상속을 보장
         shell: bash -l {0}
         working-directory: OpenFOAM/case
         env:
-          VELOCITY: ${{ github.event.inputs.velocity }}
-          END_TIME: ${{ github.event.inputs.end_time }}
+          # Webhook 페이로드나 수동 입력을 우선순위에 따라 할당
+          VELOCITY: ${{ github.event.client_payload.vel || github.event.inputs.velocity || '100' }}
+          END_TIME: ${{ github.event.client_payload.etime || github.event.inputs.end_time || '0.5' }}
+          SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # 1. 안전한 환경 로딩 (분석하신 해결책 적용)
+          echo ">>> Signal ID: $SIGNAL_ID"
+          echo ">>> End Time Setting: $END_TIME"
+
+          # 1. OpenFOAM 환경 로딩
           if [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ]; then
               . /usr/lib/openfoam/openfoam2312/etc/bashrc
           elif [ -f /opt/openfoam2312/etc/bashrc ]; then
@@ -42,15 +69,21 @@ jobs:
               exit 1
           fi
 
-          # 2. 스크립트 실행
+          # 2. p_rgh 자동 생성 (파일이 없을 경우 대비)
+          if [ ! -f 0/p_rgh ] && [ -f 0/p ]; then
+              echo ">>> Creating missing p_rgh from p field..."
+              cp 0/p 0/p_rgh
+          fi
+
+          # 3. 스크립트 실행
           chmod +x Allrun
-          ./Allrun || (echo "❌ Solver failed. Printing logs:" && tail -n 20 logs/solver.log && exit 1)
+          ./Allrun || (echo "❌ Solver failed. Printing logs:" && [ -d logs ] && tail -n 50 logs/solver.log || exit 1)
 
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-results
+          name: simulation-results-${{ github.event.client_payload.signal_id || 'manual' }}
           path: |
             OpenFOAM/case/results/
             OpenFOAM/case/logs/
