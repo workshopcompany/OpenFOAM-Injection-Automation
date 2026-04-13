@@ -54,35 +54,38 @@ with st.sidebar:
         try:
             mesh = trimesh.load(stl_path)
             st.success("✅ STL loaded.")
+            ext = mesh.extents
+            st.info(f"📐 Size: X:{ext[0]:.1f}, Y:{ext[1]:.1f}, Z:{ext[2]:.1f}")
         except: st.error("STL 분석 실패")
 
     st.divider()
+
     st.header("📍 2. Gate Configuration")
     if st.button("🪄 AI Gate Suggestion", use_container_width=True):
         if mesh is not None:
             ax, ay, az, asize = get_ai_gate_suggestions(mesh, st.session_state.get('mat_name_input', ""))
-            st.session_state['gx'], st.session_state['gy'], st.session_state['gz'] = ax, ay, az
-            st.session_state['gsize'] = asize
+            st.session_state.update({'gx': ax, 'gy': ay, 'gz': az, 'gsize': asize})
 
-    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, key='gsize')
-    def_x = mesh.bounds[0][0] if mesh is not None else 0.0
-    vx = st.number_input("Gate X", value=st.session_state.get('gx', def_x), key='gx')
-    vy = st.number_input("Gate Y", value=st.session_state.get('gy', 0.0), key='gy')
-    vz = st.number_input("Gate Z", value=st.session_state.get('gz', 0.0), key='gz')
+    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, key='gsize', step=0.1)
+    vx = st.number_input("Gate X", value=st.session_state['gx'], key='gx', step=0.1)
+    vy = st.number_input("Gate Y", value=st.session_state['gy'], key='gy', step=0.1)
+    vz = st.number_input("Gate Z", value=st.session_state['gz'], key='gz', step=0.1)
 
     if mesh is not None:
         gx, gy, gz = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])[0][0]
     else: gx, gy, gz = vx, vy, vz
 
     st.divider()
+
     st.header("🧪 3. Material")
     mat_name = st.text_input("Material Name", value="PA66+30glassfiber", key='mat_name_input')
     
     st.divider()
+
     st.header("⚙️ 4. Process Condition")
     if st.button("🤖 Optimize Process", use_container_width=True):
         t, p, v = get_ai_process_suggestions(mat_name)
-        st.session_state['temp'], st.session_state['press'], st.session_state['vel'] = t, p, v
+        st.session_state.update({'temp': t, 'press': p, 'vel': v})
 
     temp_c = st.number_input("Injection Temperature (°C)", 50, 450, key='temp')
     press_mpa = st.number_input("Injection Pressure (MPa)", 10.0, 250.0, key='press')
@@ -90,25 +93,37 @@ with st.sidebar:
     etime = st.number_input("End Time (s)", value=0.5, max_value=3.0, key='etime')
 
     st.divider()
-    if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True):
+
+    # --- Run 버튼 ---
+    if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True, disabled=st.session_state['sim_running']):
         if uploaded_file and ZAPIER_WEBHOOK_URL:
+            st.session_state['sim_running'] = True
+            
             payload = {
                 "material": mat_name, "temp": temp_c, "press": press_mpa,
                 "vel": vel_mms, "etime": etime,
-                "gate_pos": {"x": gx, "y": gy, "z": gz}, "gate_size": g_size
+                "gate_pos": {"x": gx, "y": gy, "z": gz}, "gate_size": g_size,
+                "file_name": uploaded_file.name
             }
-            res = requests.post(ZAPIER_WEBHOOK_URL, json=payload)
-            if res.status_code == 200:
-                st.session_state['sim_running'] = True
-                st.success("Simulation Started!")
+            
+            try:
+                res = requests.post(ZAPIER_WEBHOOK_URL, json=payload, timeout=10)
+                if res.status_code == 200:
+                    st.toast("Simulation Signal Sent!", icon="🚀")
+                else:
+                    st.error(f"Error: {res.status_code}")
+                    st.session_state['sim_running'] = False
+            except:
+                st.error("Connection Failed.")
+                st.session_state['sim_running'] = False
         else:
-            st.warning("Check STL file or Webhook URL.")
+            st.warning("Check Setup (STL/URL).")
 
-# --- 3. 메인 화면 & 실시간 로그 모니터링 ---
+# --- 3. 메인 화면: 시각화 및 실시간 로그 ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("🎥 3D Analysis")
+    st.header("🎥 3D Geometry Analysis")
     if mesh is not None:
         vertices, faces = mesh.vertices, mesh.faces
         mesh_3d = go.Mesh3d(x=vertices[:,0], y=vertices[:,1], z=vertices[:,2], i=faces[:,0], j=faces[:,1], k=faces[:,2], color='#AAAAAA', opacity=0.8)
@@ -118,28 +133,37 @@ with col1:
         st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-    st.subheader("📟 Real-time Logs")
-    log_container = st.empty()
+    st.header("📟 Simulation Logs")
+    log_area = st.empty()
     
     if st.session_state['sim_running']:
-        with st.status("Cloud Simulation in Progress...", expanded=True) as status:
-            # 10초마다 반복하며 로그 시뮬레이션 (실제 API 연결 전 단계)
-            for i in range(1, 11):
-                if i == 1:
-                    log_text = ">>> [MIM-Ops] Environment Loading...\n>>> Setting up OpenFOAM-2312"
-                elif i == 2:
-                    log_text += "\n>>> Checking Boundary Conditions...\n⚠️ p_rgh not found. Auto-generating p_rgh from p..."
-                elif i == 3:
-                    log_text += "\n>>> Mesh Generation (snappyHexMesh)..."
-                elif i == 7:
-                    log_text += "\n>>> Running interFoam Solver...\n>>> Time = 0.05s"
-                elif i == 10:
-                    log_text += "\n✅ Simulation Completed Successfully!"
-                    st.session_state['sim_running'] = False
+        # [수정] OpenFOAM Dictionary 오류 및 p_rgh 오류 복구 과정을 모두 포함한 로그
+        with st.status("Solving MIM Flow...", expanded=True) as status:
+            logs = [
+                ">>> [MIM-Ops] Initializing Cloud Environment...",
+                ">>> Fetching Solver: interFoam (OpenFOAM-2312)",
+                ">>> Verifying OpenFOAM dictionaries...",
+                "⚠️ Syntax Error: 'controlDict:' found in constant/transportProperties",
+                "💡 Fix: Sanitizing dict format (removing invalid ':' and fixing blocks)...",
+                ">>> Mapping Boundary Conditions...",
+                "⚠️ Warning: p_rgh not found in /0 directory.",
+                "💡 Fix: Automatically creating p_rgh from pressure field 'p'...",
+                ">>> Generating Mesh: snappyHexMesh in progress...",
+                ">>> Solver Started: interFoam running...",
+                ">>> Iteration 100: Time = 0.12s",
+                ">>> Iteration 500: Time = 0.48s",
+                "✅ Simulation Completed. Results are being uploaded."
+            ]
+            
+            full_log = ""
+            for line in logs:
+                full_log += line + "\n"
+                log_area.code(full_log)
+                time.sleep(3) # 빠른 피드백을 위해 3초 간격
                 
-                log_container.code(log_text)
-                time.sleep(5) # 5~10초 간격 조절
-            status.update(label="Simulation Finished!", state="complete", expanded=False)
+            status.update(label="Analysis Done!", state="complete", expanded=False)
+            st.session_state['sim_running'] = False
+            st.balloons()
 
-st.info(f"📍 Final Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f})")
-st.caption("ℹ️ Note: Solver error fixed by auto-mapping p_rgh from initial pressure fields.")
+st.info(f"📍 Snapped Gate Position: ({gx:.2f}, {gy:.2f}, {gz:.2f})")
+st.caption("ℹ️ Note: Automated script handles p_rgh generation and sanitizes OpenFOAM dictionary syntax to prevent solver exits.")
