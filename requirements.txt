@@ -14,3 +14,8 @@ pyvista
 streamlit-stl
 
 requests
+
+plotly
+
+
+trimesh  # STL 파일을 읽고 좌표를 계산하는 데 필요
