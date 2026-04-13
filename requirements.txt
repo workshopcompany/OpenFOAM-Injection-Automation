@@ -7,7 +7,13 @@ plotly
 trimesh
 meshio
 requests
+google-generativeai
+matplotlib
+streamlit-stl
+pyvista
+stpyvista
+plotly
+scipy
+rtree
 
 
-# RESET TRIGGER
-# (forces Streamlit Cloud to rebuild)
