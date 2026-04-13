@@ -19,7 +19,7 @@ echo "[Allrun] V=${VELOCITY} | nu=${VISCOSITY} | rho=${DENSITY}"
 echo "[Allrun] Tmelt=${MELT_TEMP} | Tmold=${MOLD_TEMP} | T=${END_TIME}"
 echo "========================================"
 
-mkdir -p logs results
+mkdir -p logs results system constant 0
 
 # ── 이전 결과 정리 ────────────────────────
 rm -rf processor* postProcessing 2>/dev/null || true
@@ -36,7 +36,7 @@ PIPELINE_OK=true
 echo "[Allrun] 설정 파일 생성 시작..."
 
 # ── controlDict ───────────────────────────
-cat > system/controlDict << 'CTRL_EOF'
+cat > system/controlDict << CTRL_EOF
 FoamFile
 {
     version     2.0;
@@ -49,9 +49,7 @@ application     interFoam;
 startFrom       startTime;
 startTime       0;
 stopAt          endTime;
-CTRL_EOF
-echo "endTime         ${END_TIME};" >> system/controlDict
-cat >> system/controlDict << 'CTRL_EOF'
+endTime         ${END_TIME};
 deltaT          0.0001;
 writeControl    adjustableRunTime;
 writeInterval   0.05;
@@ -71,7 +69,7 @@ CTRL_EOF
 echo "[Allrun] ✅ controlDict 생성"
 
 # ── transportProperties ───────────────────
-cat > constant/transportProperties << 'TP_EOF'
+cat > constant/transportProperties << TP_EOF
 FoamFile
 {
     version     2.0;
@@ -84,10 +82,8 @@ phases (water air);
 water
 {
     transportModel  Newtonian;
-TP_EOF
-echo "    nu              [0 2 -1 0 0 0 0] ${VISCOSITY};" >> constant/transportProperties
-echo "    rho             ${DENSITY};"                     >> constant/transportProperties
-cat >> constant/transportProperties << 'TP_EOF'
+    nu              [0 2 -1 0 0 0 0] ${VISCOSITY};
+    rho             ${DENSITY};
 }
 air
 {
@@ -98,7 +94,7 @@ air
 sigma           [1 0 -2 0 0 0 0] 0.4;
 // ************************************************************************* //
 TP_EOF
-echo "[Allrun] ✅ transportProperties 생성 (nu=${VISCOSITY}, rho=${DENSITY})"
+echo "[Allrun] ✅ transportProperties 생성"
 
 # ── turbulenceProperties ──────────────────
 cat > constant/turbulenceProperties << 'TURB_EOF'
@@ -141,7 +137,7 @@ FoamFile
     location    "0";
     object      p_rgh;
 }
-dimensions      [1 -1 -2 0 0 0 0];
+dimensions      [0 2 -2 0 0 0 0];
 internalField   uniform 0;
 boundaryField
 {
@@ -152,7 +148,7 @@ boundaryField
 }
 // ************************************************************************* //
 P_EOF
-echo "[Allrun] ✅ p_rgh 생성 [1 -1 -2]"
+echo "[Allrun] ✅ p_rgh 생성"
 
 # ── 0/alpha.water ─────────────────────────
 cat > 0/alpha.water << 'A_EOF'
@@ -178,7 +174,7 @@ A_EOF
 echo "[Allrun] ✅ alpha.water 생성"
 
 # ── 0/U ───────────────────────────────────
-cat > 0/U << 'U_EOF'
+cat > 0/U << U_EOF
 FoamFile
 {
     version     2.0;
@@ -191,9 +187,7 @@ dimensions      [0 1 -1 0 0 0 0];
 internalField   uniform (0 0 0);
 boundaryField
 {
-U_EOF
-echo "    inlet        { type fixedValue; value uniform (${VELOCITY} 0 0); }" >> 0/U
-cat >> 0/U << 'U_EOF'
+    inlet        { type fixedValue; value uniform (${VELOCITY} 0 0); }
     outlet       { type zeroGradient; }
     walls        { type noSlip; }
     frontAndBack { type empty; }
@@ -260,15 +254,14 @@ solvers
     "pcorr.*"
     {
         solver          PCG;
-        preconditioner  GAMG;
+        preconditioner  DIC;      // 🔥 GAMG에서 DIC로 변경 (smoother 에러 원인 해결)
         tolerance       1e-5;
         relTol          0;
-        maxIter         100;
     }
     p_rgh
     {
         solver          GAMG;
-        smoother        GaussSeidel;
+        smoother        DIC;      // 🔥 GAMG 솔버에 필수적인 smoother 추가
         tolerance       1e-7;
         relTol          0.05;
     }
@@ -285,7 +278,11 @@ solvers
         relTol          0;
         nSweeps         1;
     }
-    UFinal { $U; relTol 0; }
+    UFinal
+    {
+        $U;
+        relTol          0;
+    }
 }
 PIMPLE
 {
@@ -299,15 +296,7 @@ PIMPLE
 relaxationFactors { equations { ".*" 1; } }
 // ************************************************************************* //
 FSO_EOF
-echo "[Allrun] ✅ fvSolution 생성"
-
-# ── fvSolution 검증 ───────────────────────
-if grep -q "cAlpha" system/fvSolution; then
-    echo "[Allrun] ✅ cAlpha 확인됨"
-else
-    echo "[Allrun] ⚠️ cAlpha 누락 — 강제 주입"
-    sed -i '/"alpha.water.\*"/a \        cAlpha          1;' system/fvSolution
-fi
+echo "[Allrun] ✅ fvSolution 생성 (DIC Preconditioner 적용)"
 
 echo "[Allrun] 모든 설정 파일 생성 완료"
 echo "========================================"
@@ -321,8 +310,6 @@ BLOCKMESH_EXIT=${PIPESTATUS[0]}
 
 if [ "$BLOCKMESH_EXIT" -ne 0 ]; then
     echo "[Allrun] ❌ blockMesh 실패 (exit=${BLOCKMESH_EXIT})"
-    echo "=== blockMesh 로그 마지막 30줄 ==="
-    tail -30 logs/blockMesh.log
     PIPELINE_OK=false
 else
     echo "[Allrun] ✅ blockMesh 완료"
@@ -354,16 +341,12 @@ fi
 # ══════════════════════════════════════════
 # 결과 검증 및 메타데이터
 # ══════════════════════════════════════════
-TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended \
-  -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
+TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
 echo "[Allrun] 타임스텝 폴더: ${TIMESTEPS}개"
 
 LAST_TIME=""
 if [ "$TIMESTEPS" -gt 0 ]; then
-    LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended \
-      -regex '\./[0-9]+\.[0-9]+' -type d | \
-      sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
-    echo "[Allrun] 마지막 타임스텝: ${LAST_TIME}"
+    LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d | sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
 fi
 
 cat > results/meta.txt << META_EOF
@@ -385,12 +368,7 @@ if [ "$PIPELINE_OK" = true ] && [ "$TIMESTEPS" -gt 0 ]; then
     echo "[Allrun] 타임스텝: ${TIMESTEPS}개 | 마지막: ${LAST_TIME}"
 else
     echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
-    echo "[Allrun] logs/ 폴더를 확인하세요:"
-    echo "  - logs/blockMesh.log"
-    echo "  - logs/interFoam.log"
-    echo "  - logs/solver_detailed.log"
 fi
 echo "========================================"
 
-# 항상 exit 0 — 로그 업로드 보장
 exit 0
