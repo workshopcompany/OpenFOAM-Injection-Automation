@@ -6,15 +6,34 @@ FoamFile
     location    "system";
     object      fvSolution;
 }
+
 solvers
 {
-    p
+    "alpha.water.*"
+    {
+        nAlphaCorr      1;
+        nAlphaSubCycles 2;
+        cAlpha          1;
+
+        solver          MULES;
+        tolerance       1e-8;
+        relTol          0;
+    }
+
+    p_rgh
     {
         solver          GAMG;
         smoother        GaussSeidel;
         tolerance       1e-7;
         relTol          0.01;
     }
+
+    p_rghFinal
+    {
+        $p_rgh;
+        relTol          0;
+    }
+
     U
     {
         solver          smoothSolver;
@@ -22,19 +41,38 @@ solvers
         tolerance       1e-6;
         relTol          0.1;
     }
+
+    UFinal
+    {
+        $U;
+        relTol          0;
+    }
 }
-SIMPLE
+
+PIMPLE
 {
-    nNonOrthogonalCorrectors 2;
+    momentumPredictor yes;
+    nOuterCorrectors  1;
+    nCorrectors       2;
+    nNonOrthogonalCorrectors 1;
+
     residualControl
     {
-        p               1e-4;
+        p_rgh           1e-4;
         U               1e-4;
     }
 }
+
 relaxationFactors
 {
-    fields    { p 0.3; }
-    equations { U 0.7; }
+    fields
+    {
+        p_rgh 0.3;
+    }
+    equations
+    {
+        U     0.7;
+    }
 }
+
 // ************************************************************************* //
