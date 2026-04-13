@@ -370,7 +370,7 @@ echo "[Allrun] 📂 결과물 정리 시작..."
 
 if [ "$PIPELINE_OK" = true ]; then
     # 1. VTK 생성 (웹 3D 표시용) — 실패해도 진행
-    foamToVTK -ascii -legacy 2>&1 | tee logs/foamToVTK.log || true
+    foamToVTU 2>&1 | tee logs/foamToVTK.log || true
 
     # 2. results.txt 생성 (Streamlit에서 바로 표시)
     cat > ./results.txt << EOF
