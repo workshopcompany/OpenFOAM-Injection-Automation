@@ -31,11 +31,18 @@ def _init(k, v):
 _init("gx", 0.0);  _init("gy", 0.0);  _init("gz", 0.0)
 _init("gsize", 2.0)
 _init("temp",  230); _init("press", 70.0); _init("vel", 80.0)
+_init("etime", 0.5)
 _init("sim_running", False)
 _init("last_signal_id", None)
 _init("mesh", None)
 _init("props", None)
 _init("props_confirmed", False)
+_init("mat_name", "PA66+30GF")
+_init("last_vel_mms", 80.0)
+_init("last_etime", 0.5)
+_init("gx_final", 0.0)
+_init("gy_final", 0.0)
+_init("gz_final", 0.0)
 
 # ══════════════════════════════════════════
 # 로컬 물성 DB (Gemini 추천 형식 유지)
@@ -104,17 +111,13 @@ LOCAL_DB = {
 }
 
 def get_props(material: str) -> dict:
-    """로컬 DB에서 물성 검색 (대소문자 무관)"""
     name = material.upper().strip()
-    # 정확히 일치
     for key, val in LOCAL_DB.items():
         if key.upper() == name:
             return {**val, "material": key, "source": "Gemini 추천"}
-    # 부분 일치
     for key, val in LOCAL_DB.items():
         if key.upper() in name or name in key.upper():
             return {**val, "material": key, "source": "Gemini 추천"}
-    # 미등록 재료 기본값
     return {
         "nu": 1e-3, "rho": 1000, "Tmelt": 220, "Tmold": 50,
         "press_mpa": 70, "vel_mms": 80,
@@ -123,7 +126,6 @@ def get_props(material: str) -> dict:
     }
 
 def get_process(material: str) -> dict:
-    """로컬 DB에서 공정조건 추천"""
     props = get_props(material)
     return {
         "temp":  props.get("Tmelt", 230),
@@ -176,6 +178,7 @@ with st.sidebar:
     vy = st.number_input("Gate Y", value=st.session_state["gy"], step=0.1, key="gy")
     vz = st.number_input("Gate Z", value=st.session_state["gz"], step=0.1, key="gz")
 
+    # 게이트 메쉬 표면 스냅 후 세션에 저장
     mesh = st.session_state.get("mesh")
     if mesh is not None and HAS_TRIMESH:
         snap, _, _ = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])
@@ -184,6 +187,11 @@ with st.sidebar:
         gz = float(snap[0][2])
     else:
         gx, gy, gz = vx, vy, vz
+
+    # ★ 게이트 좌표를 세션에 저장 (메인 영역에서 참조 가능)
+    st.session_state["gx_final"] = gx
+    st.session_state["gy_final"] = gy
+    st.session_state["gz_final"] = gz
 
     st.divider()
 
@@ -194,6 +202,8 @@ with st.sidebar:
         placeholder="PP, ABS, PA66, PC, Catamold ...",
         key="mat_name_input"
     )
+    # 재료명도 세션 저장
+    st.session_state["mat_name"] = mat_name
 
     if st.button("🤖 AI 물성 추천 (Gemini)", use_container_width=True, type="primary"):
         props = get_props(mat_name)
@@ -264,10 +274,14 @@ with st.sidebar:
     vel_mms   = st.number_input("Injection Velocity (mm/s)",
                                  1.0, 600.0, step=1.0, key="vel")
     etime     = st.number_input("End Time (s)",
-                                 value=0.5, min_value=0.1,
-                                 max_value=10.0, step=0.1, key="etime")
+                                 value=st.session_state["etime"],
+                                 min_value=0.1, max_value=10.0,
+                                 step=0.1, key="etime")
 
-    # 물성 미확정 경고
+    # ★ 공정조건도 세션에 저장 (메인 영역 로그에서 참조)
+    st.session_state["last_vel_mms"] = vel_mms
+    st.session_state["last_etime"]   = etime
+
     if not st.session_state["props_confirmed"]:
         st.warning("⚠️ 물성을 추천받고 ✅ 확정해주세요")
 
@@ -296,22 +310,20 @@ with st.sidebar:
             payload = {
                 "signal_id":  sig_id,
                 "timestamp":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                # 재료
                 "material":   mat_name,
-                # 물성
                 "viscosity":  float(props["nu"]),
                 "density":    float(props["rho"]),
                 "melt_temp":  int(props["Tmelt"]),
                 "mold_temp":  int(props["Tmold"]),
-                # 공정조건
                 "temp":       int(temp_c),
                 "press":      float(press_mpa),
                 "vel":        round(vel_mms / 1000, 6),  # mm/s → m/s
                 "etime":      float(etime),
-                # 게이트
-                "gate_pos":   {"x": round(gx, 3),
-                               "y": round(gy, 3),
-                               "z": round(gz, 3)},
+                "gate_pos":   {
+                    "x": round(gx, 3),
+                    "y": round(gy, 3),
+                    "z": round(gz, 3)
+                },
                 "gate_size":  float(g_size),
             }
 
@@ -328,8 +340,18 @@ with st.sidebar:
 
 
 # ══════════════════════════════════════════
-# 메인 화면
+# 메인 화면 — 세션에서 값 읽기 (스코프 안전)
 # ══════════════════════════════════════════
+gx_f      = st.session_state["gx_final"]
+gy_f      = st.session_state["gy_final"]
+gz_f      = st.session_state["gz_final"]
+g_size_f  = st.session_state["gsize"]
+props_f   = st.session_state["props"]
+mat_f     = st.session_state["mat_name"]
+vel_f     = st.session_state["last_vel_mms"]
+etime_f   = st.session_state["last_etime"]
+sig_id_f  = st.session_state["last_signal_id"]
+
 col_geo, col_log = st.columns([2, 1])
 
 # ── 3D 형상 뷰어 ─────────────────────────
@@ -347,9 +369,9 @@ with col_geo:
                 lighting=dict(ambient=0.4, diffuse=0.8, specular=0.3)
             ),
             go.Scatter3d(
-                x=[gx], y=[gy], z=[gz],
+                x=[gx_f], y=[gy_f], z=[gz_f],
                 mode="markers",
-                marker=dict(size=g_size * 5, color="red"),
+                marker=dict(size=g_size_f * 5, color="red"),
                 name="게이트"
             )
         ])
@@ -372,21 +394,18 @@ with col_geo:
 with col_log:
     st.header("📟 Simulation & Debug Logs")
 
-    sig_id = st.session_state.get("last_signal_id")
-    props  = st.session_state.get("props")
-
-    if st.session_state["sim_running"] and sig_id and props:
+    if st.session_state["sim_running"] and sig_id_f and props_f:
         log_lines = [
-            f">>> [MIM-Ops] Outbound Signal ID: {sig_id}",
+            f">>> [MIM-Ops] Outbound Signal ID: {sig_id_f}",
             ">>> Preventing Duplicate Runs: Bypass GitHub Push Trigger.",
             ">>> Verifying OpenFOAM Dictionary Integrity...",
-            f">>> Material: {mat_name}",
-            f">>> nu = {props['nu']:.2e} m²/s",
-            f">>> rho = {props['rho']} kg/m³",
-            f">>> Tmelt = {props['Tmelt']}°C | Tmold = {props['Tmold']}°C",
-            f">>> Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f}) Ø{g_size}mm",
-            f">>> Velocity = {vel_mms/1000:.4f} m/s",
-            f">>> End Time = {etime}s",
+            f">>> Material: {mat_f}",
+            f">>> nu = {props_f['nu']:.2e} m²/s",
+            f">>> rho = {props_f['rho']} kg/m³",
+            f">>> Tmelt = {props_f['Tmelt']}°C | Tmold = {props_f['Tmold']}°C",
+            f">>> Gate: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f}) Ø{g_size_f}mm",
+            f">>> Velocity = {vel_f/1000:.4f} m/s",
+            f">>> End Time = {etime_f}s",
             "✅ transportProperties: OK",
             "✅ fvSolution: OK",
             "✅ fvSchemes: OK",
@@ -402,22 +421,22 @@ with col_log:
             st.session_state["sim_running"] = False
             st.rerun()
 
-    elif sig_id:
-        st.success(f"✅ 마지막 실행 ID: {sig_id}")
+    elif sig_id_f:
+        st.success(f"✅ 마지막 실행 ID: {sig_id_f}")
         st.info("GitHub Actions → Artifacts에서 결과를 확인하세요.")
     else:
         st.info("시뮬레이션을 실행하면 여기에 로그가 표시됩니다.")
 
 # ── 하단 상태 표시 ───────────────────────
-st.info(f"📍 Final Gate Position: ({gx:.2f}, {gy:.2f}, {gz:.2f})")
+st.info(f"📍 Final Gate Position: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f})")
 
-if st.session_state["props_confirmed"] and props:
+if st.session_state["props_confirmed"] and props_f:
     st.caption(
-        f"ℹ️ 물성 확정: nu={props['nu']:.2e} | "
-        f"rho={props['rho']} kg/m³ | "
-        f"Tmelt={props['Tmelt']}°C | "
-        f"Tmold={props['Tmold']}°C | "
-        f"출처: {props.get('source','Gemini 추천')}"
+        f"ℹ️ 물성 확정: nu={props_f['nu']:.2e} | "
+        f"rho={props_f['rho']} kg/m³ | "
+        f"Tmelt={props_f['Tmelt']}°C | "
+        f"Tmold={props_f['Tmold']}°C | "
+        f"출처: {props_f.get('source', 'Gemini 추천')}"
     )
 else:
     st.caption("ℹ️ 사이드바에서 재료 물성을 추천받고 확정한 후 시뮬레이션을 실행하세요.")
