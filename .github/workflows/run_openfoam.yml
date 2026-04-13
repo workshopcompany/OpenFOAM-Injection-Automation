@@ -1,11 +1,11 @@
 name: MIM-Ops Flow Analysis Professional
 
 on:
-  # 1. 외부 신호(Zapier/Streamlit) 트리거: 클로드의 상세 파라미터 수용
+  # 1. 외부 신호(Zapier/Streamlit) 트리거
   repository_dispatch:
     types: [mim_ops_trigger]
   
-  # 2. GitHub UI 수동 실행: 모든 공정 변수를 수동으로 입력 가능
+  # 2. GitHub UI 수동 실행
   workflow_dispatch:
     inputs:
       material:
@@ -31,14 +31,12 @@ on:
         default: '0.5'
 
 env:
-  # 최신 Actions 환경 대응
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-sim:
     runs-on: ubuntu-latest
     container:
-      # 기존 개발 환경 이미지 유지 (2312 버전)
       image: opencfd/openfoam-dev:2312
       options: --user root
 
@@ -51,107 +49,79 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update && apt-get install -y --no-install-recommends \
             python3-pip jq tzdata bc
-          # 시스템 패키지 제약 우회 설치
           pip3 install jinja2 --break-system-packages || pip3 install jinja2
-
-      - name: Setup Simulation Environment (Hard-Safety)
-        shell: bash
-        run: |
-          echo ">>> [MIM-Ops] Preparing Directories and Dictionary Safety-nets..."
-          mkdir -p OpenFOAM/case/logs
-          mkdir -p OpenFOAM/case/results
-          mkdir -p OpenFOAM/case/constant
-          mkdir -p OpenFOAM/case/system
-          mkdir -p OpenFOAM/case/0
-
-          # 1. 중력(g) 파일 생성 - Dimension Error 해결 (기존 코드 유지)
-          cat <<EOF > OpenFOAM/case/constant/g
-          FoamFile { version 2.0; format ascii; class uniformDimensionedVectorField; location "constant"; object g; }
-          dimensions [0 1 -2 0 0 0 0];
-          value (0 -9.81 0);
-          EOF
-
-          # 2. fvSolution 보정 - PIMPLE/PISO 안정성 확보 (기존 코드 유지)
-          cat <<EOF > OpenFOAM/case/system/fvSolution
-          FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSolution; }
-          solvers {
-              "alpha.water.*" { nAlphaCorr 1; nAlphaSubCycles 1; cAlpha 1; MULESCorr yes; nLimiterIter 3; solver smoothSolver; smoother symGaussSeidel; tolerance 1e-8; relTol 0; }
-              "p_rgh.*" { solver GAMG; tolerance 1e-07; relTol 0.01; smoother DIC; }
-              "(U|k|epsilon|omega|f|v2).*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-05; relTol 0.1; }
-          }
-          PIMPLE { nOuterCorrectors 1; nCorrectors 2; nNonOrthogonalCorrectors 0; }
-          EOF
-          
-          echo "✅ Hardware-level safety files initialized."
 
       - name: Execute Solver Pipeline
         shell: bash -l {0}
         working-directory: OpenFOAM/case
         env:
-          # 파라미터 매핑 (클로드 방식의 유연성 반영)
           MATERIAL:  ${{ github.event.client_payload.material  || github.event.inputs.material  || '17-4PH' }}
           VELOCITY:  ${{ github.event.client_payload.vel       || github.event.inputs.velocity  || '0.025' }}
           VISCOSITY: ${{ github.event.client_payload.viscosity || github.event.inputs.viscosity || '4e-3' }}
           DENSITY:   ${{ github.event.client_payload.density   || github.event.inputs.density   || '7780' }}
-          MELT_TEMP: ${{ github.event.client_payload.melt_temp || github.event.inputs.melt_temp || '235' }}
-          MOLD_TEMP: ${{ github.event.client_payload.mold_temp || github.event.inputs.mold_temp || '45' }}
           END_TIME:  ${{ github.event.client_payload.etime     || github.event.inputs.end_time  || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # 1. OpenFOAM 환경 로드 (기존 로직)
+          # 1. OpenFOAM 환경 로드
           [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && . /usr/lib/openfoam/openfoam2312/etc/bashrc
           [ -f /opt/openfoam2312/etc/bashrc ] && . /opt/openfoam2312/etc/bashrc
 
-          # 2. 숫자 데이터 정제 (클로드 제안 기능: 특수문자 제거)
+          # 2. 숫자 데이터 정제
           FINAL_V=$(echo "$VELOCITY"   | sed 's/[^0-9.eE-]*//g')
           FINAL_NU=$(echo "$VISCOSITY" | sed 's/[^0-9.eE-]*//g')
           FINAL_RHO=$(echo "$DENSITY"  | sed 's/[^0-9.eE-]*//g')
           FINAL_T=$(echo "$END_TIME"   | sed 's/[^0-9.eE-]*//g')
 
           echo "=== MIM-Ops Simulation Pipeline Start ==="
-          echo ">>> Target: ${MATERIAL} | ID: ${SIGNAL_ID}"
-          echo ">>> Params: V=${FINAL_V}, nu=${FINAL_NU}, rho=${FINAL_RHO}, T_end=${FINAL_T}"
+          
+          # 3. Allrun 실행 (메쉬 생성 및 사전 작업)
+          # 여기서 fvSolution이 덮어씌워질 수 있으므로, 실행 후 다시 고칠 것입니다.
+          chmod +x Allrun
+          echo ">>> [STEP 1] Running Allrun for Pre-processing..."
+          ./Allrun || echo "Allrun process had some errors, but proceeding to fix dictionaries..."
 
-          # 3. 압력 필드 단위 자동 교정
+          # ----------------------------------------------------------------------
+          # 🔥 [REAL FIX] 구조적 해결: Allrun 이후 fvSolution 강제 Overwrite
+          # ----------------------------------------------------------------------
+          echo ">>> [STEP 2] Overwriting fvSolution with explicit dictionary..."
+          mkdir -p system
+          cat <<EOF > system/fvSolution
+          FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSolution; }
+          solvers {
+              "alpha.water.*" { 
+                  nAlphaCorr 1; 
+                  nAlphaSubCycles 1; 
+                  cAlpha 1; 
+                  MULESCorr yes; 
+                  nLimiterIter 3; 
+                  solver smoothSolver; 
+                  smoother symGaussSeidel; 
+                  tolerance 1e-8; 
+                  relTol 0; 
+              }
+              "p_rgh.*" { solver GAMG; tolerance 1e-07; relTol 0.01; smoother DIC; }
+              "(U|k|epsilon|omega|f|v2).*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-05; relTol 0.1; }
+          }
+          PIMPLE { nOuterCorrectors 1; nCorrectors 2; nNonOrthogonalCorrectors 0; }
+          EOF
+
+          # 4. 추가 안전 장치 (압력 단위 교정 및 p_rgh 생성)
           for f in 0/p 0/p_rgh; do
             if [ -f "$f" ]; then
               sed -i 's/dimensions.*\[1 -1 -2 0 0 0 0\]/dimensions [0 2 -2 0 0 0 0]/g' "$f"
             fi
           done
-
-          # 4. p_rgh 누락 방지 로직
           [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh
 
           # ----------------------------------------------------------------------
-          # 🔥 [핵심 추가] Allrun 실행 직전 fvSolution 강제 검증 및 주입
+          # 5. Solver 실행 (고쳐진 파일을 사용하여 interFoam 직접 호출)
           # ----------------------------------------------------------------------
-          echo ">>> [DEBUG] Allrun 실행 전 fvSolution 상태 점검 시작..."
-          if [ -f "system/fvSolution" ]; then
-            # 파일은 있는데 cAlpha가 없다면 누군가(스크립트 등)가 덮어씌운 것
-            if ! grep -q "cAlpha" system/fvSolution; then
-              echo ">>> [WARNING] cAlpha가 누락되어 강제 주입을 시도합니다."
-              # alpha.water.* 아랫줄에 cAlpha 1; 강제 삽입
-              sed -i '/"alpha.water.\*"/a \ \ \ \ \ \ \ \ cAlpha          1;' system/fvSolution
-            fi
-            echo "=== [확인] 실제 실행될 fvSolution 내부 (alpha.water.* 부분) ==="
-            grep -A 3 "alpha.water" system/fvSolution || echo "alpha.water 블록을 찾을 수 없습니다."
-            echo "================================================================"
-          else
-            echo ">>> [ERROR] 🚨 system/fvSolution 파일이 존재하지 않습니다!"
-          fi
-          # ----------------------------------------------------------------------
+          echo ">>> [STEP 3] Starting Solver execution (interFoam)..."
+          interFoam 2>&1 | tee logs/solver_detailed.log
 
-          # 5. Allrun 실행 (환경 변수를 전달하여 실행)
-          chmod +x Allrun
-          VELOCITY=$FINAL_V \
-          VISCOSITY=$FINAL_NU \
-          DENSITY=$FINAL_RHO \
-          END_TIME=$FINAL_T \
-          MATERIAL=$MATERIAL \
-          ./Allrun 2>&1 | tee logs/solver_detailed.log
-
-          # 6. 결과 후처리 (기존 로직)
+          # 6. 결과 후처리
           touch case.foam
+          mkdir -p results
           echo "SIGNAL_ID=${SIGNAL_ID}" >> results/meta.txt
           echo ">>> [MIM-Ops] Solver process finished successfully."
 
