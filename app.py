@@ -578,71 +578,6 @@ def _trace_to_json(trace):
     return _json.loads(_safe_json(raw))
 
 
-def load_and_threshold(fpath: str, threshold: float = 0.5):
-    """
-    VTM/VTK 파일을 읽어서 alpha.water 기준으로 유체 영역만 추출.
-    Returns: (fluid_surf: pv.PolyData | None, alpha_vals: np.ndarray | None,
-              n_fluid_cells: int, debug_info: str)
-    """
-    raw = pv.read(fpath)
-
-    # MultiBlock → 단일 UnstructuredGrid
-    if isinstance(raw, pv.MultiBlock):
-        blocks = [raw.get(i) for i in range(raw.n_blocks) if raw.get(i) is not None]
-        if not blocks:
-            return None, None, 0, "MultiBlock is empty"
-        raw = pv.UnstructuredGrid()
-        raw = blocks[0].copy()
-        for b in blocks[1:]:
-            raw = raw.merge(b)
-
-    debug_parts = [
-        f"cells={raw.n_cells}",
-        f"point_arrays={list(raw.point_data.keys())}",
-        f"cell_arrays={list(raw.cell_data.keys())}",
-    ]
-
-    # alpha.water를 point_data로 확보
-    #  - point_data에 있으면 그대로 사용
-    #  - cell_data에만 있으면 cell→point 보간
-    if FIELD in raw.point_data:
-        mesh_p = raw
-        debug_parts.append("alpha: point_data ✅")
-    elif FIELD in raw.cell_data:
-        mesh_p = raw.cell_data_to_point_data()
-        debug_parts.append("alpha: cell→point 보간 ✅")
-    else:
-        debug_parts.append(f"alpha: NOT FOUND ❌")
-        return None, None, 0, " | ".join(debug_parts)
-
-    # threshold: alpha.water > threshold 인 셀만
-    alpha_arr = mesh_p.point_data[FIELD]
-    debug_parts.append(f"alpha range=[{alpha_arr.min():.3f}, {alpha_arr.max():.3f}]")
-
-    fluid = mesh_p.threshold(threshold, scalars=FIELD)
-    debug_parts.append(f"fluid_cells={fluid.n_cells}")
-
-    if fluid.n_cells == 0:
-        return None, None, 0, " | ".join(debug_parts)
-
-    surf = fluid.extract_surface()
-    pts, fi, fj, fk = pv_surface_to_triangles(surf)
-
-    # ── 단위 보정: OpenFOAM VTK는 m 단위, STL은 mm 단위 → 1000배 스케일
-    pts = pts * 1000.0
-    debug_parts.append(f"pts_range_mm=[{pts.min():.1f}, {pts.max():.1f}]")
-
-    tri_surf = surf.triangulate()
-
-    # alpha 값 추출
-    alpha_vals = None
-    if FIELD in tri_surf.point_data:
-        alpha_vals = tri_surf.point_data[FIELD]
-    elif FIELD in tri_surf.cell_data:
-        tmp = tri_surf.cell_data_to_point_data()
-        alpha_vals = tmp.point_data.get(FIELD)
-
-    return (pts, fi, fj, fk), alpha_vals, fluid.n_cells, " | ".join(debug_parts)
 
 
 
@@ -682,16 +617,14 @@ def make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True):
 # [도움 함수] 유체 추출 및 스케일 변환 로직 (기존 코드 상단에 배치)
 # ─────────────────────────────────────────────────────────────
 def load_and_threshold(fpath):
-    """VTK/VTM 파일을 읽어 유체(alpha.water > 0.5) 영역만 추출하고 mm로 변환"""
+    """최신 버전: 반드시 4개의 값을 반환함"""
     try:
         mesh = pv.read(fpath)
         if isinstance(mesh, pv.MultiBlock):
             mesh = mesh.combine()
         
-        # 1. 유체 영역(alpha.water) 필터링
         field_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
-        total_cells = mesh.n_cells
-        dbg_info = f"Total Cells: {total_cells}, Fields: {mesh.array_names}"
+        dbg_info = f"Fields: {mesh.array_names}"
 
         if field_name in mesh.array_names:
             fluid_mesh = mesh.threshold(0.5, scalars=field_name)
@@ -699,16 +632,14 @@ def load_and_threshold(fpath):
                 return None, None, 0, dbg_info
             
             surf = fluid_mesh.extract_surface()
-            
-            # 2. 단위 보정 (m -> mm)
-            pts = surf.points * 1000  
+            pts = surf.points * 1000  # mm 변환
             faces = surf.faces.reshape(-1, 4)[:, 1:]
             alpha_vals = surf.point_data[field_name].tolist()
             
-            # 정확히 4개의 값을 반환하여 Unpacking 에러 방지
+            # [수정포인트] 반드시 4개를 콤마로 구분해서 반환
             return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid_mesh.n_cells, dbg_info
         else:
-            return None, None, 0, f"Field '{field_name}' not found."
+            return None, None, 0, "Field not found"
     except Exception as e:
         return None, None, 0, str(e)
 
