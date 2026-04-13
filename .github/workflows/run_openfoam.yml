@@ -1,9 +1,10 @@
 name: MIM-Ops Flow Analysis
 
 on:
-  # 외부 신호 및 수동 실행만 허용하여 중복 실행 방지
+  # 외부 신호(Zapier/Streamlit) 전용 트리거
   repository_dispatch:
     types: [mim_ops_trigger]
+  # GitHub UI에서 수동 실행 가능
   workflow_dispatch:
     inputs:
       velocity:
@@ -73,8 +74,7 @@ jobs:
           # 2. p_rgh 자동 생성 확인
           [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh && echo ">>> Created p_rgh."
 
-          # 3. 솔버 실행 및 로그 기록
-          # set -e를 쓰지 않으므로 실패하더라도 다음 Step으로 이동합니다.
+          # 3. 솔버 실행 및 로그 기록 (set -e 없음)
           chmod +x Allrun
           echo ">>> Running interFoam Pipeline..."
           ./Allrun > logs/solver_detailed.log 2>&1
@@ -82,7 +82,6 @@ jobs:
           echo ">>> [MIM-Ops] Pipeline process finished."
 
       - name: Upload Artifacts
-        # 오류 발생 여부와 관계없이 항상 결과물과 로그를 업로드합니다.
         if: always()
         uses: actions/upload-artifact@v4
         with:
