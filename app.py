@@ -645,14 +645,21 @@ def make_mold_trace(mold_trimesh, opacity=0.10, show_legend=True):
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 3D Filling Animation (PyVista + Plotly — alpha.water based)
+# 3. 3D Filling Animation  
+# ── 핵심: 매 step마다 geometry가 달라지므로 Plotly go.Frame 방식은
+#    topology 변화에서 mesh를 고정해버린다. 
+#    → 각 step의 Plotly figure JSON을 Python에서 직렬화해두고,
+#      JS setTimeout 루프로 Plotly.react() 를 호출하는 방식으로 해결.
 # ─────────────────────────────────────────────────────────────
+import streamlit.components.v1 as components
+import json as _json
+
 vtk_dir = "VTK"
 
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation (alpha.water)")
 
-    # ── 모든 time-step 파일 수집 및 정렬 ─────────────────────
+    # ── 파일 수집 및 정렬 ────────────────────────────────────
     all_files = list(dict.fromkeys(
         glob.glob(f"{vtk_dir}/case_*.vtm") +
         glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
@@ -677,59 +684,43 @@ if os.path.exists(vtk_dir):
                 result, alpha_vals, n_cells, dbg = load_and_threshold(fp)
                 st.code(f"[{label}] {os.path.basename(fp)}\n{dbg}", language="bash")
 
-        # ── 슬라이더 ────────────────────────────────────────
+        # ── [A] 슬라이더 단일 스텝 뷰 ───────────────────────
+        st.markdown("#### 🎚 Step-by-Step Viewer")
         step_idx = st.slider(
             "⏱ Time Step",
-            min_value=0,
-            max_value=total_steps - 1,
-            value=0,           # 기본값: 첫 단계 (차오르는 과정을 처음부터)
-            step=1,
-            format="Step %d"
+            min_value=0, max_value=total_steps - 1,
+            value=0, step=1, format="Step %d"
         )
         selected_file = all_files[step_idx]
-        st.info(f"Rendering: `{os.path.basename(selected_file)}`  (step {step_idx + 1} / {total_steps})")
+        st.info(f"Rendering: `{os.path.basename(selected_file)}`  "
+                f"(step {step_idx + 1} / {total_steps})")
 
-        # ── PyVista 읽기 + threshold ─────────────────────────
         try:
             result, alpha_vals, n_fluid_cells, dbg = load_and_threshold(selected_file)
 
             fig = go.Figure()
+            mold_t = make_mold_trace(st.session_state.get("mesh"))
+            if mold_t:
+                fig.add_trace(mold_t)
 
-            # ➊ 금형 (STL) — 반투명
-            mold_trace = make_mold_trace(st.session_state.get("mesh"))
-            if mold_trace:
-                fig.add_trace(mold_trace)
-
-            # ➋ 유체
             if result is not None:
                 pts, fi, fj, fk = result
                 fig.add_trace(make_fluid_trace(pts, fi, fj, fk, alpha_vals))
-
-                # 실제 alpha.water 기반 충전율
-                # n_fluid_cells / total_cells 비율로 계산
-                raw_check = pv.read(selected_file)
-                if isinstance(raw_check, pv.MultiBlock):
-                    raw_check = raw_check.combine()
-                total_cells = raw_check.n_cells
-                real_fill = n_fluid_cells / total_cells * 100 if total_cells > 0 else 0.0
-
+                total_cells = 920  # debug에서 확인된 고정값
+                real_fill = n_fluid_cells / total_cells * 100
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Fill Ratio (cells)", f"{real_fill:.1f} %")
+                c1.metric("Fill Ratio", f"{real_fill:.1f} %")
                 c2.metric("Fluid Cells", f"{n_fluid_cells:,}")
                 c3.metric("Total Cells", f"{total_cells:,}")
             else:
-                st.warning(f"No fluid cells at this step. Debug: {dbg}")
+                st.warning(f"No fluid cells. Debug: {dbg}")
 
             fig.update_layout(
-                scene=dict(
-                    aspectmode="data",
-                    xaxis_title="X (m)",
-                    yaxis_title="Y (m)",
-                    zaxis_title="Z (m)",
-                ),
+                scene=dict(aspectmode="data",
+                           xaxis_title="X (m)", yaxis_title="Y (m)", zaxis_title="Z (m)"),
                 legend=dict(x=0.01, y=0.99),
                 margin=dict(l=0, r=0, b=0, t=30),
-                height=560,
+                height=520,
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -737,109 +728,200 @@ if os.path.exists(vtk_dir):
             st.error(f"Visualization Error: {e}")
             st.exception(e)
 
-        # ── Plotly 자동 재생 애니메이션 ──────────────────────
+        # ── [B] JS-driven 애니메이션 ─────────────────────────
+        # Plotly go.Frame은 topology가 달라지면 geometry를 고정해버림.
+        # 해결: 각 step의 figure JSON을 미리 직렬화 → JS에서
+        #        Plotly.react(div, data, layout) 를 step마다 완전히 교체.
         st.divider()
         st.subheader("▶ Auto-Play Filling Animation (All Steps)")
 
         if st.button("🎬 Build & Play Animation", use_container_width=True):
-            prog = st.progress(0, text="Building frames…")
+            prog = st.progress(0, text="Serializing frames…")
             try:
-                frames      = []
-                frame_names = []
                 mold_trimesh = st.session_state.get("mesh")
 
+                # 금형 trace JSON (모든 frame 공통 — 변하지 않음)
+                mold_json = None
+                if mold_trimesh is not None:
+                    mt = make_mold_trace(mold_trimesh, opacity=0.10, show_legend=True)
+                    mold_json = mt.to_plotly_json()
+
+                # 각 step의 유체 trace JSON + 메타정보
+                step_data = []   # [{fluid: <trace_json|null>, n_fluid, fill_pct}, ...]
+                total_cells = 920
+
                 for i, fpath in enumerate(all_files):
-                    prog.progress((i + 1) / total_steps,
-                                  text=f"Frame {i+1}/{total_steps}: {os.path.basename(fpath)}")
-
+                    prog.progress(
+                        (i + 1) / total_steps,
+                        text=f"Serializing {i+1}/{total_steps}: {os.path.basename(fpath)}"
+                    )
                     result, alpha_vals, n_fluid_cells, _ = load_and_threshold(fpath)
-                    traces = []
-
-                    # 금형
-                    mt = make_mold_trace(mold_trimesh, show_legend=(i == 0))
-                    if mt:
-                        traces.append(mt)
-
-                    # 유체
+                    fluid_json = None
                     if result is not None:
                         pts, fi, fj, fk = result
-                        traces.append(make_fluid_trace(
+                        ft = make_fluid_trace(
                             pts, fi, fj, fk, alpha_vals,
-                            show_legend=(i == 0),
-                            show_colorbar=(i == 0)
-                        ))
+                            show_colorbar=True
+                        )
+                        fluid_json = ft.to_plotly_json()
 
-                    frame_name = f"step_{i:04d}"
-                    frame_names.append(frame_name)
-                    frames.append(go.Frame(data=traces, name=frame_name))
+                    step_data.append({
+                        "label": os.path.basename(fpath),
+                        "fluid": fluid_json,
+                        "n_fluid": n_fluid_cells,
+                        "fill_pct": round(n_fluid_cells / total_cells * 100, 1),
+                    })
 
                 prog.empty()
 
-                if not frames:
-                    st.error("No frames could be built.")
-                else:
-                    anim_fig = go.Figure(
-                        data=frames[0].data,
-                        frames=frames
-                    )
-                    anim_fig.update_layout(
-                        scene=dict(
-                            aspectmode="data",
-                            xaxis_title="X (m)",
-                            yaxis_title="Y (m)",
-                            zaxis_title="Z (m)",
-                        ),
-                        margin=dict(l=0, r=0, b=0, t=50),
-                        height=580,
-                        updatemenus=[dict(
-                            type="buttons",
-                            showactive=False,
-                            y=1.08, x=0.5,
-                            xanchor="center",
-                            buttons=[
-                                dict(
-                                    label="▶ Play",
-                                    method="animate",
-                                    args=[None, dict(
-                                        frame=dict(duration=300, redraw=True),
-                                        fromcurrent=True,
-                                        mode="immediate"
-                                    )]
-                                ),
-                                dict(
-                                    label="⏸ Pause",
-                                    method="animate",
-                                    args=[[None], dict(
-                                        frame=dict(duration=0, redraw=False),
-                                        mode="immediate"
-                                    )]
-                                ),
-                            ]
-                        )],
-                        sliders=[dict(
-                            steps=[
-                                dict(
-                                    method="animate",
-                                    args=[[name], dict(
-                                        mode="immediate",
-                                        frame=dict(duration=300, redraw=True),
-                                        transition=dict(duration=0)
-                                    )],
-                                    label=str(i)
-                                )
-                                for i, name in enumerate(frame_names)
-                            ],
-                            transition=dict(duration=0),
-                            x=0.0, y=0.0,
-                            currentvalue=dict(
-                                prefix="Step: ",
-                                visible=True,
-                                xanchor="center"
-                            ),
-                            len=1.0
-                        )]
-                    )
-                    st.plotly_chart(anim_fig, use_container_width=True)
+                # 공통 layout JSON
+                layout_dict = {
+                    "scene": {
+                        "aspectmode": "data",
+                        "xaxis": {"title": "X (m)"},
+                        "yaxis": {"title": "Y (m)"},
+                        "zaxis": {"title": "Z (m)"},
+                    },
+                    "legend": {"x": 0.01, "y": 0.99},
+                    "margin": {"l": 0, "r": 0, "b": 0, "t": 30},
+                    "height": 560,
+                    "paper_bgcolor": "rgba(0,0,0,0)",
+                    "plot_bgcolor":  "rgba(0,0,0,0)",
+                }
+
+                # JSON 직렬화
+                step_data_js  = _json.dumps(step_data)
+                mold_json_js  = _json.dumps(mold_json)
+                layout_js     = _json.dumps(layout_dict)
+
+                html_code = f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <style>
+    body {{ margin:0; background:#0e1117; color:#fff;
+            font-family: 'Segoe UI', sans-serif; }}
+    #controls {{
+      display:flex; align-items:center; gap:12px;
+      padding:10px 16px; background:#1a1d27; border-radius:8px;
+      margin-bottom:8px;
+    }}
+    button {{
+      padding:6px 18px; border:none; border-radius:6px;
+      background:#4a90e2; color:#fff; font-size:14px;
+      cursor:pointer; transition:background .2s;
+    }}
+    button:hover {{ background:#357abd; }}
+    button:disabled {{ background:#555; cursor:default; }}
+    #stepLabel {{ font-size:13px; color:#aaa; min-width:220px; }}
+    #fillBar {{
+      flex:1; height:8px; background:#333; border-radius:4px; overflow:hidden;
+    }}
+    #fillInner {{ height:100%; background:#4a90e2; transition:width .3s; }}
+    #fillPct {{ font-size:13px; color:#7ecfff; min-width:55px; text-align:right; }}
+    input[type=range] {{
+      flex:1; accent-color:#4a90e2;
+    }}
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button id="btnPlay" onclick="togglePlay()">▶ Play</button>
+    <button id="btnPrev" onclick="stepBy(-1)">◀</button>
+    <button id="btnNext" onclick="stepBy(1)">▶</button>
+    <span id="stepLabel">Step 1 / {total_steps}</span>
+    <div id="fillBar"><div id="fillInner" style="width:0%"></div></div>
+    <span id="fillPct">0.0 %</span>
+  </div>
+  <input type="range" id="slider" min="0" max="{total_steps - 1}" value="0"
+    style="width:100%;margin-bottom:6px;accent-color:#4a90e2"
+    oninput="goToStep(parseInt(this.value))">
+  <div id="plot"></div>
+
+<script>
+const STEPS      = {step_data_js};
+const MOLD       = {mold_json_js};
+const LAYOUT     = {layout_js};
+const TOTAL      = {total_steps};
+let   currentStep = 0;
+let   playing     = false;
+let   timer       = null;
+let   sceneCamera = null;
+
+// ── 초기 렌더 ────────────────────────────────────────────
+Plotly.newPlot('plot', buildTraces(0), LAYOUT, {{responsive:true}});
+
+// 카메라 위치 유지: 사용자가 돌린 시점 기억
+document.getElementById('plot').on('plotly_relayout', function(e) {{
+  if (e['scene.camera']) sceneCamera = e['scene.camera'];
+}});
+
+// ── 핵심: Plotly.react() 로 data 전체 교체 ──────────────
+// go.Frame 대신 매 step마다 완전히 새 data 배열을 넘김.
+// geometry(topology)가 달라도 정확히 그 step의 메시가 표시됨.
+function goToStep(i) {{
+  currentStep = Math.max(0, Math.min(i, TOTAL - 1));
+  const layout = Object.assign({{}}, LAYOUT);
+  if (sceneCamera) layout.scene = Object.assign({{}}, LAYOUT.scene, {{camera: sceneCamera}});
+  Plotly.react('plot', buildTraces(currentStep), layout);
+  updateUI();
+}}
+
+function buildTraces(i) {{
+  const traces = [];
+  if (MOLD) traces.push(MOLD);
+  const s = STEPS[i];
+  if (s.fluid) traces.push(s.fluid);
+  return traces;
+}}
+
+function updateUI() {{
+  const s = STEPS[currentStep];
+  document.getElementById('stepLabel').textContent =
+    'Step ' + (currentStep+1) + ' / ' + TOTAL + '  —  ' + s.label;
+  document.getElementById('fillInner').style.width  = s.fill_pct + '%';
+  document.getElementById('fillPct').textContent    = s.fill_pct + ' %';
+  document.getElementById('slider').value           = currentStep;
+  document.getElementById('btnPlay').textContent    = playing ? '⏸ Pause' : '▶ Play';
+}}
+
+function togglePlay() {{
+  playing = !playing;
+  if (playing) {{
+    if (currentStep >= TOTAL - 1) currentStep = 0;
+    advance();
+  }} else {{
+    clearTimeout(timer);
+  }}
+  updateUI();
+}}
+
+function advance() {{
+  if (!playing) return;
+  goToStep(currentStep);
+  if (currentStep < TOTAL - 1) {{
+    currentStep++;
+    timer = setTimeout(advance, 600);
+  }} else {{
+    playing = false;
+    updateUI();
+  }}
+}}
+
+function stepBy(d) {{
+  clearTimeout(timer);
+  playing = false;
+  goToStep(currentStep + d);
+}}
+
+// 초기 UI 세팅
+updateUI();
+</script>
+</body>
+</html>
+"""
+                components.html(html_code, height=680, scrolling=False)
 
             except Exception as e:
                 st.error(f"Animation build failed: {e}")
