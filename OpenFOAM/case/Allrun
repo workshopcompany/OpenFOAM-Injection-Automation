@@ -22,7 +22,7 @@ echo "========================================"
 mkdir -p logs results system constant 0
 
 # ── 이전 결과 정리 ────────────────────────
-rm -rf processor* postProcessing 2>/dev/null || true
+rm -rf processor* postProcessing VTK simulation_results.zip 2>/dev/null || true
 find . -maxdepth 1 -regextype posix-extended \
   -regex '\./[0-9]+(\.[0-9]+)?' -not -name '0' \
   -type d -exec rm -rf {} + 2>/dev/null || true
@@ -83,13 +83,13 @@ water
 {
     transportModel  Newtonian;
     nu              [0 2 -1 0 0 0 0] ${VISCOSITY};
-    rho             [1 -3 0 0 0 0 0] ${DENSITY};   // 🔥 확실한 단위를 위해 [1 -3 0 0 0 0 0] 추가
+    rho             [1 -3 0 0 0 0 0] ${DENSITY};
 }
 air
 {
     transportModel  Newtonian;
     nu              [0 2 -1 0 0 0 0] 1.48e-5;
-    rho             [1 -3 0 0 0 0 0] 1.2;          // 🔥 확실한 단위를 위해 [1 -3 0 0 0 0 0] 추가
+    rho             [1 -3 0 0 0 0 0] 1.2;
 }
 sigma           [1 0 -2 0 0 0 0] 0.4;
 // ************************************************************************* //
@@ -137,7 +137,7 @@ FoamFile
     location    "0";
     object      p_rgh;
 }
-dimensions      [1 -1 -2 0 0 0 0];   // 🔥 에러의 주범! interFoam의 절대압력(Pa) 차원으로 원상복구
+dimensions      [1 -1 -2 0 0 0 0];
 internalField   uniform 0;
 boundaryField
 {
@@ -150,7 +150,7 @@ boundaryField
 P_EOF
 echo "[Allrun] ✅ p_rgh 생성"
 
-# ── 0/p (p_rgh 기반 파생 필드용 더미) ──────
+# ── 0/p ───────────────────────────────────
 cat > 0/p << 'P2_EOF'
 FoamFile
 {
@@ -233,13 +233,13 @@ ddtSchemes      { default Euler; }
 gradSchemes     { default Gauss linear; }
 divSchemes
 {
-    default                                     none;
-    div(phi,alpha.water)                        Gauss vanLeer;
-    div(phi,alpha)                              Gauss vanLeer;
-    div(phirb,alpha.water)                      Gauss linear;
-    div(phirb,alpha)                            Gauss linear;
-    div(rhoPhi,U)                               Gauss linearUpwind grad(U);
-    div(((rho*nuEff)*dev2(T(grad(U)))))         Gauss linear;
+    default                         none;
+    div(phi,alpha.water)            Gauss vanLeer;
+    div(phi,alpha)                  Gauss vanLeer;
+    div(phirb,alpha.water)          Gauss linear;
+    div(phirb,alpha)                Gauss linear;
+    div(rhoPhi,U)                   Gauss linearUpwind grad(U);
+    div(((rho*nuEff)*dev2(T(grad(U)))))  Gauss linear;
 }
 laplacianSchemes { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
@@ -372,6 +372,25 @@ if [ "$TIMESTEPS" -gt 0 ]; then
     LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d | sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
 fi
 
+# ══════════════════════════════════════════
+# 🚀 웹 시각화 및 다운로드용 후처리 (Update)
+# ══════════════════════════════════════════
+echo "[Allrun] 후처리 시작: 웹 시각화 데이터 생성 중..."
+
+if [ "$TIMESTEPS" -gt 0 ]; then
+    # 1. ParaView 없이 웹에서 보기 위한 VTK 변환
+    foamToVTK 2>&1 | tee logs/foamToVTK.log
+    
+    # 2. 결과 다운로드를 위한 압축 파일 생성
+    # [0-9]* : 모든 시간 스텝 폴더 포함
+    zip -r simulation_results.zip [0-9]* constant system case.foam VTK 2>/dev/null
+    
+    echo "[Allrun] ✅ VTK 변환 및 압축 완료 (simulation_results.zip)"
+else
+    echo "[Allrun] ⚠️ 결과 폴더가 없어 후처리를 건너뜁니다."
+fi
+
+# 메타데이터 기록
 cat > results/meta.txt << META_EOF
 MATERIAL=${MATERIAL}
 VELOCITY=${VELOCITY}
@@ -383,18 +402,16 @@ END_TIME=${END_TIME}
 LAST_TIME=${LAST_TIME}
 TIMESTEPS=${TIMESTEPS}
 PIPELINE_OK=${PIPELINE_OK}
+ZIP_CREATED=$( [ -f simulation_results.zip ] && echo "true" || echo "false" )
 META_EOF
 
 echo "========================================"
 if [ "$PIPELINE_OK" = true ] && [ "$TIMESTEPS" -gt 0 ]; then
-    echo "[Allrun] ✅ 시뮬레이션 성공"
+    echo "[Allrun] ✅ 시뮬레이션 및 후처리 최종 성공"
     echo "[Allrun] 타임스텝: ${TIMESTEPS}개 | 마지막: ${LAST_TIME}"
 else
     echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
 fi
 echo "========================================"
-# Allrun 마지막에 추가
-foamToVTK
-# 결과 폴더를 zip으로 압축 (다운로드용)
-zip -r simulation_results.zip [0-9]* constant system case.foam
+
 exit 0
