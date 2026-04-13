@@ -38,7 +38,7 @@ fvSchemes:
     default: Gauss linear
   divSchemes:
     default: none
-    div(phi,U): Gauss linearUpwind
+    'div(phi,U)': Gauss linearUpwind
   laplacianSchemes:
     default: Gauss linear corrected
   interpolationSchemes:
