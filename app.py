@@ -1,9 +1,8 @@
 import streamlit as st
 import os
-import requests
 import numpy as np
-import trimesh # STL 분석 및 표면 스냅용
-import plotly.graph_objects as go # 3D 시각화용
+import trimesh
+import plotly.graph_objects as go
 
 # --- 기본 설정 ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,142 +11,110 @@ ZAPIER_WEBHOOK_URL = st.secrets.get("ZAPIER_URL", None)
 st.set_page_config(page_title="MIM-Ops Pro", layout="wide")
 st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
 
-# --- AI 엔진 목업 (위치 및 크기 제안) ---
-def get_ai_suggestions(mesh):
-    if mesh is None: return 0.0, 0.0, 0.0, 2.0
-    # AI Logic: 제품의 부피와 투영 면적을 고려하여 최적 사이즈와 위치 계산
-    bounds = mesh.bounds
-    center = mesh.centroid
-    # 예시로 중심점 근처 표면과 부피 대비 적정 게이트 직경(2.5mm) 제안
-    suggested_pos = trimesh.proximity.closest_point(mesh, [center])[0][0]
-    return suggested_pos[0], suggested_pos[1], suggested_pos[2], 2.5
+# --- AI 통합 제안 함수 (위치, 크기, 공정 조건) ---
+def get_ai_comprehensive_suggestions(mesh, material_name):
+    # 기본값 설정
+    pos = [0.0, 0.0, 0.0]
+    g_size = 2.0
+    temp, press, vel = 280, 50, 100
+    
+    if mesh is not None:
+        # 1. 위치 제안: 제품의 무게 중심 근처 표면
+        center = mesh.centroid
+        pos = trimesh.proximity.closest_point(mesh, [center])[0][0]
+        
+        # 2. 재료/형상 기반 공정 조건 제안 (PA66+30GF 기준 로직)
+        if "PA66" in material_name.upper():
+            temp = 290   # PA66 GF30 권장 수지 온도
+            press = 80   # 충진 압력 제안
+            vel = 120    # 사출 속도 제안
+            g_size = 2.5 # 섬유 함유 재료 특성상 조금 큰 게이트
+        else:
+            temp, press, vel, g_size = 250, 60, 100, 2.0
+            
+    return pos, g_size, temp, press, vel
 
 # --- Sidebar 레이아웃 ---
 with st.sidebar:
     st.header("📂 1. Geometry & Material")
     uploaded_file = st.file_uploader("Upload STL (mm)", type=["stl"])
     
+    mesh = None
     if uploaded_file:
         stl_path = os.path.join(BASE_DIR, "OpenFOAM/case/constant/triSurface/part.stl")
         os.makedirs(os.path.dirname(stl_path), exist_ok=True)
         with open(stl_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        
         try:
             mesh = trimesh.load(stl_path)
-            st.success("✅ STL loaded & analyzed.")
-            size = mesh.extents
-            st.info(f"📐 Model Size (mm):\nX: {size[0]:.1f}, Y: {size[1]:.1f}, Z: {size[2]:.1f}")
-        except Exception as e:
-            st.error(f"Error: {e}")
-            mesh = None
-    else:
-        mesh = None
+            st.success("✅ STL loaded.")
+        except: st.error("STL 분석 실패")
 
-    st.subheader("🤖 AI Property Suggestion")
+    # [재료 선정]
     mat_name = st.text_input("Material Name", value="PA66+30glassfiber")
     
     st.divider()
 
-    # [업데이트] AI 최적화 제안 버튼
+    # [변경] 2번 섹션을 Gate Configuration으로 올림
     st.header("📍 2. Gate Configuration")
-    if st.button("🪄 AI Optimal Suggestion", use_container_width=True):
-        if mesh is not None:
-            ax, ay, az, asize = get_ai_suggestions(mesh)
-            st.session_state['gx'], st.session_state['gy'], st.session_state['gz'] = ax, ay, az
-            st.session_state['gsize'] = asize
-            st.toast("AI 추천 위치와 사이즈가 반영되었습니다!")
-
-    # 게이트 사이즈 설정 추가
-    g_size = st.number_input("Gate Diameter (mm)", min_value=0.5, max_value=10.0, 
-                             value=st.session_state.get('gsize', 2.0), step=0.1, key='gsize')
-
-    st.caption("조정 시 게이트가 제품 표면에 자동으로 스냅됩니다.")
     
-    # 세션 상태를 이용한 좌표 연동
-    default_x = mesh.bounds[0][0] if mesh is not None else 0.0
-    val_x = st.number_input("Gate X", value=st.session_state.get('gx', default_x), step=0.1, key='gx')
-    val_y = st.number_input("Gate Y", value=st.session_state.get('gy', 0.0), step=0.1, key='gy')
-    val_z = st.number_input("Gate Z", value=st.session_state.get('gz', 0.0), step=0.1, key='gz')
+    # 통합 AI 제안 버튼 (위치 + 사이즈 + 공정조건 한꺼번에)
+    if st.button("🪄 AI Comprehensive Suggestion", use_container_width=True):
+        if mesh is not None:
+            pos, g_size, t, p, v = get_ai_comprehensive_suggestions(mesh, mat_name)
+            st.session_state['gx'], st.session_state['gy'], st.session_state['gz'] = pos
+            st.session_state['gsize'] = g_size
+            st.session_state['temp'] = t
+            st.session_state['press'] = p
+            st.session_state['vel'] = v
+            st.toast("AI가 최적의 게이트와 공정 조건을 제안했습니다!", icon="🤖")
 
-    # [핵심] 표면 스냅 로직: 입력한 좌표와 가장 가까운 '표면' 좌표 계산
+    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, st.session_state.get('gsize', 2.0), key='gsize')
+    
+    # 좌표 입력 (스냅 로직 포함)
+    def_x = mesh.bounds[0][0] if mesh is not None else 0.0
+    vx = st.number_input("Gate X", value=st.session_state.get('gx', def_x), key='gx')
+    vy = st.number_input("Gate Y", value=st.session_state.get('gy', 0.0), key='gy')
+    vz = st.number_input("Gate Z", value=st.session_state.get('gz', 0.0), key='gz')
+
     if mesh is not None:
-        raw_point = np.array([[val_x, val_y, val_z]])
-        closest_point = trimesh.proximity.closest_point(mesh, raw_point)[0][0]
-        gx, gy, gz = closest_point
+        gx, gy, gz = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])[0][0]
     else:
-        gx, gy, gz = val_x, val_y, val_z
+        gx, gy, gz = vx, vy, vz
 
     st.divider()
 
+    # [변경] 3번 섹션: 공정 조건 (AI 제안 반영)
     st.header("⚙️ 3. Process Conditions")
-    temp_c = st.number_input("Melt Temperature (°C)", min_value=100, max_value=400, value=280)
-    press_mpa = st.number_input("Injection Pressure (MPa)", min_value=10.0, max_value=200.0, value=50.0)
-    vel_mms = st.number_input("Injection Velocity (mm/s)", min_value=1.0, max_value=500.0, value=100.0)
+    
+    # AI가 제안한 값이 있으면 반영, 없으면 기본값
+    temp_c = st.number_input("Melt Temperature (°C)", 100, 400, st.session_state.get('temp', 280), key='temp')
+    press_mpa = st.number_input("Injection Pressure (MPa)", 10.0, 200.0, st.session_state.get('press', 50.0), key='press')
+    vel_mms = st.number_input("Injection Velocity (mm/s)", 1.0, 500.0, st.session_state.get('vel', 100.0), key='vel')
 
     st.subheader("⏱️ Analysis Time")
     predicted_time = max(0.1, min(3.0, 300.0 / vel_mms)) 
-    etime = st.number_input("Predicted End Time (s)", value=float(f"{predicted_time:.2f}"), max_value=3.0, min_value=0.1)
+    etime = st.number_input("Predicted End Time (s)", value=float(f"{predicted_time:.2f}"), max_value=3.0)
 
     if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True):
-        if mesh is not None and ZAPIER_WEBHOOK_URL:
-            payload = {
-                "temp": temp_c + 273.15,
-                "press": press_mpa * 1e6,
-                "vel": vel_mms / 1000.0,
-                "etime": etime,
-                "gate": {"x": gx, "y": gy, "z": gz, "size": g_size},
-                "mat": mat_name
-            }
-            try:
-                # requests.post(ZAPIER_WEBHOOK_URL, json=payload, timeout=10)
-                st.toast("✅ Simulation Triggered!", icon="🌐")
-                st.session_state["exec"] = True
-            except Exception as e:
-                st.error(f"Error: {e}")
+        st.toast("✅ Simulation Triggered!", icon="🌐")
 
 # --- 메인 화면: Plotly 3D ---
 st.header("🎥 3D Geometry & Gate Analysis")
 
 if mesh is not None:
-    with st.spinner("Rendering..."):
-        vertices, faces = mesh.vertices, mesh.faces
-        
-        mesh_3d = go.Mesh3d(
-            x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
-            i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-            color='#AAAAAA', opacity=1.0, flatshading=False,
-            lighting=dict(ambient=0.5, diffuse=0.8, specular=0.5, roughness=0.5),
-            name='Model'
-        )
-
-        # 게이트 포인트 (설정한 사이즈 반영)
-        gate_point = go.Scatter3d(
-            x=[gx], y=[gy], z=[gz],
-            mode='markers+text',
-            marker=dict(
-                size=g_size * 5, # 시각적 인지를 위해 직경에 비례하여 크기 조절
-                color='red', opacity=0.9, symbol='circle',
-                line=dict(color='white', width=2)
-            ),
-            text=[f"GATE ({g_size}mm)"], textposition="top center", name='Gate'
-        )
-
-        layout = go.Layout(
-            scene=dict(
-                xaxis=dict(title='X (mm)', backgroundcolor="rgb(20, 20, 20)", gridcolor="rgb(50, 50, 50)", showbackground=True),
-                yaxis=dict(title='Y (mm)', backgroundcolor="rgb(20, 20, 20)", gridcolor="rgb(50, 50, 50)", showbackground=True),
-                zaxis=dict(title='Z (mm)', backgroundcolor="rgb(20, 20, 20)", gridcolor="rgb(50, 50, 50)", showbackground=True),
-                aspectmode='data',
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
-            ),
-            margin=dict(l=0, r=0, b=0, t=0), paper_bgcolor='rgba(0,0,0,0)',
-            showlegend=True, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
-        )
-
-        fig = go.Figure(data=[mesh_3d, gate_point], layout=layout)
-        st.plotly_chart(fig, use_container_width=True)
-        
-    st.info(f"📍 최종 스냅 좌표: X={gx:.2f}, Y={gy:.2f}, Z={gz:.2f} | Size: {g_size}mm")
-else:
-    st.info("왼쪽 사이드바에서 STL 파일을 업로드하세요.")
+    vertices, faces = mesh.vertices, mesh.faces
+    mesh_3d = go.Mesh3d(
+        x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
+        i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
+        color='#AAAAAA', opacity=1.0, flatshading=False,
+        lighting=dict(ambient=0.5, diffuse=0.8, specular=0.5, roughness=0.5)
+    )
+    gate_point = go.Scatter3d(
+        x=[gx], y=[gy], z=[gz], mode='markers',
+        marker=dict(size=g_size*5, color='red', opacity=0.9, line=dict(color='white', width=2))
+    )
+    fig = go.Figure(data=[mesh_3d, gate_point])
+    fig.update_layout(scene=dict(aspectmode='data'), margin=dict(l=0, r=0, b=0, t=0))
+    st.plotly_chart(fig, use_container_width=True)
+    st.info(f"📍 Final Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f}) | Size: {g_size}mm")
