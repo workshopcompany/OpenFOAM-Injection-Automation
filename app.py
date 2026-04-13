@@ -550,6 +550,31 @@ if os.path.exists("logs.zip"):
 # ─────────────────────────────────────────────────────────────
 FIELD = "alpha.water"
 
+# ── numpy/plotly 직렬화 헬퍼 ────────────────────────────────
+class _NpEncoder(_json.JSONEncoder):
+    """numpy scalar/array → Python native types."""
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        if isinstance(obj, (np.floating,)):
+            return float(obj)
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        return super().default(obj)
+
+def _safe_json(obj) -> str:
+    """to_plotly_json() 결과에 남아있는 ndarray를 안전하게 직렬화."""
+    return _json.dumps(obj, cls=_NpEncoder)
+
+def _trace_to_json(trace):
+    """Plotly trace → JSON-serializable dict (ndarray 포함)."""
+    raw = trace.to_plotly_json()
+    # round-trip: ndarray를 list로 변환
+    return _json.loads(_safe_json(raw))
+
+
 def load_and_threshold(fpath: str, threshold: float = 0.5):
     """
     VTM/VTK 파일을 읽어서 alpha.water 기준으로 유체 영역만 추출.
@@ -744,7 +769,7 @@ if os.path.exists(vtk_dir):
                 mold_json = None
                 if mold_trimesh is not None:
                     mt = make_mold_trace(mold_trimesh, opacity=0.10, show_legend=True)
-                    mold_json = mt.to_plotly_json()
+                    mold_json = _trace_to_json(mt)
 
                 # 각 step의 유체 trace JSON + 메타정보
                 step_data = []   # [{fluid: <trace_json|null>, n_fluid, fill_pct}, ...]
@@ -763,7 +788,7 @@ if os.path.exists(vtk_dir):
                             pts, fi, fj, fk, alpha_vals,
                             show_colorbar=True
                         )
-                        fluid_json = ft.to_plotly_json()
+                        fluid_json = _trace_to_json(ft)
 
                     step_data.append({
                         "label": os.path.basename(fpath),
@@ -790,9 +815,9 @@ if os.path.exists(vtk_dir):
                 }
 
                 # JSON 직렬화
-                step_data_js  = _json.dumps(step_data)
-                mold_json_js  = _json.dumps(mold_json)
-                layout_js     = _json.dumps(layout_dict)
+                step_data_js  = _safe_json(step_data)
+                mold_json_js  = _safe_json(mold_json)
+                layout_js     = _safe_json(layout_dict)
 
                 html_code = f"""
 <!DOCTYPE html>
