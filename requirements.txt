@@ -1,31 +1,28 @@
-
-# --- RESET TRIGGER (do not remove) ---
-# This blank line forces Streamlit Cloud to rebuild the environment.
-
-
 # UI Framework
 streamlit
 
 # AI & Data Processing
 google-generativeai
 pandas
-numpy
+numpy==1.26.4
 
 # Visualization
 matplotlib
 plotly
 
-# OpenFOAM Data Handling (Optional for future 3D view)
-pyvista
-stpyvista
-streamlit-stl
-
-# Geometry / Math / Utilities
-scipy
-rtree
-trimesh   # STL 파일을 읽고 좌표를 계산하는 데 필요
+# Geometry / Mesh Handling
+trimesh
+meshio
 
 # Networking
 requests
+
+
+# ---------------------------------------------------------
+# RESET TRIGGER (forces Streamlit Cloud to rebuild)
+# Do NOT remove this section.
+#
+# The blank line below is intentional and required.
+# ---------------------------------------------------------
 
 
