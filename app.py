@@ -77,7 +77,13 @@ with col2:
     st.header("🎥 3D Geometry Preview")
     if uploaded_file:
         # STL 뷰어 실행 (색상 및 회전 설정 가능)
-        stl_from_file(file_path=stl_path, color="#4CAF50", material="plastic", auto_rotate=True)
+        # 수정 후: 질감을 제거하고 형상 위주로 표시 ("flat" 모드)
+        stl_from_file(
+            file_path=stl_path, 
+            color="#707070",     # 차분한 회색 계열 추천
+            material="flat",     # 질감 없이 형상만 표시
+            auto_rotate=False    # 게이트 지정 시 흔들리지 않도록 자동 회전 끔 (선택 사항)
+        )
         st.caption("3D 뷰어를 통해 형상을 회전하며 게이트 위치를 확인하세요.")
     else:
         st.info("파일을 업로드하면 여기에 3D 모델이 나타납니다.")
