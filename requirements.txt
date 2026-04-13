@@ -1,7 +1,7 @@
 streamlit
 google-generativeai
 pandas
-numpy==1.26.4
+numpy
 matplotlib
 plotly
 trimesh
