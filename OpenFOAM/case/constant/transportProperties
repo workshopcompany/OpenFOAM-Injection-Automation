@@ -18,7 +18,46 @@ purgeWrite      0;
 writeFormat     ascii;
 writePrecision  6;
 writeCompression off;
-controlDict: "FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"system\";\n    object      controlDict;\n}\napplication     simpleFoam;\nstartFrom       startTime;\nstartTime       0;\nstopAt          endTime;\nendTime         1000;\ndeltaT          1;\nwriteControl    timeStep;\nwriteInterval   100;\npurgeWrite      0;\nwriteFormat     ascii;\nwritePrecision  6;\nwriteCompression off;\n"
-fvSchemes: "FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"system\";\n    object      fvSchemes;\n}\nddtSchemes { default Euler; }\ngradSchemes { default Gauss linear; }\ndivSchemes { default none; div(phi,U) Gauss linearUpwind; }\nlaplacianSchemes { default Gauss linear corrected; }\ninterpolationSchemes { default linear; }\nsnGradSchemes { default corrected; }\n"
-fvSolution: "FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"system\";\n    object      fvSolution;\n}\nsolvers\n{\n    p { solver PCG; preconditioner DIC; tolerance 1e-06; relTol 0.05; }\n    U { solver PBiCG; preconditioner DILU; tolerance 1e-06; relTol 0.05; }\n}\n"
-transportProperties: "FoamFile\n{\n    version     2.0;\n    format      ascii;\n    class       dictionary;\n    location    \"constant\";\n    object      transportProperties;\n}\n\ntransportModel  Newtonian;\n\nnu              [0 2 -1 0 0 0 0] 1e-06;\nrho             [1 -3 0 0 0 0 0] 900;\n"
+controlDict:
+  application: simpleFoam
+  startFrom: startTime
+  startTime: 0
+  stopAt: endTime
+  endTime: 1000
+  deltaT: 1
+  writeControl: timeStep
+  writeInterval: 100
+  purgeWrite: 0
+  writeFormat: ascii
+  writePrecision: 6
+  writeCompression: off
+fvSchemes:
+  ddtSchemes:
+    default: Euler
+  gradSchemes:
+    default: Gauss linear
+  divSchemes:
+    default: none
+    div(phi,U): Gauss linearUpwind
+  laplacianSchemes:
+    default: Gauss linear corrected
+  interpolationSchemes:
+    default: linear
+  snGradSchemes:
+    default: corrected
+fvSolution:
+  solvers:
+    p:
+      solver: PCG
+      preconditioner: DIC
+      tolerance: 1e-06
+      relTol: 0.05
+    U:
+      solver: PBiCG
+      preconditioner: DILU
+      tolerance: 1e-06
+      relTol: 0.05
+transportProperties:
+  transportModel: Newtonian
+  nu: !!str '[0 2 -1 0 0 0 0] 1e-06'
+  rho: !!str '[1 -3 0 0 0 0 0] 900'
