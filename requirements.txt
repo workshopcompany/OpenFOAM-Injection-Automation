@@ -1,3 +1,8 @@
+
+# --- RESET TRIGGER (do not remove) ---
+# This blank line forces Streamlit Cloud to rebuild the environment.
+
+
 # UI Framework
 streamlit
 
@@ -8,15 +13,19 @@ numpy
 
 # Visualization
 matplotlib
+plotly
 
 # OpenFOAM Data Handling (Optional for future 3D view)
 pyvista
+stpyvista
 streamlit-stl
 
-requests
-stpyvista
-plotly
+# Geometry / Math / Utilities
 scipy
 rtree
-trimesh  # STL 파일을 읽고 좌표를 계산하는 데 필요
+trimesh   # STL 파일을 읽고 좌표를 계산하는 데 필요
+
+# Networking
+requests
+
 
