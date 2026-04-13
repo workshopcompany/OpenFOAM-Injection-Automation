@@ -617,31 +617,42 @@ def make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True):
 # [도움 함수] 유체 추출 및 스케일 변환 로직 (기존 코드 상단에 배치)
 # ─────────────────────────────────────────────────────────────
 def load_and_threshold(fpath):
-    """최신 버전: 반드시 4개의 값을 반환함"""
+    """
+    최종 수정 버전: 
+    반드시 (결과, 농도값, 격자수, 디버그메시지) 4개를 반환함.
+    """
     try:
+        if not os.path.exists(fpath):
+            return None, None, 0, f"File not found: {fpath}"
+
         mesh = pv.read(fpath)
         if isinstance(mesh, pv.MultiBlock):
             mesh = mesh.combine()
         
+        # 필드 이름 확인 (alpha.water 또는 alpha1)
         field_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
-        dbg_info = f"Fields: {mesh.array_names}"
+        dbg_info = f"Found fields: {mesh.array_names}"
 
         if field_name in mesh.array_names:
+            # 임계값 처리 (농도 0.5 이상만 추출)
             fluid_mesh = mesh.threshold(0.5, scalars=field_name)
+            
             if fluid_mesh.n_cells == 0:
-                return None, None, 0, dbg_info
+                return None, None, 0, "No fluid cells found"
             
             surf = fluid_mesh.extract_surface()
-            pts = surf.points * 1000  # mm 변환
+            pts = surf.points * 1000  # mm 단위 변환
             faces = surf.faces.reshape(-1, 4)[:, 1:]
             alpha_vals = surf.point_data[field_name].tolist()
             
-            # [수정포인트] 반드시 4개를 콤마로 구분해서 반환
+            # [리턴값 4개 확인] 1.좌표셋, 2.농도리스트, 3.셀개수, 4.디버그문구
             return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid_mesh.n_cells, dbg_info
         else:
-            return None, None, 0, "Field not found"
+            return None, None, 0, f"Field '{field_name}' not found"
+            
     except Exception as e:
-        return None, None, 0, str(e)
+        # 에러가 나도 반드시 4개를 반환해서 언팩킹 에러 방지
+        return None, None, 0, f"Error: {str(e)}"
 
 def make_fluid_trace(pts_data, fi, fj, fk, intensity, show_colorbar=False):
     """Plotly용 유체 Mesh3d 트레이스 생성"""
