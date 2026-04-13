@@ -28,24 +28,12 @@ solvers
         relTol          0.01;
     }
 
-    p_rghFinal
-    {
-        $p_rgh;
-        relTol          0;
-    }
-
     U
     {
         solver          smoothSolver;
         smoother        symGaussSeidel;
         tolerance       1e-6;
         relTol          0.1;
-    }
-
-    UFinal
-    {
-        $U;
-        relTol          0;
     }
 }
 
@@ -55,24 +43,4 @@ PIMPLE
     nOuterCorrectors  1;
     nCorrectors       2;
     nNonOrthogonalCorrectors 1;
-
-    residualControl
-    {
-        p_rgh           1e-4;
-        U               1e-4;
-    }
 }
-
-relaxationFactors
-{
-    fields
-    {
-        p_rgh 0.3;
-    }
-    equations
-    {
-        U     0.7;
-    }
-}
-
-// ************************************************************************* //
