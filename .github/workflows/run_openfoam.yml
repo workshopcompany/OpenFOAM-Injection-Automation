@@ -1,9 +1,11 @@
 name: MIM-Ops Flow Analysis
 
 on:
-  # 외부 신호(Zapier/Streamlit) 및 수동 실행 대응
+  # 1. 외부 신호(Zapier/Streamlit) 트리거
   repository_dispatch:
     types: [mim_ops_trigger]
+  
+  # 2. GitHub UI 수동 실행 및 파라미터 입력
   workflow_dispatch:
     inputs:
       velocity:
@@ -24,13 +26,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup OpenFOAM Dictionaries (Fix Phase Error)
-        # interFoam 구동에 필수적인 phases와 물성치를 실행 직전에 자동 생성합니다.
+      - name: Setup Simulation Environment
+        # 디렉토리 생성 및 필수 딕셔너리 자동 교정
         shell: bash
-        working-directory: OpenFOAM/case/constant
         run: |
-          echo ">>> Re-building transportProperties for interFoam..."
-          cat <<EOF > transportProperties
+          echo ">>> Preparing directories and constant files..."
+          # 로그 및 결과 폴더 강제 생성
+          mkdir -p OpenFOAM/case/logs
+          mkdir -p OpenFOAM/case/results
+
+          # transportProperties 재구축 (interFoam 전용 phases 포함)
+          cat <<EOF > OpenFOAM/case/constant/transportProperties
           FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object transportProperties; }
           
           phases (water air);
@@ -51,7 +57,7 @@ jobs:
 
           sigma           0.07;
           EOF
-          echo "✅ transportProperties sanitized with phase definitions."
+          echo "✅ environment setup complete."
 
       - name: Execute Solver Pipeline
         shell: bash -l {0}
@@ -61,33 +67,39 @@ jobs:
           END_TIME: ${{ github.event.client_payload.etime || github.event.inputs.end_time || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          echo ">>> [MIM-Ops] Starting Simulation ID: $SIGNAL_ID"
-          
-          # 1. OpenFOAM 환경 로딩
+          echo ">>> [MIM-Ops] Signal ID: $SIGNAL_ID"
+          echo ">>> [MIM-Ops] End Time Setting: $END_TIME"
+
+          # 1. OpenFOAM 환경 로딩 (경로 이중 확인)
           if [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ]; then
               . /usr/lib/openfoam/openfoam2312/etc/bashrc
           elif [ -f /opt/openfoam2312/etc/bashrc ]; then
               . /opt/openfoam2312/etc/bashrc
           fi
 
-          # 2. p_rgh 자동 생성 확인 (interFoam 필수 조건)
-          [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh && echo ">>> Created p_rgh."
+          # 2. 필수 필드(p_rgh) 생성 확인
+          if [ ! -f 0/p_rgh ] && [ -f 0/p ]; then
+              echo ">>> Creating missing p_rgh from p field..."
+              cp 0/p 0/p_rgh
+          fi
 
-          # 3. 솔버 실행 및 로그 기록
+          # 3. Allrun 실행 및 실시간 로그 기록
+          # tee 명령어를 사용해 화면 출력과 파일 저장을 동시에 수행합니다.
           chmod +x Allrun
-          echo ">>> Running interFoam Pipeline..."
-          # 실시간 로그를 파일로 저장
-          ./Allrun > logs/solver_detailed.log 2>&1
-          
+          echo ">>> Running interFoam solver pipeline..."
+          ./Allrun 2>&1 | tee logs/solver_detailed.log
+
+          # 4. Paraview 및 웹 시각화용 빈 파일 생성
+          touch case.foam
           echo ">>> [MIM-Ops] Pipeline process finished."
 
       - name: Upload Artifacts
-        # 실패 여부와 상관없이 생성된 모든 유동해석 결과물을 수집합니다.
+        # 성공/실패 여부와 관계없이 모든 데이터를 수집합니다.
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sim-results-${{ github.event.client_payload.signal_id || 'manual' }}
-          # 핵심 수정: 특정 파일이 아닌, 숫자 폴더(해석 결과)를 포함한 케이스 전체를 업로드
+          name: full-sim-results-${{ github.event.client_payload.signal_id || 'manual' }}
+          # 숫자 폴더(해석 결과)를 포함한 케이스 전체를 업로드하되 빌드 파일 제외
           path: |
             OpenFOAM/case/
             !OpenFOAM/case/platforms/
