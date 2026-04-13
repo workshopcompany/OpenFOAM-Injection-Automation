@@ -493,111 +493,78 @@ if st.session_state["props_confirmed"] and st.session_state.get("process_confirm
 else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
 
+# ─────────────────────────────────────────────────────────────
+# MIM-Ops Simulation Results (structured: results.txt + logs.zip + VTK/)
+# ─────────────────────────────────────────────────────────────
+st.title("MIM-Ops Simulation Results")
 
-# ─────────────────────────────────────────────────────────────
-# MIM-Ops Simulation Results (English Version)
-# ─────────────────────────────────────────────────────────────
-st.title("🔬 MIM-Ops Simulation Results")
+# Refresh button – downloads latest artifact and extracts files
+if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
+    with st.spinner("Fetching latest data from GitHub securely..."):
+        if sync_simulation_results():
+            st.success("Data synchronization complete! Loading visualization data.")
+            time.sleep(1)
+            st.rerun()
+
+# 1. Simulation Summary (results.txt)
+if os.path.exists("results.txt"):
+    with open("results.txt", "r") as f:
+        summary = f.read()
+    st.text_area("📄 Simulation Summary", summary, height=200)
+
+# 2. Logs download
+if os.path.exists("logs.zip"):
+    with open("logs.zip", "rb") as f:
+        st.download_button(
+            label="📂 Download All Logs (logs.zip)",
+            data=f,
+            file_name="logs.zip",
+            mime="application/zip"
+        )
+
 import glob
 import re  # 파일명 숫자 정렬을 위해 추가
 import pyvista as pv
 from stpyvista import stpyvista
 
-# 1. Action: Sync Data from GitHub
-if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
-    with st.spinner("Fetching latest data from GitHub securely..."):
-        if sync_simulation_results():
-            st.success("Data synchronization complete!")
-            time.sleep(1)
-            st.rerun()
-
-# Layout: Result Summary and 3D View
-col_text, col_viz = st.columns([1, 2])
-
-with col_text:
-    st.subheader("📄 Simulation Summary")
-    if os.path.exists("results.txt"):
-        with open("results.txt", "r") as f:
-            st.text_area("Final Parameters", f.read(), height=300)
-    else:
-        st.info("No summary file found. Please sync results.")
-
-with col_viz:
-    st.subheader("🌐 3D Flow Visualization")
-    vtk_dir = "VTK"
-    if os.path.exists(vtk_dir):
-        # 1. Find .vtm or .vtk files
-        all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + \
-                    glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
+# 3. 3D Flow Visualization (VTK folder)
+vtk_dir = "VTK"
+if os.path.exists(vtk_dir):
+    st.subheader("3D Flow Visualization")
+    
+    # 1. Detect .vtm (MultiBlock) and .vtk files
+    all_vis_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
+    water_files = [f for f in all_vis_files if "alpha.water" in f]
+    
+    if water_files:
+        # Sort by timestep number (e.g., _40, _42)
+        water_files.sort(key=lambda x: int(re.findall(r'_(\d+)', x)[-1]) if re.findall(r'_(\d+)', x) else 0)
+        latest_file = water_files[-1]
+        st.caption(f"Rendering: `{os.path.basename(latest_file)}`")
         
-        water_files = [f for f in all_files if "alpha.water" in f]
-        
-        if water_files:
-            # Sort by timestep number
-            def extract_num(f):
-                match = re.search(r'_(\d+)\.vt', f)
-                return int(match.group(1)) if match else 0
-            water_files.sort(key=extract_num)
-            latest_file = water_files[-1]
+        try:
+            # 2. Prevent freeze: Start virtual display for cloud servers
+            if 'xvfb' not in st.session_state:
+                pv.start_xvfb(); st.session_state['xvfb'] = True
             
-            st.caption(f"Rendering File: `{os.path.basename(latest_file)}`")
+            # 3. Read and Combine MultiBlock (.vtm)
+            mesh = pv.read(latest_file)
+            if isinstance(mesh, pv.MultiBlock):
+                mesh = mesh.combine()
             
-            try:
-                # Optimized Rendering Logic
-                pv.start_xvfb() # Necessary for cloud/headless environments
-                mesh = pv.read(latest_file)
-                if isinstance(mesh, pv.MultiBlock):
-                    mesh = mesh.combine()
+            plotter = pv.Plotter(window_size=[600, 400])
+            plotter.background_color = "white"
+            
+            if "alpha.water" in mesh.array_names:
+                plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues", show_scalar_bar=True)
+            else:
+                plotter.add_mesh(mesh, color="lightblue", show_edges=True)
                 
-                plotter = pv.Plotter(window_size=[600, 400])
-                plotter.background_color = "white"
-                
-                if "alpha.water" in mesh.array_names:
-                    plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues", show_scalar_bar=True)
-                else:
-                    plotter.add_mesh(mesh, color="lightblue", show_edges=True)
-                
-                plotter.view_isometric()
-                stpyvista(plotter, key=f"pv_render_{latest_file}") # Unique key prevents freezing
-                
-            except Exception as e:
-                st.error(f"Visualization Error: {e}")
-        else:
-            st.warning("No visualization files (.vtm/.vtk) detected in VTK folder.")
+            plotter.view_isometric()
+            # 4. Use dynamic key to force refresh and avoid 5-min freeze
+            stpyvista(plotter, key=f"viz_{os.path.getmtime(latest_file)}")
+            
+        except Exception as e:
+            st.error(f"Visualization Error: {e}")
     else:
-        st.info("Waiting for VTK data...")
-
-# ─────────────────────────────────────────────────────────────
-# 🛡️ Debug & Log Console (New Section)
-# ─────────────────────────────────────────────────────────────
-st.divider()
-st.subheader("🛠️ System Log Console")
-log_col1, log_col2 = st.columns(2)
-
-# 1. Solver Detailed Log
-with log_col1:
-    st.markdown("**Solver Execution Log**")
-    # We check for logs inside the extracted logs.zip or the temp folder
-    solver_log = "logs/solver_detailed.log"
-    if os.path.exists(solver_log):
-        with open(solver_log, "r") as f:
-            # Show only last 500 lines for performance
-            log_data = f.readlines()
-            st.code("".join(log_data[-500:]), language="bash")
-    else:
-        st.caption("No solver log available.")
-
-# 2. Pipeline/General Log
-with log_col2:
-    st.markdown("**VTK Conversion Log**")
-    vtk_log = "logs/foamToVTK.log"
-    if os.path.exists(vtk_log):
-        with open(vtk_log, "r") as f:
-            st.code(f.read(), language="bash")
-    else:
-        st.caption("No conversion log available.")
-
-# 3. Global Logs Download
-if os.path.exists("logs.zip"):
-    with open("logs.zip", "rb") as f:
-        st.download_button("📂 Download Full Log Archive (.zip)", f, "logs.zip")
+        st.warning("No .vtm or .vtk files found in VTK folder.")
