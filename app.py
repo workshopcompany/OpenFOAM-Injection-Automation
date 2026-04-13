@@ -31,7 +31,7 @@ with st.sidebar:
         st.success("✅ STL saved for GitHub Action.")
 
     st.subheader("🤖 AI Property Recommendation")
-    mat_name = st.text_input("Material Name", value="Stainless Steel 316L")
+    mat_name = st.text_input("Material Name", value="PP")
     if st.button("Get AI Suggestion"):
         st.session_state["props"] = get_material_properties(mat_name)
     
