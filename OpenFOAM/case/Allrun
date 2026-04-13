@@ -30,7 +30,7 @@ find . -maxdepth 1 -regextype posix-extended \
 PIPELINE_OK=true
 
 # ══════════════════════════════════════════
-# 설정 파일 생성 (기존 코드 그대로)
+# 설정 파일 생성
 # ══════════════════════════════════════════
 echo "[Allrun] 설정 파일 생성 시작..."
 
@@ -62,9 +62,12 @@ adjustTimeStep  yes;
 maxCo           0.5;
 maxAlphaCo      0.5;
 maxDeltaT       0.01;
+// ************************************************************************* //
 CTRL_EOF
 echo "[Allrun] ✅ controlDict 생성"
 
+# ── transportProperties ───────────────────
+# rho는 차원 없이 숫자만 — interFoam은 phases 블록에서 차원 없이 읽음
 cat > constant/transportProperties << TP_EOF
 FoamFile
 {
@@ -79,15 +82,16 @@ water
 {
     transportModel  Newtonian;
     nu              [0 2 -1 0 0 0 0] ${VISCOSITY};
-    rho             [1 -3 0 0 0 0 0] ${DENSITY};
+    rho             ${DENSITY};
 }
 air
 {
     transportModel  Newtonian;
     nu              [0 2 -1 0 0 0 0] 1.48e-5;
-    rho             [1 -3 0 0 0 0 0] 1.2;
+    rho             1.2;
 }
 sigma           [1 0 -2 0 0 0 0] 0.4;
+// ************************************************************************* //
 TP_EOF
 echo "[Allrun] ✅ transportProperties 생성"
 
@@ -101,6 +105,7 @@ FoamFile
     object      turbulenceProperties;
 }
 simulationType  laminar;
+// ************************************************************************* //
 TURB_EOF
 echo "[Allrun] ✅ turbulenceProperties 생성"
 
@@ -115,6 +120,7 @@ FoamFile
 }
 dimensions      [0 1 -2 0 0 0 0];
 value           (0 -9.81 0);
+// ************************************************************************* //
 G_EOF
 echo "[Allrun] ✅ g 생성"
 
@@ -136,6 +142,7 @@ boundaryField
     walls        { type fixedFluxPressure; value uniform 0; }
     frontAndBack { type empty; }
 }
+// ************************************************************************* //
 P_EOF
 
 cat > 0/p << 'P2_EOF'
@@ -156,6 +163,7 @@ boundaryField
     walls        { type calculated; value uniform 0; }
     frontAndBack { type empty; }
 }
+// ************************************************************************* //
 P2_EOF
 
 cat > 0/alpha.water << 'A_EOF'
@@ -176,6 +184,7 @@ boundaryField
     walls        { type zeroGradient; }
     frontAndBack { type empty; }
 }
+// ************************************************************************* //
 A_EOF
 
 cat > 0/U << U_EOF
@@ -196,6 +205,7 @@ boundaryField
     walls        { type noSlip; }
     frontAndBack { type empty; }
 }
+// ************************************************************************* //
 U_EOF
 echo "[Allrun] ✅ 0/ boundary files 생성"
 
@@ -212,18 +222,19 @@ ddtSchemes      { default Euler; }
 gradSchemes     { default Gauss linear; }
 divSchemes
 {
-    default                         none;
-    div(phi,alpha.water)            Gauss vanLeer;
-    div(phi,alpha)                  Gauss vanLeer;
-    div(phirb,alpha.water)          Gauss linear;
-    div(phirb,alpha)                Gauss linear;
-    div(rhoPhi,U)                   Gauss linearUpwind grad(U);
-    div(((rho*nuEff)*dev2(T(grad(U)))))  Gauss linear;
+    default                                      none;
+    div(phi,alpha.water)                         Gauss vanLeer;
+    div(phi,alpha)                               Gauss vanLeer;
+    div(phirb,alpha.water)                       Gauss linear;
+    div(phirb,alpha)                             Gauss linear;
+    div(rhoPhi,U)                                Gauss linearUpwind grad(U);
+    div(((rho*nuEff)*dev2(T(grad(U)))))          Gauss linear;
 }
 laplacianSchemes { default Gauss linear corrected; }
 interpolationSchemes { default linear; }
 snGradSchemes    { default corrected; }
 fluxRequired     { default no; p_rgh; pcorr; alpha.water; }
+// ************************************************************************* //
 FS_EOF
 echo "[Allrun] ✅ fvSchemes 생성"
 
@@ -294,76 +305,117 @@ PIMPLE
     pRefValue           0;
 }
 relaxationFactors { equations { ".*" 1; } }
+// ************************************************************************* //
 FSO_EOF
 echo "[Allrun] ✅ fvSolution 생성"
 
 echo "[Allrun] 모든 설정 파일 생성 완료"
 echo "========================================"
 
+# ══════════════════════════════════════════
 # blockMesh
+# ══════════════════════════════════════════
 echo "[Allrun] blockMesh 실행..."
 blockMesh 2>&1 | tee logs/blockMesh.log
 BLOCKMESH_EXIT=${PIPESTATUS[0]}
 
 if [ "$BLOCKMESH_EXIT" -ne 0 ]; then
-    echo "[Allrun] ❌ blockMesh 실패"
+    echo "[Allrun] ❌ blockMesh 실패 (exit=${BLOCKMESH_EXIT})"
+    echo "=== blockMesh 로그 마지막 30줄 ==="
+    tail -30 logs/blockMesh.log
     PIPELINE_OK=false
 else
     echo "[Allrun] ✅ blockMesh 완료"
 fi
 
+# ══════════════════════════════════════════
 # interFoam
+# ══════════════════════════════════════════
 if [ "$PIPELINE_OK" = true ]; then
     echo "[Allrun] interFoam 실행..."
     interFoam 2>&1 | tee logs/interFoam.log
     INTERFOAM_EXIT=${PIPESTATUS[0]}
 
+    echo "========================================"
+    echo "=== interFoam 마지막 30줄 ==="
+    tail -30 logs/interFoam.log
+    echo "========================================"
+
     if [ "$INTERFOAM_EXIT" -ne 0 ]; then
-        echo "[Allrun] ❌ interFoam 실패"
+        echo "[Allrun] ❌ interFoam 실패 (exit=${INTERFOAM_EXIT})"
         PIPELINE_OK=false
     else
         echo "[Allrun] ✅ interFoam 완료"
     fi
-fi
-
-# 결과 검증
-TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
-LAST_TIME=""
-if [ "$TIMESTEPS" -gt 0 ]; then
-    LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended -regex '\./[0-9]+\.[0-9]+' -type d | sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
+else
+    echo "[Allrun] ⏭️ blockMesh 실패로 interFoam 건너뜀"
 fi
 
 # ══════════════════════════════════════════
-# 🚀 웹 시각화용 결과물 정리 (요청하신 구조 exactly 적용)
+# 결과 검증
+# ══════════════════════════════════════════
+TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended \
+  -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
+LAST_TIME=""
+if [ "$TIMESTEPS" -gt 0 ]; then
+    LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended \
+      -regex '\./[0-9]+\.[0-9]+' -type d | \
+      sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
+fi
+
+# ══════════════════════════════════════════
+# 웹 시각화용 결과물 정리
 # ══════════════════════════════════════════
 echo "[Allrun] 📂 결과물 정리 시작..."
 
 if [ "$PIPELINE_OK" = true ]; then
-    # 1. VTK 생성 (웹 3D 표시용)
-    foamToVTK -ascii 2>&1 | tee logs/foamToVTK.log
+    # 1. VTK 생성 (웹 3D 표시용) — 실패해도 진행
+    foamToVTK -ascii 2>&1 | tee logs/foamToVTK.log || true
 
     # 2. results.txt 생성 (Streamlit에서 바로 표시)
-    if [ -f results/meta.txt ]; then
-        cp results/meta.txt ./results.txt
-    else
-        touch results.txt
-    fi
-    echo "Simulation Status: $( [ "$PIPELINE_OK" = true ] && echo "Success" || echo "Failed" )" >> ./results.txt
-    echo "Finish Time: $(date)" >> ./results.txt
-    echo "Last Time Step: ${LAST_TIME}" >> ./results.txt
-    echo "Time Steps: ${TIMESTEPS}" >> ./results.txt
+    cat > ./results.txt << EOF
+Simulation Status: Success
+Material: ${MATERIAL}
+Velocity: ${VELOCITY} m/s
+Viscosity: ${VISCOSITY} m2/s
+Density: ${DENSITY} kg/m3
+Melt Temp: ${MELT_TEMP} C
+Mold Temp: ${MOLD_TEMP} C
+End Time: ${END_TIME} s
+Last Time Step: ${LAST_TIME}
+Time Steps: ${TIMESTEPS}
+Finish Time: $(date)
+EOF
 
     # 3. logs.zip 생성 (로그 다운로드용)
-    if [ -d logs ]; then
-        zip -r logs.zip logs/*.log 2>/dev/null || true
-    fi
+    zip -r logs.zip logs/*.log 2>/dev/null || true
 
     echo "[Allrun] ✅ 모든 파일 준비 완료 (results.txt, logs.zip, VTK/)"
 else
-    echo "[Allrun] ⚠️ PIPELINE_OK=false → 후처리 생략"
+    # 실패시에도 results.txt는 생성 (Streamlit에서 실패 원인 표시용)
+    cat > ./results.txt << EOF
+Simulation Status: Failed
+Material: ${MATERIAL}
+Velocity: ${VELOCITY} m/s
+Viscosity: ${VISCOSITY} m2/s
+Density: ${DENSITY} kg/m3
+Melt Temp: ${MELT_TEMP} C
+Mold Temp: ${MOLD_TEMP} C
+End Time: ${END_TIME} s
+Last Time Step: ${LAST_TIME}
+Time Steps: ${TIMESTEPS}
+Finish Time: $(date)
+EOF
+
+    # 실패 로그도 zip
+    zip -r logs.zip logs/*.log 2>/dev/null || true
+
+    echo "[Allrun] ⚠️ 시뮬레이션 실패 — results.txt(Failed), logs.zip 생성"
 fi
 
+# ══════════════════════════════════════════
 # 메타데이터 기록
+# ══════════════════════════════════════════
 cat > results/meta.txt << META_EOF
 MATERIAL=${MATERIAL}
 VELOCITY=${VELOCITY}
@@ -380,8 +432,13 @@ META_EOF
 echo "========================================"
 if [ "$PIPELINE_OK" = true ] && [ "$TIMESTEPS" -gt 0 ]; then
     echo "[Allrun] ✅ 시뮬레이션 및 후처리 최종 성공"
+    echo "[Allrun] 타임스텝: ${TIMESTEPS}개 | 마지막: ${LAST_TIME}"
 else
     echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
+    echo "[Allrun] logs/ 폴더를 확인하세요:"
+    echo "  - logs/blockMesh.log"
+    echo "  - logs/interFoam.log"
+    echo "  - logs/solver_detailed.log"
 fi
 echo "========================================"
 
