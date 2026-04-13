@@ -10,28 +10,33 @@ SCRIPTS_DIR = os.path.join(BASE_DIR, 'scripts')
 if SCRIPTS_DIR not in sys.path:
     sys.path.append(SCRIPTS_DIR)
 
-# AI Advisor 로드
+# AI Advisor 로드 (경로 에러 방지)
 try:
     from gemini_advisor import get_material_properties
 except ImportError:
     st.error("❌ 'scripts/gemini_advisor.py' missing.")
+    # 임시 목업 함수 (없을 경우 대비)
+    def get_material_properties(name): return {"nu": 1e-6, "rho": 1350.0}
 
 ZAPIER_WEBHOOK_URL = st.secrets.get("ZAPIER_URL", None)
 
 # --- UI 설정 ---
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 
-# CSS를 이용해 화면 중앙에 빨간 점과 사각 가이드라인 생성
+# CSS 수정: 사각형 테두리를 지우고 조준점 위치를 아래로 내림
+# 핵심: 컨테이너 높이를 고정(height: 500px;)하여 absolute 계산을 안정화
 st.markdown("""
     <style>
     .viewer-container {
         position: relative;
-        border: 2px solid #555; /* 사각형 표시 */
-        border-radius: 10px;
+        width: 100%;
+        height: 500px; /* 3D 모델이 나타날 고정 높이 */
+        overflow: hidden;
+        margin-top: 10px;
     }
     .red-dot {
         position: absolute;
-        top: 50%;
+        top: 50%; /* 컨테이너 중앙(250px 지점)으로 내림 */
         left: 50%;
         width: 12px;
         height: 12px;
@@ -42,33 +47,33 @@ st.markdown("""
         box-shadow: 0 0 10px white;
         pointer-events: none; /* 클릭 방해 금지 */
     }
+    /* "TARGET GATE POINT" 텍스트를 빨간 점 바로 오른쪽에 배치 */
     .guide-text {
         position: absolute;
-        bottom: 10px;
-        right: 10px;
+        top: calc(50% + 15px); /* 점 아래 15px */
+        left: 50%;
+        transform: translateX(-50%); /* 중앙 정렬 */
         color: #ff4b4b;
+        font-size: 14px;
         font-weight: bold;
         z-index: 11;
+        background-color: rgba(0,0,0,0.5); /* 검은 배경에 읽기 편하게 */
+        padding: 2px 5px;
+        border-radius: 4px;
     }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("🔬 MIM-Ops: Cloud Simulation")
 
-# --- Sidebar 레이아웃 (순서 변경 적용) ---
+# --- Sidebar 레이아웃 (순서 및 기본 재료 PA66 GF30 적용) ---
 with st.sidebar:
     st.header("📂 1. Geometry & Gate")
     
-    # [복구] STL 파일 업로드
+    # [유지] STL 파일 업로드
     uploaded_file = st.file_uploader("Upload STL (mm)", type=["stl"])
-    if uploaded_file:
-        stl_path = os.path.join(BASE_DIR, "OpenFOAM/case/constant/triSurface/part.stl")
-        os.makedirs(os.path.dirname(stl_path), exist_ok=True)
-        with open(stl_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        st.success("✅ STL uploaded.")
-
-    # [이동] Gate Selection UI를 AI Suggestion 위로 올림
+    
+    # [유지] Gate Selection UI (AI Suggestion 위)
     st.subheader("📍 Gate Selection (mm)")
     st.caption("화면 중앙의 빨간 점에 게이트 위치를 맞추고 좌표를 입력하세요.")
     gx = st.number_input("Gate X", value=0.0, step=0.1)
@@ -77,14 +82,15 @@ with st.sidebar:
 
     st.divider()
 
-    # [이동] AI Property Suggestion (순서 변경)
+    # [유지] AI Property Suggestion (순서 변경)
     st.subheader("🤖 AI Property Suggestion")
     # [변경] 기본 재료명을 PA66+30glassfiber로 수정
     mat_name = st.text_input("Material Name", value="PA66+30glassfiber")
     if st.button("Get AI Recommendation"):
         st.session_state["props"] = get_material_properties(mat_name)
     
-    props = st.session_state.get("props", {"nu": 1e-6, "rho": 1350.0}) # PA66 GF30 밀도 근사치
+    # PA66 GF30 근사 밀도
+    props = st.session_state.get("props", {"nu": 1e-6, "rho": 1350.0})
 
     st.divider()
 
@@ -96,37 +102,45 @@ with st.sidebar:
 
     if st.button("🚀 Run Cloud Simulation", type="primary"):
         if ZAPIER_WEBHOOK_URL:
+            # 5. [추가] Allrun에 전달할 파라미터 구성 강화
             payload = {
-                "press": press_mpa * 1e6,
+                "press": press_mpa * 1e6, # Pa로 변환
                 "etime": etime,
                 "nu": nu,
                 "gate": {"x": gx, "y": gy, "z": gz},
                 "mat": mat_name
             }
-            requests.post(ZAPIER_WEBHOOK_URL, json=payload)
-            st.toast("✅ Action Triggered!")
-            st.session_state["exec"] = True
+            # Zapier Webhook 전송 (에러 핸들링 추가)
+            try:
+                requests.post(ZAPIER_WEBHOOK_URL, json=payload, timeout=10)
+                st.toast("✅ Action Triggered on GitHub Cloud!", icon="🌐")
+                st.session_state["exec"] = True
+            except requests.exceptions.RequestException as e:
+                st.error(f"Zapier sync failed: {e}")
 
 # --- 메인 화면: 3D 뷰어 + 조준점 시스템 ---
 st.header("🎥 3D Geometry Analysis")
 
 if uploaded_file:
-    # 뷰어와 빨간 점을 감싸는 컨테이너 시작
+    # 뷰어와 빨간 점을 감싸는 컨테이너 시작 (높이 고정)
     st.markdown('<div class="viewer-container">', unsafe_allow_html=True)
     st.markdown('<div class="red-dot"></div>', unsafe_allow_html=True)
     st.markdown('<div class="guide-text">TARGET GATE POINT</div>', unsafe_allow_html=True)
     
     stl_from_file(
         file_path=os.path.join(BASE_DIR, "OpenFOAM/case/constant/triSurface/part.stl"), 
-        color="#888888", 
-        material="flat", 
-        auto_rotate=False
+        color="#CCCCCC", # 조금 더 밝은 회색
+        material="flat", # 질감 제거
+        auto_rotate=False # 게이트 지정 시 흔들리지 않도록 자동 회전 끔
     )
     
     st.markdown('</div>', unsafe_allow_html=True) # 컨테이너 종료
-    st.info(f"조준점에 맞춘 현재 설정 좌표: X={gx}, Y={gy}, Z={gz}")
+    
+    # [추가] 현재 지정된 좌표 요약 표시
+    st.caption(f"📍 현재 조준점에 맞춘 게이트 좌표: X={gx}, Y={gy}, Z={gz}")
+    st.info("모델을 마우스로 드래그하여 조준점에 맞추고 좌표를 입력하세요.")
 else:
     st.info("왼쪽 사이드바에서 STL 파일을 업로드하세요.")
 
 if st.session_state.get("exec"):
-    st.success("🏃 Cloud Solver: Running Simulation...")
+    st.success("🏃 GitHub Actions Solver is running with your gate position. Check 'Actions' tab.")
