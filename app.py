@@ -52,7 +52,7 @@ _init("last_signal_id", None)
 _init("mesh", None)
 _init("props", None)
 _init("props_confirmed", False)
-_init("process_confirmed", False)          # ← newly added
+_init("process_confirmed", False)
 _init("mat_name", "PA66+30GF")
 _init("last_vel_mms", 80.0)
 _init("last_etime", 0.5)
@@ -150,14 +150,13 @@ def get_process(material: str) -> dict:
     }
 
 # ─────────────────────────────────────────────────────────────
-# GitHub Artifact Sync Function (updated with 404 debugging)
+# GitHub Artifact Sync Function
 # ─────────────────────────────────────────────────────────────
 def sync_simulation_results():
-    # Configuration (update these values in .streamlit/secrets.toml)
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-    REPO_OWNER = "workshopcompany"   # ← CHANGE THIS to your actual GitHub username (case-sensitive, e.g. 'minchul-kim')
+    REPO_OWNER = "workshopcompany"
     REPO_NAME = "OpenFOAM-Injection-Automation"
-    ARTIFACT_NAME = "mim-results-manual"   # Must match the name set in your GitHub Actions workflow
+    ARTIFACT_NAME = "mim-results-manual"
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -165,7 +164,6 @@ def sync_simulation_results():
         "X-GitHub-Api-Version": "2022-11-28"
     }
 
-    # A. Get latest artifact list
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
     response = requests.get(url, headers=headers)
 
@@ -179,20 +177,17 @@ def sync_simulation_results():
 
     artifacts = response.json().get("artifacts", [])
 
-    # Find the most recent artifact with the matching name
     target_artifact = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
     if not target_artifact:
         st.warning("No simulation results have been generated yet. Please wait until the simulation is complete.")
         return False
 
-    # B. Download the artifact (zip)
     download_url = target_artifact["archive_download_url"]
     file_res = requests.get(download_url, headers=headers)
 
     if file_res.status_code == 200:
-        # C. Extract directly in memory to current working directory
         with zipfile.ZipFile(io.BytesIO(file_res.content)) as z:
-            z.extractall(".")   # Creates VTK folder, etc.
+            z.extractall(".")   # Extracts results.txt, logs.zip, VTK/ directly to working directory
         return True
     else:
         st.error("Failed to download result files.")
@@ -204,7 +199,6 @@ def sync_simulation_results():
 # ══════════════════════════════════════════
 with st.sidebar:
 
-    # ── 1. Geometry ───────────────────────
     st.header("📂 1. Geometry")
     uploaded = st.file_uploader("Upload STL (mm)", type=["stl"])
 
@@ -221,7 +215,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 2. Gate Configuration ─────────────
     st.header("📍 2. Gate Configuration")
 
     if st.button("🪄 AI Gate Suggestion", use_container_width=True):
@@ -258,7 +251,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 3. Material ───────────────────────
     st.header("🧪 3. Material")
     mat_name = st.text_input(
         "Material Name", value="PA66+30GF",
@@ -320,7 +312,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 4. Process Conditions ──────────────
     st.header("⚙️ 4. Process Conditions")
 
     if st.button("🤖 Optimize Process", use_container_width=True):
@@ -330,21 +321,14 @@ with st.sidebar:
         st.session_state["vel"]   = suggestion["vel"]
         st.toast("Process Conditions Optimized!", icon="🤖")
 
-    temp_c    = st.number_input("Injection Temperature (°C)",
-                                 50, 450, step=1, key="temp")
-    press_mpa = st.number_input("Injection Pressure (MPa)",
-                                 10.0, 250.0, step=1.0, key="press")
-    vel_mms   = st.number_input("Injection Velocity (mm/s)",
-                                 1.0, 600.0, step=1.0, key="vel")
-    etime     = st.number_input("End Time (s)",
-                                 value=st.session_state["etime"],
-                                 min_value=0.1, max_value=10.0,
-                                 step=0.1, key="etime")
+    temp_c    = st.number_input("Injection Temperature (°C)", 50, 450, step=1, key="temp")
+    press_mpa = st.number_input("Injection Pressure (MPa)", 10.0, 250.0, step=1.0, key="press")
+    vel_mms   = st.number_input("Injection Velocity (mm/s)", 1.0, 600.0, step=1.0, key="vel")
+    etime     = st.number_input("End Time (s)", value=st.session_state["etime"], min_value=0.1, max_value=10.0, step=0.1, key="etime")
 
     st.session_state["last_vel_mms"] = vel_mms
     st.session_state["last_etime"]   = etime
 
-    # ★★★ Confirm Process Conditions button ★★★
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Confirm Process Conditions", use_container_width=True):
@@ -355,13 +339,11 @@ with st.sidebar:
             st.session_state["process_confirmed"] = False
             st.rerun()
 
-    # Warning message
     if not st.session_state.get("process_confirmed", False):
         st.warning("⚠️ Please click ✅ Confirm Process Conditions")
 
     st.divider()
 
-    # ── Run Button ──────────────────────────
     run_disabled = (
         st.session_state["sim_running"] or
         not st.session_state["props_confirmed"] or
@@ -429,7 +411,6 @@ sig_id_f  = st.session_state["last_signal_id"]
 
 col_geo, col_log = st.columns([2, 1])
 
-# ── 3D Geometry Viewer ─────────────────────────
 with col_geo:
     st.header("🎥 3D Geometry Analysis")
     mesh = st.session_state.get("mesh")
@@ -465,7 +446,6 @@ with col_geo:
     else:
         st.info("Upload an STL file in the sidebar to display the 3D model.")
 
-# ── Simulation Logs ──────────────────────
 with col_log:
     st.header("📟 Simulation & Debug Logs")
 
@@ -501,7 +481,6 @@ with col_log:
     else:
         st.info("Run a simulation to see logs here.")
 
-# ── Bottom Status ───────────────────────
 st.info(f"📍 Final Gate Position: ({gx_f:.2f}, {gy_f:.2f}, {gz_f:.2f})")
 
 if st.session_state["props_confirmed"] and st.session_state.get("process_confirmed", False) and props_f:
@@ -514,11 +493,11 @@ else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
 
 # ─────────────────────────────────────────────────────────────
-# MIM-Ops Simulation Results (updated with GitHub Artifact sync)
+# MIM-Ops Simulation Results (structured: results.txt + logs.zip + VTK/)
 # ─────────────────────────────────────────────────────────────
 st.title("MIM-Ops Simulation Results")
 
-# Refresh button – pulls the latest artifact from GitHub
+# Refresh button – downloads latest artifact and extracts files
 if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
     with st.spinner("Fetching latest data from GitHub securely..."):
         if sync_simulation_results():
@@ -526,23 +505,27 @@ if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
             time.sleep(1)
             st.rerun()
 
-# 1. Download full simulation results (if the zip file exists locally)
-zip_path = "simulation_results.zip"
-if os.path.exists(zip_path):
-    with open(zip_path, "rb") as f:
+# 1. Simulation Summary (results.txt)
+if os.path.exists("results.txt"):
+    with open("results.txt", "r") as f:
+        summary = f.read()
+    st.text_area("📄 Simulation Summary", summary, height=200)
+
+# 2. Logs download
+if os.path.exists("logs.zip"):
+    with open("logs.zip", "rb") as f:
         st.download_button(
-            label="📦 Download Full Simulation Results (.zip)",
+            label="📂 Download All Logs (logs.zip)",
             data=f,
-            file_name="simulation_results.zip",
+            file_name="logs.zip",
             mime="application/zip"
         )
 
-# 2. 3D Flow Visualization (reads data from VTK folder)
+# 3. 3D Flow Visualization (VTK folder)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
     try:
-        # 3D rendering setup (ready for your PyVista / Plotly code)
         plotter = pv.Plotter(window_size=[600, 400])
         # Example: load the latest time step VTK file
         # vtk_file = f"{vtk_dir}/.../alpha.water.vtk"   # ← modify according to your actual folder structure
