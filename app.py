@@ -2,6 +2,8 @@ import streamlit as st
 import os, json, time, uuid, requests
 from datetime import datetime
 import numpy as np
+import zipfile
+import io
 
 try:
     import trimesh
@@ -146,6 +148,51 @@ def get_process(material: str) -> dict:
         "press": float(props.get("press_mpa", 70)),
         "vel":   float(props.get("vel_mms", 80)),
     }
+
+# ─────────────────────────────────────────────────────────────
+# GitHub Artifact Sync Function (newly added)
+# ─────────────────────────────────────────────────────────────
+def sync_simulation_results():
+    # Configuration (update these values in .streamlit/secrets.toml)
+    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+    REPO_OWNER = "사용자_아이디"   # ← Replace with your GitHub username (e.g. 'minchul-kim')
+    REPO_NAME = "OpenFOAM-Injection-Automation"
+    ARTIFACT_NAME = "simulation-results"   # Must match the name set in your GitHub Actions workflow
+
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+    # A. Get latest artifact list
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        st.error(f"GitHub API connection failed: {response.status_code}")
+        return False
+
+    artifacts = response.json().get("artifacts", [])
+
+    # Find the most recent artifact with the matching name
+    target_artifact = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
+    if not target_artifact:
+        st.warning("No simulation results have been generated yet. Please wait until the simulation is complete.")
+        return False
+
+    # B. Download the artifact (zip)
+    download_url = target_artifact["archive_download_url"]
+    file_res = requests.get(download_url, headers=headers)
+
+    if file_res.status_code == 200:
+        # C. Extract directly in memory to current working directory
+        with zipfile.ZipFile(io.BytesIO(file_res.content)) as z:
+            z.extractall(".")   # Creates VTK folder, etc.
+        return True
+    else:
+        st.error("Failed to download result files.")
+        return False
 
 
 # ══════════════════════════════════════════
@@ -463,11 +510,19 @@ else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
 
 # ─────────────────────────────────────────────────────────────
-# MIM-Ops Simulation Results (Added section — original code kept completely intact)
+# MIM-Ops Simulation Results (updated with GitHub Artifact sync)
 # ─────────────────────────────────────────────────────────────
 st.title("MIM-Ops Simulation Results")
 
-# 1. Download full simulation results
+# Refresh button – pulls the latest artifact from GitHub
+if st.button("🔄 Refresh Latest Results (GitHub Sync)"):
+    with st.spinner("Fetching latest data from GitHub securely..."):
+        if sync_simulation_results():
+            st.success("Data synchronization complete! Loading visualization data.")
+            time.sleep(1)
+            st.rerun()
+
+# 1. Download full simulation results (if the zip file exists locally)
 zip_path = "simulation_results.zip"
 if os.path.exists(zip_path):
     with open(zip_path, "rb") as f:
@@ -482,17 +537,16 @@ if os.path.exists(zip_path):
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
-   
     try:
-        # 3D rendering setup
+        # 3D rendering setup (ready for your PyVista / Plotly code)
         plotter = pv.Plotter(window_size=[600, 400])
-        # Example: load the latest time step VTK file (adjust path to match your OpenFOAM structure)
+        # Example: load the latest time step VTK file
         # vtk_file = f"{vtk_dir}/.../alpha.water.vtk"   # ← modify according to your actual folder structure
        
         # UI rendering
         # stpyvista(plotter)
-        st.info("Rendering VTK data to 3D canvas...")
+        st.info("Data loaded. Preparing 3D canvas...")
     except Exception as e:
         st.error(f"Error loading visualization: {e}")
 else:
-    st.warning("No visualization data available yet. Please run a simulation first.")
+    st.info("Please click the 'Refresh Latest Results' button above to view results.")
