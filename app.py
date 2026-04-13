@@ -150,12 +150,12 @@ def get_process(material: str) -> dict:
     }
 
 # ─────────────────────────────────────────────────────────────
-# GitHub Artifact Sync Function (newly added)
+# GitHub Artifact Sync Function (updated with 404 debugging)
 # ─────────────────────────────────────────────────────────────
 def sync_simulation_results():
     # Configuration (update these values in .streamlit/secrets.toml)
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-    REPO_OWNER = "사용자_아이디"   # ← Replace with your GitHub username (e.g. 'minchul-kim')
+    REPO_OWNER = "your-github-username"   # ← CHANGE THIS to your actual GitHub username (case-sensitive, e.g. 'minchul-kim')
     REPO_NAME = "OpenFOAM-Injection-Automation"
     ARTIFACT_NAME = "simulation-results"   # Must match the name set in your GitHub Actions workflow
 
@@ -170,7 +170,11 @@ def sync_simulation_results():
     response = requests.get(url, headers=headers)
 
     if response.status_code != 200:
-        st.error(f"GitHub API connection failed: {response.status_code}")
+        if response.status_code == 404:
+            st.error(f"Repository not found. (URL: {url})")
+            st.info("Make sure the URL above matches your actual repository address in the browser.")
+        else:
+            st.error(f"GitHub API connection failed: {response.status_code}")
         return False
 
     artifacts = response.json().get("artifacts", [])
