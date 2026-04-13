@@ -156,7 +156,7 @@ def sync_simulation_results():
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     REPO_OWNER = "workshopcompany"
     REPO_NAME = "OpenFOAM-Injection-Automation"
-    ARTIFACT_NAME = "mim-results-manual"
+    ARTIFACT_NAME = "simulation-results"
 
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
