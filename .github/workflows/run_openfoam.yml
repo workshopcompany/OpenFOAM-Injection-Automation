@@ -62,13 +62,13 @@ jobs:
           END_TIME:  ${{ github.event.client_payload.etime     || github.event.inputs.end_time  || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          set -e
+          # set -e 제거 — 에러 직접 핸들링으로 전체 로그 보장
 
           # ── OpenFOAM 환경 로드 ──────────────────
           [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && \
-            . /usr/lib/openfoam/openfoam2312/etc/bashrc
+            . /usr/lib/openfoam/openfoam2312/etc/bashrc || true
           [ -f /opt/openfoam2312/etc/bashrc ] && \
-            . /opt/openfoam2312/etc/bashrc
+            . /opt/openfoam2312/etc/bashrc || true
 
           # ── 디렉토리 보장 ───────────────────────
           mkdir -p logs results
@@ -86,7 +86,7 @@ jobs:
           echo ">>> V=${FINAL_V} | nu=${FINAL_NU} | rho=${FINAL_RHO}"
           echo ">>> Tmelt=${FINAL_TM} | Tmold=${FINAL_TW} | T_end=${FINAL_T}"
 
-          # ── Allrun 실행 ─────────────────────────
+          # ── Allrun 실행 (실패해도 계속 진행) ───
           chmod +x Allrun
           VELOCITY=$FINAL_V    \
           VISCOSITY=$FINAL_NU  \
@@ -96,11 +96,21 @@ jobs:
           MOLD_TEMP=$FINAL_TW  \
           MATERIAL=$MATERIAL   \
           ./Allrun 2>&1 | tee logs/solver_detailed.log
+          ALLRUN_EXIT=${PIPESTATUS[0]}
 
-          # ── 후처리 ──────────────────────────────
+          # ── 후처리 (성공 여부 무관) ─────────────
           touch case.foam
-          echo "SIGNAL_ID=${SIGNAL_ID}" >> results/meta.txt
-          echo ">>> [MIM-Ops] Pipeline finished successfully."
+          echo "SIGNAL_ID=${SIGNAL_ID}"   >> results/meta.txt
+          echo "ALLRUN_EXIT=${ALLRUN_EXIT}" >> results/meta.txt
+
+          if [ "$ALLRUN_EXIT" -eq 0 ]; then
+            echo ">>> [MIM-Ops] ✅ Pipeline finished successfully."
+          else
+            echo ">>> [MIM-Ops] ❌ Pipeline failed (exit=${ALLRUN_EXIT}). Check logs."
+          fi
+
+          # ── 실패해도 exit 0으로 로그 업로드 보장
+          exit 0
 
       - name: Upload Simulation Artifacts
         if: always()
