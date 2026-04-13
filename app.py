@@ -498,6 +498,24 @@ else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
 
 # ─────────────────────────────────────────────────────────────
+# Helper: PyVista surface → Plotly-compatible triangles
+# ─────────────────────────────────────────────────────────────
+def pv_surface_to_triangles(surf: pv.PolyData):
+    """
+    PyVista PolyData의 faces는 flat array (mixed polygon 포함).
+    triangulate() 로 강제 삼각화 후 안전하게 (N,3) 인덱스 반환.
+    Returns: pts (N,3), i, j, k (1D arrays)
+    """
+    tri = surf.triangulate()
+    pts = tri.points
+    # triangulate 후에도 faces는 [3, i0, i1, i2, 3, i3, ...] flat array
+    faces_flat = tri.faces
+    n_faces = faces_flat.size // 4
+    fc = faces_flat.reshape(n_faces, 4)[:, 1:]
+    return pts, fc[:, 0], fc[:, 1], fc[:, 2]
+
+
+# ─────────────────────────────────────────────────────────────
 # MIM-Ops Simulation Results (structured: results.txt + logs.zip + VTK/)
 # ─────────────────────────────────────────────────────────────
 st.title("MIM-Ops Simulation Results")
@@ -599,21 +617,20 @@ if os.path.exists(vtk_dir):
 
                 if fluid.n_cells > 0:
                     surf = fluid.extract_surface()
-                    pts  = surf.points
-                    fc   = surf.faces.reshape(-1, 4)[:, 1:]
+                    pts, fi, fj, fk = pv_surface_to_triangles(surf)
+                    tri_surf = surf.triangulate()   # alpha 값 참조용
 
                     # alpha 값으로 색상 매핑 (0.5~1.0 → 파란~빨간)
                     alpha_vals = None
-                    if field_name in surf.point_data:
-                        alpha_vals = surf.point_data[field_name]
-                    elif field_name in surf.cell_data:
-                        # cell → point 보간
-                        surf2 = surf.cell_data_to_point_data()
-                        alpha_vals = surf2.point_data.get(field_name)
+                    if field_name in tri_surf.point_data:
+                        alpha_vals = tri_surf.point_data[field_name]
+                    elif field_name in tri_surf.cell_data:
+                        tri2 = tri_surf.cell_data_to_point_data()
+                        alpha_vals = tri2.point_data.get(field_name)
 
                     fig.add_trace(go.Mesh3d(
                         x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
-                        i=fc[:, 0],  j=fc[:, 1],  k=fc[:, 2],
+                        i=fi, j=fj, k=fk,
                         intensity=alpha_vals if alpha_vals is not None
                                   else np.ones(len(pts)),
                         colorscale="RdYlBu_r",
@@ -642,11 +659,10 @@ if os.path.exists(vtk_dir):
                     f"Showing raw mesh surface instead."
                 )
                 surf = raw.extract_surface()
-                pts  = surf.points
-                fc   = surf.faces.reshape(-1, 4)[:, 1:]
+                pts, fi, fj, fk = pv_surface_to_triangles(surf)
                 fig.add_trace(go.Mesh3d(
                     x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
-                    i=fc[:, 0],  j=fc[:, 1],  k=fc[:, 2],
+                    i=fi, j=fj, k=fk,
                     opacity=0.5,
                     color="lightblue",
                     name="Mesh Surface"
@@ -705,19 +721,19 @@ if os.path.exists(vtk_dir):
                             fluid = raw.threshold(0.5, scalars=field_name)
                             if fluid.n_cells > 0:
                                 surf = fluid.extract_surface()
-                                pts  = surf.points
-                                fc   = surf.faces.reshape(-1, 4)[:, 1:]
+                                pts, fi, fj, fk = pv_surface_to_triangles(surf)
+                                tri_surf = surf.triangulate()
 
                                 alpha_vals = None
-                                if field_name in surf.point_data:
-                                    alpha_vals = surf.point_data[field_name]
-                                elif field_name in surf.cell_data:
-                                    surf2 = surf.cell_data_to_point_data()
-                                    alpha_vals = surf2.point_data.get(field_name)
+                                if field_name in tri_surf.point_data:
+                                    alpha_vals = tri_surf.point_data[field_name]
+                                elif field_name in tri_surf.cell_data:
+                                    tri2 = tri_surf.cell_data_to_point_data()
+                                    alpha_vals = tri2.point_data.get(field_name)
 
                                 traces.append(go.Mesh3d(
                                     x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
-                                    i=fc[:, 0],  j=fc[:, 1],  k=fc[:, 2],
+                                    i=fi, j=fj, k=fk,
                                     intensity=alpha_vals if alpha_vals is not None
                                               else np.ones(len(pts)),
                                     colorscale="RdYlBu_r",
