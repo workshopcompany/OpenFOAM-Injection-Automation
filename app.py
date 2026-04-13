@@ -4,6 +4,12 @@ from datetime import datetime
 import numpy as np
 import zipfile
 import io
+import glob
+import re  # 파일명 숫자 정렬을 위해 추가
+import pyvista as pv
+import plotly.graph_objects as go
+from stpyvista import stpyvista
+
 
 
 try:
@@ -18,8 +24,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-import pyvista as pv
-from stpyvista import stpyvista
+
 
 # Custom CSS to make titles and headers slightly smaller
 st.markdown("""
@@ -522,12 +527,7 @@ if os.path.exists("logs.zip"):
             mime="application/zip"
         )
 
-import glob
-import re  # 파일명 숫자 정렬을 위해 추가
-import pyvista as pv
-from stpyvista import stpyvista
 
-import plotly.graph_objects as go
 
 # 3. 3D Flow Visualization (Plotly Version - No System Packages Required)
 vtk_dir = "VTK"
