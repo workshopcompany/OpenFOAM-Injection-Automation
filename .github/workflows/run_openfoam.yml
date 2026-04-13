@@ -61,6 +61,7 @@ jobs:
           mkdir -p OpenFOAM/case/logs
           mkdir -p OpenFOAM/case/results
           mkdir -p OpenFOAM/case/constant
+          mkdir -p OpenFOAM/case/system
           mkdir -p OpenFOAM/case/0
 
           # 1. 중력(g) 파일 생성 - Dimension Error 해결 (기존 코드 유지)
@@ -111,7 +112,7 @@ jobs:
           echo ">>> Target: ${MATERIAL} | ID: ${SIGNAL_ID}"
           echo ">>> Params: V=${FINAL_V}, nu=${FINAL_NU}, rho=${FINAL_RHO}, T_end=${FINAL_T}"
 
-          # 3. 압력 필드 단위 자동 교정 (기존의 강력한 해결책 유지)
+          # 3. 압력 필드 단위 자동 교정
           for f in 0/p 0/p_rgh; do
             if [ -f "$f" ]; then
               sed -i 's/dimensions.*\[1 -1 -2 0 0 0 0\]/dimensions [0 2 -2 0 0 0 0]/g' "$f"
@@ -120,6 +121,25 @@ jobs:
 
           # 4. p_rgh 누락 방지 로직
           [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh
+
+          # ----------------------------------------------------------------------
+          # 🔥 [핵심 추가] Allrun 실행 직전 fvSolution 강제 검증 및 주입
+          # ----------------------------------------------------------------------
+          echo ">>> [DEBUG] Allrun 실행 전 fvSolution 상태 점검 시작..."
+          if [ -f "system/fvSolution" ]; then
+            # 파일은 있는데 cAlpha가 없다면 누군가(스크립트 등)가 덮어씌운 것
+            if ! grep -q "cAlpha" system/fvSolution; then
+              echo ">>> [WARNING] cAlpha가 누락되어 강제 주입을 시도합니다."
+              # alpha.water.* 아랫줄에 cAlpha 1; 강제 삽입
+              sed -i '/"alpha.water.\*"/a \ \ \ \ \ \ \ \ cAlpha          1;' system/fvSolution
+            fi
+            echo "=== [확인] 실제 실행될 fvSolution 내부 (alpha.water.* 부분) ==="
+            grep -A 3 "alpha.water" system/fvSolution || echo "alpha.water 블록을 찾을 수 없습니다."
+            echo "================================================================"
+          else
+            echo ">>> [ERROR] 🚨 system/fvSolution 파일이 존재하지 않습니다!"
+          fi
+          # ----------------------------------------------------------------------
 
           # 5. Allrun 실행 (환경 변수를 전달하여 실행)
           chmod +x Allrun
