@@ -627,6 +627,11 @@ def load_and_threshold(fpath: str, threshold: float = 0.5):
 
     surf = fluid.extract_surface()
     pts, fi, fj, fk = pv_surface_to_triangles(surf)
+
+    # ── 단위 보정: OpenFOAM VTK는 m 단위, STL은 mm 단위 → 1000배 스케일
+    pts = pts * 1000.0
+    debug_parts.append(f"pts_range_mm=[{pts.min():.1f}, {pts.max():.1f}]")
+
     tri_surf = surf.triangulate()
 
     # alpha 값 추출
@@ -640,6 +645,7 @@ def load_and_threshold(fpath: str, threshold: float = 0.5):
     return (pts, fi, fj, fk), alpha_vals, fluid.n_cells, " | ".join(debug_parts)
 
 
+
 def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", show_legend=True, show_colorbar=True):
     """Plotly Mesh3d trace for fluid surface."""
     intensity = alpha_vals if alpha_vals is not None else np.ones(len(pts))
@@ -650,14 +656,14 @@ def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", show_legend=True
         intensity=intensity,
         colorscale="RdYlBu_r",
         cmin=0.5, cmax=1.0,
-        opacity=0.92,
+        opacity=1.0,
         name=name,
         showlegend=show_legend,
         colorbar=cb,
     )
 
 
-def make_mold_trace(mold_trimesh, opacity=0.10, show_legend=True):
+def make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True):
     """Plotly Mesh3d trace for mold STL."""
     if mold_trimesh is None:
         return None
@@ -769,7 +775,7 @@ if os.path.exists(vtk_dir):
                 # 금형 trace JSON (모든 frame 공통 — 변하지 않음)
                 mold_json = None
                 if mold_trimesh is not None:
-                    mt = make_mold_trace(mold_trimesh, opacity=0.10, show_legend=True)
+                    mt = make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True)
                     mold_json = _trace_to_json(mt)
 
                 # 각 step의 유체 trace JSON + 메타정보
