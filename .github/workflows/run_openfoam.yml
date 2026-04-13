@@ -1,8 +1,11 @@
 name: MIM-Ops Flow Analysis
 
 on:
+  # 1. 외부 신호(Zapier/Streamlit) 트리거
   repository_dispatch:
     types: [mim_ops_trigger]
+  
+  # 2. GitHub UI 수동 실행 및 파라미터 입력
   workflow_dispatch:
     inputs:
       velocity:
@@ -27,8 +30,10 @@ jobs:
         shell: bash
         run: |
           echo ">>> Preparing directories and fixing dictionary errors..."
+          # 로그 및 결과 폴더 강제 생성
           mkdir -p OpenFOAM/case/logs
           mkdir -p OpenFOAM/case/results
+          mkdir -p OpenFOAM/case/constant
 
           # 1. [기존 유지] transportProperties 생성
           cat <<EOF > OpenFOAM/case/constant/transportProperties
@@ -39,7 +44,15 @@ jobs:
           sigma 0.07;
           EOF
 
-          # 2. [기존 유지] 0/alpha.water 초기 조건 파일 생성
+          # 2. [신규 추가] 중력(g) 파일 생성 - Dimension Error 해결의 핵심
+          # interFoam은 정수압 계산을 위해 반드시 정확한 단위의 중력 가속도가 필요합니다.
+          cat <<EOF > OpenFOAM/case/constant/g
+          FoamFile { version 2.0; format ascii; class uniformDimensionedVectorField; location "constant"; object g; }
+          dimensions [0 1 -2 0 0 0 0];
+          value (0 -9.81 0);
+          EOF
+
+          # 3. [기존 유지] 0/alpha.water 초기 조건 파일 생성
           cat <<EOF > OpenFOAM/case/0/alpha.water
           FoamFile { version 2.0; format ascii; class volScalarField; location "0"; object alpha.water; }
           dimensions [0 0 0 0 0 0 0];
@@ -52,8 +65,8 @@ jobs:
           }
           EOF
 
-          # 3. [핵심 수정] fvSolution 문법 에러 해결을 위해 파일을 새로 작성
-          # 기존 sed 방식은 줄 번호가 어긋나면 문법이 깨지므로, 안전하게 전체를 덮어씁니다.
+          # 4. [보강] fvSolution 파일 재작성
+          # 단위 충돌을 방지하고 수치적 안정성을 위해 solvers 설정을 최적화하여 덮어씁니다.
           cat <<EOF > OpenFOAM/case/system/fvSolution
           FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSolution; }
           solvers
@@ -87,7 +100,7 @@ jobs:
           }
           PIMPLE { nOuterCorrectors 1; nCorrectors 2; nNonOrthogonalCorrectors 0; }
           EOF
-          echo "✅ fvSolution re-written to fix syntax errors."
+          echo "✅ Gravity file created and fvSolution fixed."
 
       - name: Execute Solver Pipeline
         shell: bash -l {0}
@@ -97,20 +110,21 @@ jobs:
           END_TIME: ${{ github.event.client_payload.etime || github.event.inputs.end_time || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # OpenFOAM 환경 로드 (경로 이중 확인 유지)
+          # 1. OpenFOAM 환경 로드 (경로 이중 확인 유지)
           [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && . /usr/lib/openfoam/openfoam2312/etc/bashrc
           [ -f /opt/openfoam2312/etc/bashrc ] && . /opt/openfoam2312/etc/bashrc
 
-          # p_rgh 필드 복사 로직 유지
+          # 2. p_rgh 필드 복사 로직 유지 (interFoam 필수)
           [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh
 
-          # Allrun 실행 및 실시간 로그 기록 유지
+          # 3. Allrun 실행 및 실시간 로그 기록 유지
           chmod +x Allrun
           echo ">>> Running interFoam solver..."
           ./Allrun 2>&1 | tee logs/solver_detailed.log
 
-          # 시각화용 파일 생성
+          # 4. 시각화용 파일 생성
           touch case.foam
+          echo ">>> [MIM-Ops] Pipeline process finished."
 
       - name: Upload Artifacts
         if: always()
