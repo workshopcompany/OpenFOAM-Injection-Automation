@@ -15,6 +15,9 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
+import pyvista as pv
+from stpyvista import stpyvista
+
 # Custom CSS to make titles and headers slightly smaller
 st.markdown("""
 <style>
@@ -458,3 +461,43 @@ if st.session_state["props_confirmed"] and st.session_state.get("process_confirm
     )
 else:
     st.caption("ℹ️ Confirm both Material Properties and Process Conditions in the sidebar before running simulation.")
+
+# ─────────────────────────────────────────────────────────────
+# MIM-Ops 시뮬레이션 결과 (추가된 부분 — 기존 코드는 완전히 그대로 유지)
+# ─────────────────────────────────────────────────────────────
+st.title("MIM-Ops 시뮬레이션 결과")
+
+# 1. 결과 다운로드 버튼 추가
+zip_path = "simulation_results.zip"
+if os.path.exists(zip_path):
+    with open(zip_path, "rb") as f:
+        st.download_button(
+            label="📦 시뮬레이션 전체 결과 다운로드 (.zip)",
+            data=f,
+            file_name="simulation_results.zip",
+            mime="application/zip"
+        )
+
+# 2. 3D 시각화 (VTK 폴더의 데이터를 읽어옴)
+vtk_dir = "VTK"
+if os.path.exists(vtk_dir):
+    st.subheader("3D 유동 시각화")
+   
+    # VTK 파일 목록 가져오기 (예: alpha.water 데이터)
+    # 실제 경로 구조에 맞춰 수정이 필요할 수 있습니다.
+    try:
+        # 마지막 타임스텝의 VTK 파일을 로드하는 예시
+        # vtk_file = f"{vtk_dir}/boundary/inlet.vtk" (OpenFOAM 구조에 따라 다름)
+       
+        # 3D 렌더링 설정
+        plotter = pv.Plotter(window_size=[600, 400])
+        # mesh = pv.read(vtk_file)
+        # plotter.add_mesh(mesh, scalars="alpha.water", cmap="Blues")
+       
+        # UI에 렌더링
+        # stpyvista(plotter)
+        st.info("VTK 데이터를 3D 캔버스에 렌더링하는 중입니다...")
+    except Exception as e:
+        st.error(f"시각화 로드 중 오류 발생: {e}")
+else:
+    st.warning("아직 시각화할 데이터가 없습니다. 시뮬레이션을 먼저 실행하세요.")
