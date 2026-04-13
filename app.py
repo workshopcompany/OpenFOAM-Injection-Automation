@@ -188,7 +188,6 @@ with st.sidebar:
     else:
         gx, gy, gz = vx, vy, vz
 
-    # ★ 게이트 좌표를 세션에 저장 (메인 영역에서 참조 가능)
     st.session_state["gx_final"] = gx
     st.session_state["gy_final"] = gy
     st.session_state["gz_final"] = gz
@@ -202,7 +201,6 @@ with st.sidebar:
         placeholder="PP, ABS, PA66, PC, Catamold ...",
         key="mat_name_input"
     )
-    # 재료명도 세션 저장
     st.session_state["mat_name"] = mat_name
 
     if st.button("🤖 AI 물성 추천 (Gemini)", use_container_width=True, type="primary"):
@@ -228,7 +226,9 @@ with st.sidebar:
             p["rho"]   = st.number_input(
                 "밀도 ρ (kg/m³)",
                 value=float(p.get("rho", 1000)),
-                min_value=100, max_value=9000,
+                min_value=100.0,      # ← float으로 수정
+                max_value=9000.0,     # ← float으로 수정
+                step=1.0,             # ← 타입 일치를 위해 명시
                 key="edit_rho"
             )
             p["Tmelt"] = st.number_input(
@@ -278,7 +278,6 @@ with st.sidebar:
                                  min_value=0.1, max_value=10.0,
                                  step=0.1, key="etime")
 
-    # ★ 공정조건도 세션에 저장 (메인 영역 로그에서 참조)
     st.session_state["last_vel_mms"] = vel_mms
     st.session_state["last_etime"]   = etime
 
@@ -317,7 +316,7 @@ with st.sidebar:
                 "mold_temp":  int(props["Tmold"]),
                 "temp":       int(temp_c),
                 "press":      float(press_mpa),
-                "vel":        round(vel_mms / 1000, 6),  # mm/s → m/s
+                "vel":        round(vel_mms / 1000, 6),
                 "etime":      float(etime),
                 "gate_pos":   {
                     "x": round(gx, 3),
