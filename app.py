@@ -527,57 +527,280 @@ if os.path.exists("logs.zip"):
         )
 
 
-# 3. 3D Flow Visualization (Plotly Version - No System Packages Required)
+# ─────────────────────────────────────────────────────────────
+# 3. 3D Filling Animation (PyVista + Plotly — alpha.water based)
+# ─────────────────────────────────────────────────────────────
 vtk_dir = "VTK"
+
 if os.path.exists(vtk_dir):
-    st.subheader("3D Flow Visualization")
-    
-    # Find .vtm or .vtk files
-    all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + \
-                glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
-    
-    # Filter for results (case_XX.vtm)
-    target_files = [f for f in all_files if "case" in os.path.basename(f)]
-    
-    if target_files:
-        target_files.sort(key=lambda x: int(re.findall(r'(\d+)', x)[-1]) if re.findall(r'(\d+)', x) else 0)
-        latest_file = target_files[-1]
-        st.info(f"Rendering (Browser-side): `{os.path.basename(latest_file)}`")
-        
+    st.subheader("🌊 3D Filling Animation (alpha.water)")
+
+    # ── 모든 time-step 파일 수집 및 정렬 ──────────────────────
+    all_files = (
+        glob.glob(f"{vtk_dir}/case_*.vtm") +
+        glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
+        glob.glob(f"{vtk_dir}/case_*.vtk") +
+        glob.glob(f"{vtk_dir}/**/case_*.vtk", recursive=True)
+    )
+    # 중복 제거 후 숫자 순 정렬
+    all_files = list(dict.fromkeys(all_files))
+    all_files = sorted(
+        all_files,
+        key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[-1])
+        if re.findall(r'\d+', os.path.basename(x)) else 0
+    )
+
+    if not all_files:
+        st.warning("No 'case_*.vtm / case_*.vtk' files found in VTK directory.")
+    else:
+        total_steps = len(all_files)
+        st.caption(f"✅ {total_steps} time-step file(s) found")
+
+        # ── 시간 단계 슬라이더 ───────────────────────────────
+        step_idx = st.slider(
+            "⏱ Time Step",
+            min_value=0,
+            max_value=total_steps - 1,
+            value=total_steps - 1,        # 기본값: 마지막 단계
+            step=1,
+            format="Step %d"
+        )
+        selected_file = all_files[step_idx]
+        st.info(f"Rendering: `{os.path.basename(selected_file)}`  (step {step_idx + 1} / {total_steps})")
+
+        # ── PyVista로 VTK 읽기 ───────────────────────────────
         try:
-            # Load mesh using PyVista (Server-side reading only)
-            mesh = pv.read(latest_file)
-            if isinstance(mesh, pv.MultiBlock):
-                mesh = mesh.combine()
-            
-            # Extract geometry for Plotly (No Xvfb needed here)
-            # This converts the 3D data into points and triangles for the browser
-            surf = mesh.extract_surface()
-            points = surf.points
-            faces = surf.faces.reshape(-1, 4)[:, 1:]
-            
-            # Create Plotly 3D Figure
-            fig = go.Figure(data=[
-                go.Mesh3d(
-                    x=points[:, 0], y=points[:, 1], z=points[:, 2],
-                    i=faces[:, 0], j=faces[:, 1], k=faces[:, 2],
-                    opacity=0.5,
-                    color='lightblue'
+            raw = pv.read(selected_file)
+            if isinstance(raw, pv.MultiBlock):
+                raw = raw.combine()
+
+            field_name = "alpha.water"
+
+            # ── Plotly Figure 구성 ───────────────────────────
+            fig = go.Figure()
+
+            # ➊ 금형(STL) — 반투명 회색
+            mold_trimesh = st.session_state.get("mesh")
+            if mold_trimesh is not None:
+                mv = mold_trimesh.vertices
+                mf = mold_trimesh.faces
+                fig.add_trace(go.Mesh3d(
+                    x=mv[:, 0], y=mv[:, 1], z=mv[:, 2],
+                    i=mf[:, 0], j=mf[:, 1], k=mf[:, 2],
+                    opacity=0.12,
+                    color="lightgray",
+                    name="Mold",
+                    showlegend=True
+                ))
+
+            # ➋ 유체 영역 (alpha.water > 0.5)
+            if field_name in raw.array_names:
+                fluid = raw.threshold(0.5, scalars=field_name)
+
+                if fluid.n_cells > 0:
+                    surf = fluid.extract_surface()
+                    pts  = surf.points
+                    fc   = surf.faces.reshape(-1, 4)[:, 1:]
+
+                    # alpha 값으로 색상 매핑 (0.5~1.0 → 파란~빨간)
+                    alpha_vals = None
+                    if field_name in surf.point_data:
+                        alpha_vals = surf.point_data[field_name]
+                    elif field_name in surf.cell_data:
+                        # cell → point 보간
+                        surf2 = surf.cell_data_to_point_data()
+                        alpha_vals = surf2.point_data.get(field_name)
+
+                    fig.add_trace(go.Mesh3d(
+                        x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+                        i=fc[:, 0],  j=fc[:, 1],  k=fc[:, 2],
+                        intensity=alpha_vals if alpha_vals is not None
+                                  else np.ones(len(pts)),
+                        colorscale="RdYlBu_r",
+                        cmin=0.5, cmax=1.0,
+                        opacity=0.9,
+                        name="Fluid (alpha.water)",
+                        showlegend=True,
+                        colorbar=dict(title="alpha.water", thickness=15)
+                    ))
+
+                    # ── 충전율 계산 ──────────────────────────
+                    fill_pct = (step_idx + 1) / total_steps * 100
+                    st.metric(
+                        label="Estimated Fill Ratio",
+                        value=f"{fill_pct:.1f} %",
+                        delta=f"Step {step_idx + 1} / {total_steps}"
+                    )
+                else:
+                    st.warning("No fluid cells found (alpha.water > 0.5) at this time step.")
+
+            else:
+                # alpha.water 없을 때: 전체 메시 표면만 표시
+                st.warning(
+                    f"'alpha.water' field not found. "
+                    f"Available fields: {raw.array_names}. "
+                    f"Showing raw mesh surface instead."
                 )
-            ])
-            
+                surf = raw.extract_surface()
+                pts  = surf.points
+                fc   = surf.faces.reshape(-1, 4)[:, 1:]
+                fig.add_trace(go.Mesh3d(
+                    x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+                    i=fc[:, 0],  j=fc[:, 1],  k=fc[:, 2],
+                    opacity=0.5,
+                    color="lightblue",
+                    name="Mesh Surface"
+                ))
+
+            # ── 레이아웃 ─────────────────────────────────────
             fig.update_layout(
-                scene=dict(aspectmode='data'),
-                margin=dict(r=0, l=0, b=0, t=0)
+                scene=dict(
+                    aspectmode="data",
+                    xaxis_title="X (m)",
+                    yaxis_title="Y (m)",
+                    zaxis_title="Z (m)",
+                ),
+                legend=dict(x=0.01, y=0.99),
+                margin=dict(l=0, r=0, b=0, t=30),
+                height=540
             )
-            
-            # Display in Streamlit
+
             st.plotly_chart(fig, use_container_width=True)
-            
+
         except Exception as e:
             st.error(f"Visualization Error: {e}")
-    else:
-        st.warning("No 'case_*.vtm' files found.")
-else:
-    st.error("VTK directory not found.")
+            st.exception(e)
 
+        # ── Plotly 자동 재생 애니메이션 (전체 타임스텝 한 번에) ──
+        st.divider()
+        st.subheader("▶ Auto-Play Filling Animation (All Steps)")
+
+        if st.button("🎬 Build & Play Animation", use_container_width=True):
+            with st.spinner("Building animation frames… this may take a moment."):
+                try:
+                    frames      = []
+                    frame_names = []
+
+                    for i, fpath in enumerate(all_files):
+                        raw = pv.read(fpath)
+                        if isinstance(raw, pv.MultiBlock):
+                            raw = raw.combine()
+
+                        traces = []
+
+                        # 금형
+                        mold_trimesh = st.session_state.get("mesh")
+                        if mold_trimesh is not None:
+                            mv = mold_trimesh.vertices
+                            mf = mold_trimesh.faces
+                            traces.append(go.Mesh3d(
+                                x=mv[:, 0], y=mv[:, 1], z=mv[:, 2],
+                                i=mf[:, 0], j=mf[:, 1], k=mf[:, 2],
+                                opacity=0.12, color="lightgray",
+                                name="Mold", showlegend=(i == 0)
+                            ))
+
+                        # 유체
+                        if field_name in raw.array_names:
+                            fluid = raw.threshold(0.5, scalars=field_name)
+                            if fluid.n_cells > 0:
+                                surf = fluid.extract_surface()
+                                pts  = surf.points
+                                fc   = surf.faces.reshape(-1, 4)[:, 1:]
+
+                                alpha_vals = None
+                                if field_name in surf.point_data:
+                                    alpha_vals = surf.point_data[field_name]
+                                elif field_name in surf.cell_data:
+                                    surf2 = surf.cell_data_to_point_data()
+                                    alpha_vals = surf2.point_data.get(field_name)
+
+                                traces.append(go.Mesh3d(
+                                    x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+                                    i=fc[:, 0],  j=fc[:, 1],  k=fc[:, 2],
+                                    intensity=alpha_vals if alpha_vals is not None
+                                              else np.ones(len(pts)),
+                                    colorscale="RdYlBu_r",
+                                    cmin=0.5, cmax=1.0,
+                                    opacity=0.9,
+                                    name="Fluid",
+                                    showlegend=(i == 0),
+                                    colorbar=dict(title="alpha.water", thickness=15)
+                                ))
+
+                        frame_name = f"step_{i:04d}"
+                        frame_names.append(frame_name)
+                        frames.append(go.Frame(data=traces, name=frame_name))
+
+                    # 첫 프레임 데이터로 초기 Figure 구성
+                    anim_fig = go.Figure(
+                        data=frames[0].data if frames else [],
+                        frames=frames
+                    )
+
+                    anim_fig.update_layout(
+                        scene=dict(
+                            aspectmode="data",
+                            xaxis_title="X (m)",
+                            yaxis_title="Y (m)",
+                            zaxis_title="Z (m)",
+                        ),
+                        margin=dict(l=0, r=0, b=0, t=40),
+                        height=560,
+                        updatemenus=[dict(
+                            type="buttons",
+                            showactive=False,
+                            y=1.05, x=0.5,
+                            xanchor="center",
+                            buttons=[
+                                dict(
+                                    label="▶ Play",
+                                    method="animate",
+                                    args=[None, dict(
+                                        frame=dict(duration=150, redraw=True),
+                                        fromcurrent=True,
+                                        mode="immediate"
+                                    )]
+                                ),
+                                dict(
+                                    label="⏸ Pause",
+                                    method="animate",
+                                    args=[[None], dict(
+                                        frame=dict(duration=0, redraw=False),
+                                        mode="immediate"
+                                    )]
+                                ),
+                            ]
+                        )],
+                        sliders=[dict(
+                            steps=[
+                                dict(
+                                    method="animate",
+                                    args=[[name], dict(
+                                        mode="immediate",
+                                        frame=dict(duration=150, redraw=True),
+                                        transition=dict(duration=0)
+                                    )],
+                                    label=str(i)
+                                )
+                                for i, name in enumerate(frame_names)
+                            ],
+                            transition=dict(duration=0),
+                            x=0.0, y=0.0,
+                            currentvalue=dict(
+                                prefix="Step: ",
+                                visible=True,
+                                xanchor="center"
+                            ),
+                            len=1.0
+                        )]
+                    )
+
+                    st.plotly_chart(anim_fig, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Animation build failed: {e}")
+                    st.exception(e)
+
+else:
+    st.error("VTK directory not found. Please sync results first.")
