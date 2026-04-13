@@ -527,32 +527,34 @@ import re  # 파일명 숫자 정렬을 위해 추가
 import pyvista as pv
 from stpyvista import stpyvista
 
-# 3. 3D Flow Visualization (Updated for case_XX.vtm naming)
+# 3. 3D Flow Visualization (Optimized for case_XX.vtm)
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("3D Flow Visualization")
     
-    # --- Debug Log Section ---
+    # Debug: Search for all vtm/vtk files in subdirectories
     all_files = glob.glob(f"{vtk_dir}/**/*.vtm", recursive=True) + glob.glob(f"{vtk_dir}/**/*.vtk", recursive=True)
-    with st.expander("🔍 File Search Path & Debug Log"):
-        st.write(f"**Target Directory:** `{os.path.abspath(vtk_dir)}`")
-        st.write(f"**Files Found in Directory:**", [os.path.basename(f) for f in all_files])
     
-    # --- File Selection ---
-    # Look for 'case_' files as shown in your error message
-    target_files = [f for f in all_files if "case" in f or "alpha.water" in f]
+    with st.expander("🔍 Search Debug Log"):
+        st.write(f"Search Path: `{os.path.abspath(vtk_dir)}`")
+        st.write(f"Found Files: {[os.path.basename(f) for f in all_files]}")
+
+    # Filter for 'case' results, excluding boundary or metadata files
+    target_files = [f for f in all_files if "case" in os.path.basename(f)]
     
     if target_files:
-        # Sort by the number in the filename (e.g., case_55.vtm -> 55)
+        # Sort by timestep number (extract digits from filename)
         target_files.sort(key=lambda x: int(re.findall(r'(\d+)', x)[-1]) if re.findall(r'(\d+)', x) else 0)
         latest_file = target_files[-1]
-        st.info(f"Rendering Latest Result: `{os.path.basename(latest_file)}`")
+        st.info(f"Rendering: `{os.path.basename(latest_file)}`")
         
         try:
-            # Headless fix for cloud environments
-            if 'xvfb' not in st.session_state:
-                pv.start_xvfb(); st.session_state['xvfb'] = True
+            # Force start Xvfb for headless rendering
+            if 'xvfb_active' not in st.session_state:
+                pv.start_xvfb()
+                st.session_state['xvfb_active'] = True
             
+            # Read and merge MultiBlock (VTM) datasets
             mesh = pv.read(latest_file)
             if isinstance(mesh, pv.MultiBlock):
                 mesh = mesh.combine()
@@ -560,16 +562,17 @@ if os.path.exists(vtk_dir):
             plotter = pv.Plotter(window_size=[600, 400])
             plotter.background_color = "white"
             
-            # Map colors: try alpha.water first, otherwise default to Blue
-            scalar_name = "alpha.water" if "alpha.water" in mesh.array_names else None
-            plotter.add_mesh(mesh, scalars=scalar_name, cmap="Blues", color="lightblue", show_scalar_bar=True)
+            # Use alpha.water for coloring if present
+            scalars = "alpha.water" if "alpha.water" in mesh.array_names else None
+            plotter.add_mesh(mesh, scalars=scalars, cmap="Blues", color="lightblue", show_scalar_bar=True)
             
             plotter.view_isometric()
-            stpyvista(plotter, key=f"vtm_render_{os.path.getmtime(latest_file)}")
+            # Unique key prevents the 5-minute freeze bug
+            stpyvista(plotter, key=f"render_{os.path.getmtime(latest_file)}")
             
         except Exception as e:
             st.error(f"Visualization Error: {e}")
     else:
-        st.warning(f"No valid .vtm or .vtk files found in `{vtk_dir}`.")
+        st.warning("No 'case_*.vtm' files found. Check the Search Debug Log above.")
 else:
-    st.error(f"Directory Not Found: The `{vtk_dir}` folder does not exist. Please check your Sync process.")
+    st.error("VTK directory not found. Please sync data first.")
