@@ -11,3 +11,6 @@ matplotlib
 
 # OpenFOAM Data Handling (Optional for future 3D view)
 pyvista
+streamlit-stl
+
+requests
