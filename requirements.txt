@@ -1,28 +1,13 @@
-# UI Framework
 streamlit
-
-# AI & Data Processing
 google-generativeai
 pandas
 numpy==1.26.4
-
-# Visualization
 matplotlib
 plotly
-
-# Geometry / Mesh Handling
 trimesh
 meshio
-
-# Networking
 requests
 
 
-# ---------------------------------------------------------
-# RESET TRIGGER (forces Streamlit Cloud to rebuild)
-# Do NOT remove this section.
-#
-# The blank line below is intentional and required.
-# ---------------------------------------------------------
-
-
+# RESET TRIGGER
+# (forces Streamlit Cloud to rebuild)
