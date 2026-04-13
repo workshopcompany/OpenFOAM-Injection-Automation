@@ -29,13 +29,12 @@ jobs:
       - name: Setup Simulation Environment
         shell: bash
         run: |
-          echo ">>> Preparing directories and fixing dictionary errors..."
-          # 로그 및 결과 폴더 강제 생성
+          echo ">>> Preparing directories and fixing dimension errors..."
           mkdir -p OpenFOAM/case/logs
           mkdir -p OpenFOAM/case/results
           mkdir -p OpenFOAM/case/constant
 
-          # 1. [기존 유지] transportProperties 생성
+          # 1. transportProperties 생성 (기존 유지)
           cat <<EOF > OpenFOAM/case/constant/transportProperties
           FoamFile { version 2.0; format ascii; class dictionary; location "constant"; object transportProperties; }
           phases (water air);
@@ -44,15 +43,14 @@ jobs:
           sigma 0.07;
           EOF
 
-          # 2. [신규 추가] 중력(g) 파일 생성 - Dimension Error 해결의 핵심
-          # interFoam은 정수압 계산을 위해 반드시 정확한 단위의 중력 가속도가 필요합니다.
+          # 2. 중력(g) 파일 생성 (기존 유지)
           cat <<EOF > OpenFOAM/case/constant/g
           FoamFile { version 2.0; format ascii; class uniformDimensionedVectorField; location "constant"; object g; }
           dimensions [0 1 -2 0 0 0 0];
           value (0 -9.81 0);
           EOF
 
-          # 3. [기존 유지] 0/alpha.water 초기 조건 파일 생성
+          # 3. 0/alpha.water 초기 조건 생성 (기존 유지)
           cat <<EOF > OpenFOAM/case/0/alpha.water
           FoamFile { version 2.0; format ascii; class volScalarField; location "0"; object alpha.water; }
           dimensions [0 0 0 0 0 0 0];
@@ -65,42 +63,27 @@ jobs:
           }
           EOF
 
-          # 4. [보강] fvSolution 파일 재작성
-          # 단위 충돌을 방지하고 수치적 안정성을 위해 solvers 설정을 최적화하여 덮어씁니다.
+          # 4. [핵심 수정] 압력 필드(p, p_rgh)의 단위를 비압축성(m^2/s^2)으로 강제 변환
+          # interFoam은 압력을 밀도로 나눈 값을 사용하므로 [1 -1 -2 ...]가 아닌 [0 2 -2 ...]이어야 합니다.
+          for f in OpenFOAM/case/0/p OpenFOAM/case/0/p_rgh; do
+            if [ -f "$f" ]; then
+              echo "Fixing dimensions in $f"
+              sed -i 's/dimensions.*\[1 -1 -2 0 0 0 0\]/dimensions [0 2 -2 0 0 0 0]/g' "$f"
+            fi
+          done
+
+          # 5. fvSolution 파일 재작성 (기존 유지)
           cat <<EOF > OpenFOAM/case/system/fvSolution
           FoamFile { version 2.0; format ascii; class dictionary; location "system"; object fvSolution; }
           solvers
           {
-              "alpha.water.*"
-              {
-                  nAlphaCorr      1;
-                  nAlphaSubCycles 1;
-                  cAlpha          1;
-                  MULESCorr       yes;
-                  nLimiterIter    3;
-                  solver          smoothSolver;
-                  smoother        symGaussSeidel;
-                  tolerance       1e-8;
-                  relTol          0;
-              }
-              "p_rgh.*"
-              {
-                  solver          GAMG;
-                  tolerance       1e-07;
-                  relTol          0.01;
-                  smoother        DIC;
-              }
-              "(U|k|epsilon|omega|f|v2).*"
-              {
-                  solver          smoothSolver;
-                  smoother        symGaussSeidel;
-                  tolerance       1e-05;
-                  relTol          0.1;
-              }
+              "alpha.water.*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-8; relTol 0; nAlphaCorr 1; nAlphaSubCycles 1; }
+              "p_rgh.*" { solver GAMG; tolerance 1e-7; relTol 0.01; smoother DIC; }
+              "(U|k|epsilon|omega|f|v2).*" { solver smoothSolver; smoother symGaussSeidel; tolerance 1e-05; relTol 0.1; }
           }
           PIMPLE { nOuterCorrectors 1; nCorrectors 2; nNonOrthogonalCorrectors 0; }
           EOF
-          echo "✅ Gravity file created and fvSolution fixed."
+          echo "✅ Environment setup complete with dimension fix."
 
       - name: Execute Solver Pipeline
         shell: bash -l {0}
@@ -110,17 +93,19 @@ jobs:
           END_TIME: ${{ github.event.client_payload.etime || github.event.inputs.end_time || '0.5' }}
           SIGNAL_ID: ${{ github.event.client_payload.signal_id || 'manual' }}
         run: |
-          # 1. OpenFOAM 환경 로드 (경로 이중 확인 유지)
+          # 1. OpenFOAM 환경 로드
           [ -f /usr/lib/openfoam/openfoam2312/etc/bashrc ] && . /usr/lib/openfoam/openfoam2312/etc/bashrc
           [ -f /opt/openfoam2312/etc/bashrc ] && . /opt/openfoam2312/etc/bashrc
 
-          # 2. p_rgh 필드 복사 로직 유지 (interFoam 필수)
-          [ ! -f 0/p_rgh ] && [ -f 0/p ] && cp 0/p 0/p_rgh
+          # 2. p_rgh 필드 복사 (단위 수정 후 복사되도록 순서 보장)
+          if [ ! -f 0/p_rgh ] && [ -f 0/p ]; then 
+            cp 0/p 0/p_rgh
+          fi
 
-          # 3. Allrun 실행 및 실시간 로그 기록 유지
+          # 3. Allrun 실행 및 실시간 로그 기록
           chmod +x Allrun
           echo ">>> Running interFoam solver..."
-          ./Allrun 2>&1 | tee logs/solver_detailed.log
+          ./Allrun 2>&1 | tee logs/solver.log
 
           # 4. 시각화용 파일 생성
           touch case.foam
@@ -128,6 +113,7 @@ jobs:
 
       - name: Upload Artifacts
         if: always()
+        uses: always() # 실패하더라도 로그 확인을 위해 업로드
         uses: actions/upload-artifact@v4
         with:
           name: full-sim-results-${{ github.event.client_payload.signal_id || 'manual' }}
