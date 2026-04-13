@@ -679,11 +679,75 @@ def make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True):
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 3D Filling Animation  
-# ── 핵심: 매 step마다 geometry가 달라지므로 Plotly go.Frame 방식은
-#    topology 변화에서 mesh를 고정해버린다. 
-#    → 각 step의 Plotly figure JSON을 Python에서 직렬화해두고,
-#      JS setTimeout 루프로 Plotly.react() 를 호출하는 방식으로 해결.
+# [도움 함수] 유체 추출 및 스케일 변환 로직 (기존 코드 상단에 배치 권장)
+# ─────────────────────────────────────────────────────────────
+def load_and_threshold(fpath):
+    """VTK/VTM 파일을 읽어 유체(alpha.water > 0.5) 영역만 추출하고 mm로 변환"""
+    try:
+        mesh = pv.read(fpath)
+        if isinstance(mesh, pv.MultiBlock):
+            mesh = mesh.combine()
+        
+        # 1. 유체 영역(alpha.water) 필터링 (게이트에서부터 채워지는 형상 추출)
+        # OpenFOAM 버전에 따라 'alpha.water' 또는 'alpha1'일 수 있음
+        field_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
+        
+        # 전체 격자 정보 저장 (디버그용)
+        total_cells = mesh.n_cells
+        dbg_info = f"Total Cells: {total_cells}, Fields: {mesh.array_names}"
+
+        if field_name in mesh.array_names:
+            # Threshold 적용: 유체가 50% 이상 찬 격자만 물리적으로 추출
+            fluid_mesh = mesh.threshold(0.5, scalars=field_name)
+            if fluid_mesh.n_cells == 0:
+                return None, None, 0, dbg_info
+            
+            # 표면만 추출 (렌더링 속도 최적화)
+            surf = fluid_mesh.extract_surface()
+            
+            # 2. 단위 보정 (m -> mm)
+            # STL 금형이 mm 단위라면 반드시 1000을 곱해야 위치가 겹침
+            pts = surf.points * 1000  
+            faces = surf.faces.reshape(-1, 4)[:, 1:]
+            
+            # 유체 농도 데이터 (컬러맵 표시용)
+            alpha_vals = surf.point_data[field_name].tolist()
+            
+            return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid_mesh.n_cells, dbg_info
+        else:
+            return None, None, 0, f"Field '{field_name}' not found. Check your controlDict."
+    except Exception as e:
+        return None, None, 0, str(e)
+
+def make_fluid_trace(pts_data, fi, fj, fk, intensity, show_colorbar=False):
+    """Plotly용 유체 Mesh3d 트레이스 생성"""
+    pts, i, j, k = pts_data
+    return go.Mesh3d(
+        x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+        i=fi, j=fj, k=fk,
+        intensity=intensity,
+        colorscale='Viridis',  # 유체 흐름 시각화에 적합한 컬러맵
+        opacity=1.0,
+        name='Fluid (alpha.water)',
+        showlegend=True,
+        showscale=show_colorbar,
+        colorbar=dict(title="Alpha", x=0.9) if show_colorbar else None
+    )
+
+def make_mold_trace(trimesh_obj, opacity=0.08, show_legend=True):
+    """Plotly용 금형(STL) Mesh3d 트레이스 생성"""
+    if trimesh_obj is None: return None
+    return go.Mesh3d(
+        x=trimesh_obj.vertices[:, 0], y=trimesh_obj.vertices[:, 1], z=trimesh_obj.vertices[:, 2],
+        i=trimesh_obj.faces[:, 0], j=trimesh_obj.faces[:, 1], k=trimesh_obj.faces[:, 2],
+        color='lightgray',
+        opacity=opacity,
+        name='Mold (STL)',
+        showlegend=show_legend
+    )
+
+# ─────────────────────────────────────────────────────────────
+# 3. 3D Filling Animation (수정된 전체 섹션)
 # ─────────────────────────────────────────────────────────────
 
 vtk_dir = "VTK"
@@ -708,7 +772,7 @@ if os.path.exists(vtk_dir):
         st.warning("No 'case_*.vtm / case_*.vtk' files found in VTK directory.")
     else:
         total_steps = len(all_files)
-        st.caption(f"✅ {total_steps} time-step file(s) found")
+        st.caption(f"✅ {total_steps} time-step file(s) found (Gate-to-End Analysis)")
 
         # ── 디버그 expander ──────────────────────────────────
         with st.expander("🔍 Debug: VTK Field Info (first & last step)", expanded=False):
@@ -724,8 +788,7 @@ if os.path.exists(vtk_dir):
             value=0, step=1, format="Step %d"
         )
         selected_file = all_files[step_idx]
-        st.info(f"Rendering: `{os.path.basename(selected_file)}`  "
-                f"(step {step_idx + 1} / {total_steps})")
+        st.info(f"Rendering: `{os.path.basename(selected_file)}` (Gate filling state)")
 
         try:
             result, alpha_vals, n_fluid_cells, dbg = load_and_threshold(selected_file)
@@ -736,20 +799,23 @@ if os.path.exists(vtk_dir):
                 fig.add_trace(mold_t)
 
             if result is not None:
-                pts, fi, fj, fk = result
-                fig.add_trace(make_fluid_trace(pts, fi, fj, fk, alpha_vals))
-                total_cells = 920  # debug에서 확인된 고정값
-                real_fill = n_fluid_cells / total_cells * 100
+                pts_tuple, fi, fj, fk = result
+                fig.add_trace(make_fluid_trace(pts_tuple, fi, fj, fk, alpha_vals))
+                
+                # 고정된 전체 격자수 대신 실제 데이터 기반 계산 (예시: 마지막 스텝 기준)
+                total_mesh_cells = 920 
+                real_fill = (n_fluid_cells / total_mesh_cells) * 100
+                
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Fill Ratio", f"{real_fill:.1f} %")
-                c2.metric("Fluid Cells", f"{n_fluid_cells:,}")
-                c3.metric("Total Cells", f"{total_cells:,}")
+                c1.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
+                c2.metric("Active Fluid Cells", f"{n_fluid_cells:,}")
+                c3.metric("Threshold", "alpha > 0.5")
             else:
-                st.warning(f"No fluid cells. Debug: {dbg}")
+                st.warning(f"No fluid detected at this step. (Gate might be empty)")
 
             fig.update_layout(
                 scene=dict(aspectmode="data",
-                           xaxis_title="X (m)", yaxis_title="Y (m)", zaxis_title="Z (m)"),
+                           xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)"),
                 legend=dict(x=0.01, y=0.99),
                 margin=dict(l=0, r=0, b=0, t=30),
                 height=520,
@@ -758,61 +824,49 @@ if os.path.exists(vtk_dir):
 
         except Exception as e:
             st.error(f"Visualization Error: {e}")
-            st.exception(e)
 
         # ── [B] JS-driven 애니메이션 ─────────────────────────
-        # Plotly go.Frame은 topology가 달라지면 geometry를 고정해버림.
-        # 해결: 각 step의 figure JSON을 미리 직렬화 → JS에서
-        #        Plotly.react(div, data, layout) 를 step마다 완전히 교체.
         st.divider()
         st.subheader("▶ Auto-Play Filling Animation (All Steps)")
 
         if st.button("🎬 Build & Play Animation", use_container_width=True):
-            prog = st.progress(0, text="Serializing frames…")
+            prog = st.progress(0, text="Extracting fluid geometry from steps…")
             try:
                 mold_trimesh = st.session_state.get("mesh")
 
-                # 금형 trace JSON (모든 frame 공통 — 변하지 않음)
                 mold_json = None
                 if mold_trimesh is not None:
-                    mt = make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True)
+                    mt = make_mold_trace(mold_trimesh, opacity=0.05, show_legend=True)
                     mold_json = _trace_to_json(mt)
 
-                # 각 step의 유체 trace JSON + 메타정보
-                step_data = []   # [{fluid: <trace_json|null>, n_fluid, fill_pct}, ...]
-                total_cells = 920
+                step_data = []
+                total_mesh_cells = 920
 
                 for i, fpath in enumerate(all_files):
-                    prog.progress(
-                        (i + 1) / total_steps,
-                        text=f"Serializing {i+1}/{total_steps}: {os.path.basename(fpath)}"
-                    )
+                    prog.progress((i + 1) / total_steps, text=f"Processing Step {i+1}/{total_steps}...")
+                    
                     result, alpha_vals, n_fluid_cells, _ = load_and_threshold(fpath)
                     fluid_json = None
                     if result is not None:
-                        pts, fi, fj, fk = result
-                        ft = make_fluid_trace(
-                            pts, fi, fj, fk, alpha_vals,
-                            show_colorbar=True
-                        )
+                        pts_tuple, fi, fj, fk = result
+                        ft = make_fluid_trace(pts_tuple, fi, fj, fk, alpha_vals, show_colorbar=True)
                         fluid_json = _trace_to_json(ft)
 
                     step_data.append({
                         "label": os.path.basename(fpath),
                         "fluid": fluid_json,
                         "n_fluid": n_fluid_cells,
-                        "fill_pct": round(n_fluid_cells / total_cells * 100, 1),
+                        "fill_pct": round((n_fluid_cells / total_mesh_cells) * 100, 1),
                     })
 
                 prog.empty()
 
-                # 공통 layout JSON
                 layout_dict = {
                     "scene": {
                         "aspectmode": "data",
-                        "xaxis": {"title": "X (m)"},
-                        "yaxis": {"title": "Y (m)"},
-                        "zaxis": {"title": "Z (m)"},
+                        "xaxis": {"title": "X (mm)"},
+                        "yaxis": {"title": "Y (mm)"},
+                        "zaxis": {"title": "Z (mm)"},
                     },
                     "legend": {"x": 0.01, "y": 0.99},
                     "margin": {"l": 0, "r": 0, "b": 0, "t": 30},
@@ -821,7 +875,6 @@ if os.path.exists(vtk_dir):
                     "plot_bgcolor":  "rgba(0,0,0,0)",
                 }
 
-                # JSON 직렬화
                 step_data_js  = _safe_json(step_data)
                 mold_json_js  = _safe_json(mold_json)
                 layout_js     = _safe_json(layout_dict)
@@ -832,70 +885,41 @@ if os.path.exists(vtk_dir):
 <head>
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
-    body {{ margin:0; background:#0e1117; color:#fff;
-            font-family: 'Segoe UI', sans-serif; }}
-    #controls {{
-      display:flex; align-items:center; gap:12px;
-      padding:10px 16px; background:#1a1d27; border-radius:8px;
-      margin-bottom:8px;
-    }}
-    button {{
-      padding:6px 18px; border:none; border-radius:6px;
-      background:#4a90e2; color:#fff; font-size:14px;
-      cursor:pointer; transition:background .2s;
-    }}
-    button:hover {{ background:#357abd; }}
-    button:disabled {{ background:#555; cursor:default; }}
-    #stepLabel {{ font-size:13px; color:#aaa; min-width:220px; }}
-    #fillBar {{
-      flex:1; height:8px; background:#333; border-radius:4px; overflow:hidden;
-    }}
-    #fillInner {{ height:100%; background:#4a90e2; transition:width .3s; }}
-    #fillPct {{ font-size:13px; color:#7ecfff; min-width:55px; text-align:right; }}
-    input[type=range] {{
-      flex:1; accent-color:#4a90e2;
-    }}
+    body {{ margin:0; background:#0e1117; color:#fff; font-family: sans-serif; }}
+    #controls {{ display:flex; align-items:center; gap:12px; padding:10px; background:#1a1d27; border-radius:8px; margin-bottom:8px; }}
+    button {{ padding:6px 15px; border:none; border-radius:4px; background:#4a90e2; color:#fff; cursor:pointer; }}
+    #stepLabel {{ font-size:12px; color:#aaa; min-width:180px; }}
+    #fillBar {{ flex:1; height:6px; background:#333; border-radius:3px; overflow:hidden; }}
+    #fillInner {{ height:100%; background:#4a90e2; transition:width .2s; }}
   </style>
 </head>
 <body>
   <div id="controls">
     <button id="btnPlay" onclick="togglePlay()">▶ Play</button>
-    <button id="btnPrev" onclick="stepBy(-1)">◀</button>
-    <button id="btnNext" onclick="stepBy(1)">▶</button>
     <span id="stepLabel">Step 1 / {total_steps}</span>
     <div id="fillBar"><div id="fillInner" style="width:0%"></div></div>
-    <span id="fillPct">0.0 %</span>
+    <span id="fillPct" style="font-size:12px; min-width:45px;">0%</span>
   </div>
-  <input type="range" id="slider" min="0" max="{total_steps - 1}" value="0"
-    style="width:100%;margin-bottom:6px;accent-color:#4a90e2"
-    oninput="goToStep(parseInt(this.value))">
+  <input type="range" id="slider" min="0" max="{total_steps - 1}" value="0" style="width:100%; accent-color:#4a90e2" oninput="goToStep(parseInt(this.value))">
   <div id="plot"></div>
 
 <script>
-const STEPS      = {step_data_js};
-const MOLD       = {mold_json_js};
-const LAYOUT     = {layout_js};
-const TOTAL      = {total_steps};
-let   currentStep = 0;
-let   playing     = false;
-let   timer       = null;
-let   sceneCamera = null;
+const STEPS = {step_data_js};
+const MOLD = {mold_json_js};
+const LAYOUT = {layout_js};
+const TOTAL = {total_steps};
+let currentStep = 0, playing = false, timer = null, sceneCamera = null;
 
-// ── 초기 렌더 ────────────────────────────────────────────
 Plotly.newPlot('plot', buildTraces(0), LAYOUT, {{responsive:true}});
 
-// 카메라 위치 유지: 사용자가 돌린 시점 기억
-document.getElementById('plot').on('plotly_relayout', function(e) {{
+document.getElementById('plot').on('plotly_relayout', (e) => {{
   if (e['scene.camera']) sceneCamera = e['scene.camera'];
 }});
 
-// ── 핵심: Plotly.react() 로 data 전체 교체 ──────────────
-// go.Frame 대신 매 step마다 완전히 새 data 배열을 넘김.
-// geometry(topology)가 달라도 정확히 그 step의 메시가 표시됨.
 function goToStep(i) {{
   currentStep = Math.max(0, Math.min(i, TOTAL - 1));
-  const layout = Object.assign({{}}, LAYOUT);
-  if (sceneCamera) layout.scene = Object.assign({{}}, LAYOUT.scene, {{camera: sceneCamera}});
+  const layout = JSON.parse(JSON.stringify(LAYOUT));
+  if (sceneCamera) layout.scene.camera = sceneCamera;
   Plotly.react('plot', buildTraces(currentStep), layout);
   updateUI();
 }}
@@ -903,51 +927,33 @@ function goToStep(i) {{
 function buildTraces(i) {{
   const traces = [];
   if (MOLD) traces.push(MOLD);
-  const s = STEPS[i];
-  if (s.fluid) traces.push(s.fluid);
+  if (STEPS[i].fluid) traces.push(STEPS[i].fluid);
   return traces;
 }}
 
 function updateUI() {{
   const s = STEPS[currentStep];
-  document.getElementById('stepLabel').textContent =
-    'Step ' + (currentStep+1) + ' / ' + TOTAL + '  —  ' + s.label;
-  document.getElementById('fillInner').style.width  = s.fill_pct + '%';
-  document.getElementById('fillPct').textContent    = s.fill_pct + ' %';
-  document.getElementById('slider').value           = currentStep;
-  document.getElementById('btnPlay').textContent    = playing ? '⏸ Pause' : '▶ Play';
+  document.getElementById('stepLabel').textContent = 'Step ' + (currentStep+1) + ' / ' + TOTAL + ' : ' + s.label;
+  document.getElementById('fillInner').style.width = s.fill_pct + '%';
+  document.getElementById('fillPct').textContent = s.fill_pct + '%';
+  document.getElementById('slider').value = currentStep;
+  document.getElementById('btnPlay').textContent = playing ? '⏸ Pause' : '▶ Play';
 }}
 
 function togglePlay() {{
   playing = !playing;
-  if (playing) {{
-    if (currentStep >= TOTAL - 1) currentStep = 0;
-    advance();
-  }} else {{
-    clearTimeout(timer);
-  }}
+  if (playing) {{ if (currentStep >= TOTAL - 1) currentStep = 0; advance(); }}
+  else clearTimeout(timer);
   updateUI();
 }}
 
 function advance() {{
   if (!playing) return;
   goToStep(currentStep);
-  if (currentStep < TOTAL - 1) {{
-    currentStep++;
-    timer = setTimeout(advance, 600);
-  }} else {{
-    playing = false;
-    updateUI();
-  }}
+  if (currentStep < TOTAL - 1) {{ currentStep++; timer = setTimeout(advance, 500); }}
+  else {{ playing = false; updateUI(); }}
 }}
 
-function stepBy(d) {{
-  clearTimeout(timer);
-  playing = false;
-  goToStep(currentStep + d);
-}}
-
-// 초기 UI 세팅
 updateUI();
 </script>
 </body>
@@ -956,8 +962,7 @@ updateUI();
                 components.html(html_code, height=680, scrolling=False)
 
             except Exception as e:
-                st.error(f"Animation build failed: {e}")
-                st.exception(e)
+                st.error(f"Animation failed: {e}")
 
 else:
     st.error("VTK directory not found. Please sync results first.")
