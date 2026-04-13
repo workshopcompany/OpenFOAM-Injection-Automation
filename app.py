@@ -583,10 +583,17 @@ def _trace_to_json(trace):
 
 def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", show_legend=True, show_colorbar=True):
     """Plotly Mesh3d trace for fluid surface."""
-    intensity = alpha_vals if alpha_vals is not None else np.ones(len(pts))
+    # pts가 튜플(pts, i, j, k)로 들어오는 경우를 대비한 안전장치
+    if isinstance(pts, tuple) and len(pts) == 4:
+        real_pts, fi, fj, fk = pts
+    else:
+        real_pts = pts
+
+    intensity = alpha_vals if alpha_vals is not None else np.ones(len(real_pts))
     cb = dict(title="alpha.water", thickness=15, len=0.6) if show_colorbar else None
+    
     return go.Mesh3d(
-        x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+        x=real_pts[:, 0], y=real_pts[:, 1], z=real_pts[:, 2],
         i=fi, j=fj, k=fk,
         intensity=intensity,
         colorscale="RdYlBu_r",
@@ -654,20 +661,6 @@ def load_and_threshold(fpath):
         # 에러가 나도 반드시 4개를 반환해서 언팩킹 에러 방지
         return None, None, 0, f"Error: {str(e)}"
 
-def make_fluid_trace(pts_data, fi, fj, fk, intensity, show_colorbar=False):
-    """Plotly용 유체 Mesh3d 트레이스 생성"""
-    pts, i, j, k = pts_data
-    return go.Mesh3d(
-        x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
-        i=fi, j=fj, k=fk,
-        intensity=intensity,
-        colorscale='Viridis',
-        opacity=1.0,
-        name='Fluid (alpha.water)',
-        showlegend=True,
-        showscale=show_colorbar,
-        colorbar=dict(title="Alpha", x=0.9) if show_colorbar else None
-    )
 
 def make_mold_trace(trimesh_obj, opacity=0.08, show_legend=True):
     """Plotly용 금형(STL) Mesh3d 트레이스 생성"""
@@ -744,28 +737,40 @@ if os.path.exists(vtk_dir):
         except Exception as e:
             st.error(f"Visualization Error: {e}")
 
-        # ── [B] JS-driven 애니메이션 (자동 재생 섹션) ─────────────────────────
+ # ── [B] JS-driven 애니메이션 (자동 재생 섹션) ─────────────────────────
         st.divider()
         st.subheader("▶ Auto-Play Filling Animation (All Steps)")
 
-        # 버튼을 누르면 아래 들여쓰기된 코드들이 실행됨
         if st.button("🎬 Build & Play Animation", key="btn_play_anim", use_container_width=True):
-            prog = st.progress(0, text="Extracting fluid geometry from steps…")
+            prog = st.progress(0, text="Extracting fluid geometry from steps...")
             try:
                 mold_trimesh = st.session_state.get("mesh")
-                mold_json = _trace_to_json(make_mold_trace(mold_trimesh, opacity=0.05)) if mold_trimesh else None
+                # 금형 트레이스 생성
+                mold_t = make_mold_trace(mold_trimesh, opacity=0.05)
+                mold_json = _trace_to_json(mold_t) if mold_t else None
 
                 step_data = []
-                total_mesh_cells = 920
+                total_mesh_cells = 920  # 실제 해석 격자수로 수정 가능
 
                 for i, fpath in enumerate(all_files):
                     prog.progress((i + 1) / total_steps, text=f"Processing Step {i+1}/{total_steps}...")
+                    
+                    # 1. 4개의 반환값을 정확히 언패킹
                     res, a_vals, n_cells, _ = load_and_threshold(fpath)
                     
                     fluid_json = None
                     if res is not None:
+                        # 2. res 내부의 (pts, i, j, k)를 다시 언패킹
                         f_pts, fi, fj, fk = res
-                        ft = make_fluid_trace(f_pts, fi, fj, fk, a_vals, show_colorbar=True)
+                        # 3. 중복 정의 문제를 피하기 위해 인자를 명시적으로 전달
+                        ft = make_fluid_trace(
+                            pts=f_pts, 
+                            fi=fi, 
+                            fj=fj, 
+                            fk=fk, 
+                            alpha_vals=a_vals, 
+                            show_colorbar=True
+                        )
                         fluid_json = _trace_to_json(ft)
 
                     step_data.append({
@@ -780,8 +785,13 @@ if os.path.exists(vtk_dir):
                 # JavaScript로 전달할 데이터 변환
                 step_data_js  = _safe_json(step_data)
                 mold_json_js  = _safe_json(mold_json)
-                layout_js     = _safe_json({"scene": {"aspectmode": "data"}, "height": 560, "margin": {"l":0,"r":0,"b":0,"t":30}})
+                layout_js     = _safe_json({
+                    "scene": {"aspectmode": "data"}, 
+                    "height": 560, 
+                    "margin": {"l":0,"r":0,"b":0,"t":30}
+                })
 
+                # 이후 HTML/JS 렌더링 코드가 이어짐...
                 html_code = f"""
                 <!DOCTYPE html>
                 <html>
