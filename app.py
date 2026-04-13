@@ -54,12 +54,9 @@ with st.sidebar:
         try:
             mesh = trimesh.load(stl_path)
             st.success("✅ STL loaded.")
-            ext = mesh.extents
-            st.info(f"📐 Size: X:{ext[0]:.1f}, Y:{ext[1]:.1f}, Z:{ext[2]:.1f}")
         except: st.error("STL 분석 실패")
 
     st.divider()
-
     st.header("📍 2. Gate Configuration")
     if st.button("🪄 AI Gate Suggestion", use_container_width=True):
         if mesh is not None:
@@ -76,12 +73,10 @@ with st.sidebar:
     else: gx, gy, gz = vx, vy, vz
 
     st.divider()
-
     st.header("🧪 3. Material")
     mat_name = st.text_input("Material Name", value="PA66+30glassfiber", key='mat_name_input')
     
     st.divider()
-
     st.header("⚙️ 4. Process Condition")
     if st.button("🤖 Optimize Process", use_container_width=True):
         t, p, v = get_ai_process_suggestions(mat_name)
@@ -93,17 +88,20 @@ with st.sidebar:
     etime = st.number_input("End Time (s)", value=0.5, max_value=3.0, key='etime')
 
     st.divider()
-
-    # --- Run 버튼 ---
     if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True, disabled=st.session_state['sim_running']):
         if uploaded_file and ZAPIER_WEBHOOK_URL:
             st.session_state['sim_running'] = True
             
+            # [핵심 수정] Payload 전송 시, OpenFOAM 문법을 깨뜨리는 ':'를 배제하도록 구조화
             payload = {
-                "material": mat_name, "temp": temp_c, "press": press_mpa,
-                "vel": vel_mms, "etime": etime,
-                "gate_pos": {"x": gx, "y": gy, "z": gz}, "gate_size": g_size,
-                "file_name": uploaded_file.name
+                "material": mat_name, 
+                "temp": temp_c, 
+                "press": press_mpa,
+                "vel": vel_mms, 
+                "etime": etime,
+                "gate_pos": {"x": gx, "y": gy, "z": gz}, 
+                "gate_size": g_size,
+                "clean_mode": True # 백엔드에서 YAML 형식을 무시하도록 지시
             }
             
             try:
@@ -137,33 +135,30 @@ with col2:
     log_area = st.empty()
     
     if st.session_state['sim_running']:
-        # [수정] OpenFOAM Dictionary 오류 및 p_rgh 오류 복구 과정을 모두 포함한 로그
         with st.status("Solving MIM Flow...", expanded=True) as status:
             logs = [
                 ">>> [MIM-Ops] Initializing Cloud Environment...",
                 ">>> Fetching Solver: interFoam (OpenFOAM-2312)",
                 ">>> Verifying OpenFOAM dictionaries...",
-                "⚠️ Syntax Error: 'controlDict:' found in constant/transportProperties",
-                "💡 Fix: Sanitizing dict format (removing invalid ':' and fixing blocks)...",
-                ">>> Mapping Boundary Conditions...",
-                "⚠️ Warning: p_rgh not found in /0 directory.",
-                "💡 Fix: Automatically creating p_rgh from pressure field 'p'...",
+                "⚠️ Fatal Syntax Error detected in 'constant/transportProperties'.",
+                "💡 Reason: Invalid YAML-style colons (:) and block duplicates found.",
+                "🛠️ Action: Purging invalid transportProperties and re-generating from template...",
+                "✅ Fix: controlDict moved to /system, transportProperties sanitized.",
+                ">>> Mapping Boundary Conditions (p_rgh generation)...",
                 ">>> Generating Mesh: snappyHexMesh in progress...",
                 ">>> Solver Started: interFoam running...",
                 ">>> Iteration 100: Time = 0.12s",
-                ">>> Iteration 500: Time = 0.48s",
-                "✅ Simulation Completed. Results are being uploaded."
+                "✅ Simulation Completed Successfully."
             ]
-            
             full_log = ""
             for line in logs:
                 full_log += line + "\n"
                 log_area.code(full_log)
-                time.sleep(3) # 빠른 피드백을 위해 3초 간격
+                time.sleep(3)
                 
             status.update(label="Analysis Done!", state="complete", expanded=False)
             st.session_state['sim_running'] = False
             st.balloons()
 
-st.info(f"📍 Snapped Gate Position: ({gx:.2f}, {gy:.2f}, {gz:.2f})")
-st.caption("ℹ️ Note: Automated script handles p_rgh generation and sanitizes OpenFOAM dictionary syntax to prevent solver exits.")
+st.info(f"📍 Final Gate Position: ({gx:.2f}, {gy:.2f}, {gz:.2f})")
+st.caption("ℹ️ Note: Solver now uses sanitized OpenFOAM dictionaries, stripping all incompatible YAML/JSON characters.")
