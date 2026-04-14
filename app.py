@@ -790,7 +790,24 @@ with cr1:
     st.markdown("### Download & Sync from GitHub Actions")
 with cr2:
     if st.button("🔄 Sync Results", use_container_width=True, type="primary"):
-        sync_simulation_results()
+        # 1. GitHub에서 결과 파일 다운로드 (압축 해제 포함)
+        sync_simulation_results() 
+        
+        # 2. [추가] 다운로드된 frames 폴더 내의 이미지들을 세션 상태에 로드
+        # solver.py에서 저장한 f"frame_{f}.png" 형식을 찾습니다.
+        result_dir = st.session_state.get("last_result_dir", "temp_results")
+        frame_pattern = os.path.join(result_dir, "frames", "frame_*.png")
+        image_files = glob.glob(frame_pattern)
+        
+        if image_files:
+            # 파일 이름 숫자에 따라 정렬 (frame_0, frame_1, ...)
+            image_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+            st.session_state["result_frames"] = image_files
+            st.session_state["current_frame"] = 0
+            st.success(f"✅ {len(image_files)} frames synced successfully!")
+        else:
+            st.error("❌ No image frames found in the synced results.")
+        
         st.rerun()
 
 summary_text = build_summary_text()
@@ -798,7 +815,9 @@ if summary_text:
     st.text_area("📄 Simulation Summary", summary_text, height=230)
 
 # ─────────── PNG Frame Animation (from solver.py output) ───────────
+# 세션에 로드된 이미지 리스트가 있는지 확인
 result_frames = st.session_state.get("result_frames", [])
+
 if result_frames:
     st.subheader("🌊 3D Filling Animation (PNG Frames from GitHub Actions)")
     total_steps = len(result_frames)
@@ -808,7 +827,9 @@ if result_frames:
         if st.button("⏮ First", use_container_width=True):
             st.session_state.update({"current_frame": 0, "animation_playing": False}); st.rerun()
     with cc2:
-        if st.button("⏸ Pause", use_container_width=True):
+        # 일시정지 버튼
+        is_playing = st.session_state.get("animation_playing", False)
+        if st.button("⏸ Pause" if is_playing else "Stopped", use_container_width=True):
             st.session_state["animation_playing"] = False; st.rerun()
     with cc3:
         if st.button("▶ Play", use_container_width=True, type="primary"):
@@ -817,20 +838,25 @@ if result_frames:
         if st.button("⏭ Last", use_container_width=True):
             st.session_state.update({"current_frame": total_steps - 1, "animation_playing": False}); st.rerun()
 
-    current_frame = st.slider("Frame", 0, total_steps - 1,
-                               value=min(st.session_state.get("current_frame", 0), total_steps - 1))
+    # 현재 프레임 인덱스 가져오기 (범위 초과 방지)
+    curr_idx = st.session_state.get("current_frame", 0)
+    if curr_idx >= total_steps: curr_idx = 0
+
+    current_frame = st.slider("Frame Progress", 0, total_steps - 1, value=curr_idx)
     st.session_state["current_frame"] = current_frame
 
+    # 실제 이미지 출력
     st.image(result_frames[current_frame],
-             caption=f"Frame {current_frame+1}/{total_steps}",
+             caption=f"Frame {current_frame + 1}/{total_steps}",
              use_container_width=True)
-    st.success(f"Frame {current_frame+1}/{total_steps} | {total_steps} total frames")
 
+    # 자동 재생 로직
     if st.session_state.get("animation_playing", False):
-        time.sleep(0.4)
+        time.sleep(0.3) # 재생 속도 조절 (0.3~0.5초 추천)
         st.session_state["current_frame"] = (current_frame + 1) % total_steps
         st.rerun()
-
+else:
+    st.info("💡 'Sync Results' 버튼을 눌러 GitHub Actions에서 생성된 유동 이미지를 가져오세요.")
 # ─────────── VTK-based animation fallback ───────────
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir) and not result_frames and mesh_obj is not None:
