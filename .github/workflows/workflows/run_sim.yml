@@ -50,48 +50,30 @@ jobs:
             trimesh \
             scipy \
             plotly \
-            kaleido \
             pandas
 
-      # ── 4. Prepare STL file ───────────────────────────────────
-      # The STL is either committed in the repo (default: part.stl)
-      # or passed as base64 in client_payload.stl_b64.
-      - name: Prepare STL file
+      # ── 4. Run Simulation Script ──────────────────────────────
+      - name: Run Simulation Script
         env:
-          STL_B64: ${{ github.event.client_payload.stl_b64 }}
-          STL_FILENAME: ${{ github.event.client_payload.stl_filename || inputs.stl_filename || 'part.stl' }}
+          # [수정됨] HTTP 422 에러 해결을 위해 simulation_params 경로 추가
+          SIGNAL_ID:   ${{ github.event.client_payload.simulation_params.signal_id || inputs.signal_id }}
+          GATE_X:      ${{ github.event.client_payload.simulation_params.gate_x }}
+          GATE_Y:      ${{ github.event.client_payload.simulation_params.gate_y }}
+          GATE_Z:      ${{ github.event.client_payload.simulation_params.gate_z }}
+          GATE_DIA:    ${{ github.event.client_payload.simulation_params.gate_dia }}
+          VEL_MMS:     ${{ github.event.client_payload.simulation_params.vel_mms }}
+          ETIME:       ${{ github.event.client_payload.simulation_params.etime }}
+          NUM_FRAMES:  ${{ github.event.client_payload.simulation_params.num_frames }}
+          MATERIAL:    ${{ github.event.client_payload.simulation_params.material }}
+          VISCOSITY:   ${{ github.event.client_payload.simulation_params.viscosity }}
+          DENSITY:     ${{ github.event.client_payload.simulation_params.density }}
+          MELT_TEMP:   ${{ github.event.client_payload.simulation_params.melt_temp }}
+          TEMP:        ${{ github.event.client_payload.simulation_params.temp }}
+          PRESS:       ${{ github.event.client_payload.simulation_params.press }}
+          MESH_RES_MM: ${{ github.event.client_payload.simulation_params.mesh_res_mm }}
+          STL_PATH:    ${{ github.event.client_payload.simulation_params.stl_filename || inputs.stl_filename || 'part.stl' }}
         run: |
-          if [ -n "$STL_B64" ]; then
-            echo "Decoding base64 STL..."
-            echo "$STL_B64" | base64 -d > "$STL_FILENAME"
-            echo "STL_PATH=$STL_FILENAME" >> $GITHUB_ENV
-          elif [ -f "$STL_FILENAME" ]; then
-            echo "Using repo STL: $STL_FILENAME"
-            echo "STL_PATH=$STL_FILENAME" >> $GITHUB_ENV
-          else
-            echo "ERROR: No STL file found. Commit part.stl to repo root or pass stl_b64."
-            exit 1
-          fi
-
-      # ── 5. Run solver ─────────────────────────────────────────
-      - name: Run MIM Voxel Flow Solver
-        env:
-          SIGNAL_ID:    ${{ github.event.client_payload.signal_id   || inputs.signal_id || 'manual' }}
-          GATE_X:       ${{ github.event.client_payload.gate_x      || '0.0' }}
-          GATE_Y:       ${{ github.event.client_payload.gate_y      || '0.0' }}
-          GATE_Z:       ${{ github.event.client_payload.gate_z      || '0.0' }}
-          GATE_DIA:     ${{ github.event.client_payload.gate_dia    || '2.0' }}
-          VEL_MMS:      ${{ github.event.client_payload.vel_mms     || '25.0' }}
-          ETIME:        ${{ github.event.client_payload.etime       || '10.0' }}
-          NUM_FRAMES:   ${{ github.event.client_payload.num_frames  || '15' }}
-          MATERIAL:     ${{ github.event.client_payload.material    || '17-4PH' }}
-          VISCOSITY:    ${{ github.event.client_payload.viscosity   || '4e-3' }}
-          DENSITY:      ${{ github.event.client_payload.density     || '7780' }}
-          MELT_TEMP:    ${{ github.event.client_payload.melt_temp   || '185' }}
-          TEMP:         ${{ github.event.client_payload.temp        || '185' }}
-          PRESS:        ${{ github.event.client_payload.press       || '110' }}
-          MESH_RES_MM:  ${{ github.event.client_payload.mesh_res_mm || '0.5' }}
-        run: |
+          mkdir -p frames
           python solver.py \
             --signal_id   "$SIGNAL_ID"   \
             --gate_x      "$GATE_X"      \
@@ -114,7 +96,8 @@ jobs:
       - name: Upload simulation results
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}
+          # [수정됨] Artifact 이름 생성 시에도 simulation_params 경로 적용
+          name: simulation-${{ github.event.client_payload.simulation_params.signal_id || inputs.signal_id || 'manual' }}
           path: |
             frames/
             results.txt
@@ -129,8 +112,9 @@ jobs:
           git config --global user.name  "MIM-Ops-Bot"
           git config --global user.email "mim-ops-bot@github.com"
           mkdir -p simulation_history
-          SIGNAL="${{ github.event.client_payload.signal_id || 'manual' }}"
+          # [수정됨] SIGNAL 변수 할당 시에도 simulation_params 경로 적용
+          SIGNAL="${{ github.event.client_payload.simulation_params.signal_id || 'manual' }}"
           cp results.json "simulation_history/${SIGNAL}.json" 2>/dev/null || true
-          git add simulation_history/ || true
-          git diff --cached --quiet || git commit -m "sim result: ${SIGNAL}"
-          git push || true
+          git add simulation_history/
+          git commit -m "Add simulation result: $SIGNAL" || echo "No changes to commit"
+          git push || echo "Push failed or not needed"
