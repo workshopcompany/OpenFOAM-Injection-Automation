@@ -1,3 +1,13 @@
+"""
+MIM-Ops Pro v2.7
+=================
+변경사항 (v2.7):
+  [1] Voxel 해상도 2배 세밀화: min_dim / 5.0 → min_dim / 10.0 (상한 1.0mm, 하한 0.15mm)
+  [2] 충진 시뮬레이션 시간: 고정 30초 폐기 → 이론 충진 시간 자동 계산 후 20% 여유, 최대 3분(180초) 상한
+  [3] 게이트 위치 AI 제안: '🤖 AI Gate Suggest' 버튼 → DFT 기반 최적 위치 추천 + 수정 가능
+  [4] 재료 DB를 material_property.txt 파일 기반으로 전환: 앱 재시작 없이 파일 수정으로 업데이트 가능
+      AI 추천 버튼은 txt에서 가장 유사한 재료를 찾아 반환, 없으면 Claude API 호출 fallback
+"""
 
 import streamlit as st
 import os, time, uuid, requests, shutil
@@ -634,7 +644,7 @@ with st.sidebar:
                         "vel_mms":   p.get("vel_mms", 50.0),
                     }
                     if save_material_to_txt(mat_key, save_data):
-                        st.toast(f"💾 '{mat_key}' → material_property.txt saved!", icon="💾")
+                        st.toast(f"💾 '{mat_key}' → material_property.txt 저장 완료!", icon="💾")
                         add_log(f"Material saved to DB: {mat_key}")
 
     st.divider()
@@ -649,15 +659,15 @@ with st.sidebar:
         theo_time = calc_theoretical_fill_time(mesh_obj, float(g_size), vel_current)
         safe_etime_preview = min(theo_time * 1.2, 180.0)
         st.info(
-            f"💡 calculated filling time: 약 **{theo_time:.2f}sec**\n\n"
-            f"→ safe End Time (×1.5): **{safe_etime_preview:.2f}sec**"
+            f"💡 100% 예상 충진 시간: 약 **{theo_time:.2f}초**\n\n"
+            f"→ 권장 End Time (×1.2 여유): **{safe_etime_preview:.2f}초**"
         )
 
     if st.button("🤖 Optimize Process", use_container_width=True):
         opt = get_process(mat_name_input)
         st.session_state.update({"temp": opt["temp"], "press": opt["press"], "vel": opt["vel"]})
         new_theo = calc_theoretical_fill_time(mesh_obj, float(g_size), opt["vel"]) if mesh_obj else 1.0
-        safe_etime = min(new_theo * 1.5, 180.0)
+        safe_etime = min(new_theo * 1.2, 180.0)
         st.session_state["etime"] = safe_etime
         st.toast(f"Process optimized! (Auto End Time: {safe_etime:.1f}s)", icon="🤖")
 
@@ -672,8 +682,9 @@ with st.sidebar:
         value=min(float(st.session_state["etime"]), 180.0),
         step=0.1, key="etime",
         help=(
-            "calculated filling time  × 1.5 \n"
-            "max 3min.(180sec) limited.\n"            
+            "이론 충진 시간 × 1.2 여유를 자동 설정합니다.\n"
+            "수동 입력도 가능. 최대 3분(180초) 제한.\n"
+            "충진 미완료 시 이 값을 늘려주세요."
         )
     )
 
@@ -939,10 +950,10 @@ with st.expander("🗂️ Material DB 관리 (material_property.txt)", expanded=
     else:
         st.warning("DB가 비어 있습니다. material_property.txt 파일을 확인하세요.")
 
-    st.markdown("**select / materials**")
+    st.markdown("**새 재료 추가 / 기존 재료 수정**")
     nc1, nc2, nc3 = st.columns(3)
     with nc1:
-        new_mat   = st.text_input("materials", key="new_mat_name")
+        new_mat   = st.text_input("재료명", key="new_mat_name")
         new_nu    = st.number_input("Viscosity (m²/s)", value=4e-3, format="%.2e", key="new_nu")
     with nc2:
         new_rho   = st.number_input("Density (kg/m³)",  value=7800.0, key="new_rho")
@@ -959,7 +970,7 @@ with st.expander("🗂️ Material DB 관리 (material_property.txt)", expanded=
                 "Tmold": new_tmold, "press_mpa": new_press, "vel_mms": new_vel
             })
             if ok:
-                st.success(f"✅ '{new_mat.upper()}' → material_property.txt saved")
+                st.success(f"✅ '{new_mat.upper()}' → material_property.txt 저장 완료")
                 st.rerun()
         else:
-            st.warning("input materials.")
+            st.warning("재료명을 입력하세요.")
