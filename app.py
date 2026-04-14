@@ -21,6 +21,7 @@ import re
 import trimesh
 import plotly.graph_objects as go
 import pyvista as pv
+import base64
 
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops Pro v3.0: GitHub Actions Cloud Solver")
@@ -658,13 +659,16 @@ with st.sidebar:
             "material":    st.session_state["mat_name"],
             "viscosity":   float(st.session_state["props"]["nu"]),
             "density":     float(st.session_state["props"]["rho"]),
-            "temp":        float(temp_c),          # solver uses as both inject & melt temp
+            "temp":        float(temp_c),
             "press":       float(press_mpa),
             "vel_mms":     float(vel_mms),
             "etime":       float(etime),
-            # packed fields ─ parsed by run_sim.yml
-            "gate_pos":    f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",  # "x,y,z,dia"
-            "sim_opts":    f"{num_frames_sel},{res_mm:.3f}",                    # "num_frames,mesh_res_mm"
+            "gate_pos":    f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",
+            "sim_opts":    f"{num_frames_sel},{res_mm:.3f}",
+
+            # ★★★ 여기 두 줄이 핵심 ★★★
+            "stl_b64":     base64.b64encode(uploaded.getvalue()).decode("utf-8") if uploaded else "",
+            "stl_filename": uploaded.name if uploaded else "part.stl",                # "num_frames,mesh_res_mm"
         }
         # keep full detail locally for summary display (never sent to GitHub)
         ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
