@@ -1,9 +1,9 @@
 """
-MIM-Ops Pro v2.4
+MIM-Ops Pro v2.5
 =================
 핵심 변경:
   - 몰드 STL을 내부 voxel grid로 변환 (최솟 두께 / 5 해상도)
-  - 게이트 voxel에서 BFS로 3D 확산 순서 계산
+  - 게이트 voxel에서 BFS 대신 물리 기반 가중치(Dijkstra) 적용하여 사출 흐름(Fountain flow) 모사
   - VTK alpha 필드로 총 충진 비율 계산 (없으면 프레임 번호 비례)
   - Plotly Mesh3d로 solid cube (8꼭짓점 × 6면) 렌더링 → 진짜 3D solid fill
   - clip_surface 완전 제거, extract_surface 제거
@@ -21,6 +21,8 @@ import pyvista as pv
 import plotly.graph_objects as go
 import trimesh
 from collections import deque
+import heapq
+from scipy.ndimage import distance_transform_edt
 
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
@@ -51,7 +53,7 @@ _init("last_synced_signal_id", None)
 _init("executed_params", None)
 _init("num_frames", 15)
 # voxel cache – rebuilt only when mesh/resolution/gate changes
-_init("voxel_cache", None)   # dict: {occupied, bfs_order, res_mm, gate, origin, total}
+_init("voxel_cache", None)   # dict: {occupied, fill_order, res_mm, gate, origin, total}
 
 # ───────────────────── Logging ─────────────────────
 def add_log(msg):
@@ -144,7 +146,7 @@ def sync_simulation_results():
         st.error(f"Sync error: {e}"); return False
 
 # ═══════════════════════════════════════════════════════════
-#  ★★★ SOLID VOXEL ENGINE ★★★
+#  ★★★ SOLID VOXEL ENGINE (물리 기반 흐름) ★★★
 # ═══════════════════════════════════════════════════════════
 
 def compute_voxel_res_mm(mold_trimesh):
@@ -172,15 +174,16 @@ def gate_to_voxel(gate_mm, origin, res_mm, shape):
     idx = np.clip(idx, 0, np.array(shape) - 1)
     return tuple(idx)
 
-def bfs_fill_order(occupied, start_vox):
+def physics_based_fill_order(occupied, start_vox):
     """
-    26-connectivity BFS.
-    시작점이 빈 셀이면 가장 가까운 내부 셀로 보정.
-    Returns list of (ix, iy, iz) in fill order.
+    사출 유동(Fountain Flow)을 모사하기 위한 Hele-Shaw 근사 알고리즘.
+    벽면(빈 공간)에서부터의 거리를 계산하여, 두꺼운 중심부(Core)는 속도를 빠르게,
+    벽면 근처는 속도를 느리게 설정하는 다익스트라(Dijkstra) 기반 확산 함수.
     """
     Nx, Ny, Nz = occupied.shape
     sx, sy, sz = int(start_vox[0]), int(start_vox[1]), int(start_vox[2])
 
+    # 시작점이 벽 바깥에 있으면 가장 가까운 내부 셀로 스냅
     if not occupied[sx, sy, sz]:
         occ_idx = np.argwhere(occupied)
         if len(occ_idx) == 0:
@@ -189,27 +192,59 @@ def bfs_fill_order(occupied, start_vox):
         nearest = occ_idx[np.argmin(dists)]
         sx, sy, sz = int(nearest[0]), int(nearest[1]), int(nearest[2])
 
+    # 1. 벽면까지의 거리 맵 생성 (두께의 대리 지표)
+    # distance_transform_edt는 각 내부 복셀에서 0(바깥)까지의 정확한 유클리드 거리를 반환
+    dist_to_wall = distance_transform_edt(occupied)
+
+    # 2. 다익스트라 알고리즘 셋업
+    min_costs = np.full(occupied.shape, np.inf)
+    min_costs[sx, sy, sz] = 0.0
+    
+    # 우선순위 큐: (누적 비용, (x, y, z))
+    pq = [(0.0, (sx, sy, sz))]
+    order = []
     visited = np.zeros_like(occupied, dtype=bool)
-    visited[sx, sy, sz] = True
-    queue  = deque([(sx, sy, sz)])
-    order  = []
 
-    offsets = [(dx, dy, dz)
-               for dx in (-1, 0, 1)
-               for dy in (-1, 0, 1)
-               for dz in (-1, 0, 1)
-               if not (dx == 0 and dy == 0 and dz == 0)]
+    # 인접 26방향 오프셋 및 실제 거리 계산
+    offsets = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+                offsets.append((dx, dy, dz, dist))
 
-    while queue:
-        cx, cy, cz = queue.popleft()
+    # 3. 비용(시간) 확산 연산
+    while pq:
+        cost, (cx, cy, cz) = heapq.heappop(pq)
+
+        if visited[cx, cy, cz]:
+            continue
+
+        visited[cx, cy, cz] = True
         order.append((cx, cy, cz))
-        for dx, dy, dz in offsets:
-            nx2, ny2, nz2 = cx+dx, cy+dy, cz+dz
-            if (0 <= nx2 < Nx and 0 <= ny2 < Ny and 0 <= nz2 < Nz
-                    and occupied[nx2, ny2, nz2]
-                    and not visited[nx2, ny2, nz2]):
-                visited[nx2, ny2, nz2] = True
-                queue.append((nx2, ny2, nz2))
+
+        for dx, dy, dz, step_dist in offsets:
+            nx, ny, nz = cx + dx, cy + dy, cz + dz
+
+            if 0 <= nx < Nx and 0 <= ny < Ny and 0 <= nz < Nz:
+                if occupied[nx, ny, nz] and not visited[nx, ny, nz]:
+                    
+                    # [핵심] 해당 복셀의 벽면으로부터의 거리
+                    wall_dist = dist_to_wall[nx, ny, nz]
+                    
+                    # 흐름 속도는 두께(wall_dist)의 제곱에 비례하도록 설정
+                    # +0.5를 더해 벽면 딱 붙은 곳도 흐를 수 있게 처리
+                    speed = (wall_dist + 0.5) ** 2.0 
+                    
+                    # 이동 비용 = 거리 / 속도 (비용이 적을수록 빨리 채워짐)
+                    edge_cost = step_dist / speed
+                    new_cost = cost + edge_cost
+
+                    if new_cost < min_costs[nx, ny, nz]:
+                        min_costs[nx, ny, nz] = new_cost
+                        heapq.heappush(pq, (new_cost, (nx, ny, nz)))
 
     return order
 
@@ -227,16 +262,18 @@ def get_or_build_voxel_cache(mold_trimesh, gate_mm, res_mm):
     shape     = occupied.shape
     start_vox = gate_to_voxel(gate_mm, origin, res_mm, shape)
     add_log(f"Grid {shape}, gate voxel {start_vox}, occupied={int(occupied.sum()):,}")
-    bfs_order = bfs_fill_order(occupied, start_vox)
-    add_log(f"BFS done: {len(bfs_order):,} reachable voxels")
+    
+    # 물리 기반 흐름 순서 계산
+    fill_order = physics_based_fill_order(occupied, start_vox)
+    add_log(f"Physics flow mapped: {len(fill_order):,} reachable voxels")
 
     cache = {
         "occupied":  occupied,
         "origin":    origin,
         "res_mm":    res_mm,
         "gate":      gate_key,
-        "bfs_order": bfs_order,
-        "total":     len(bfs_order),
+        "fill_order": fill_order,
+        "total":     len(fill_order),
     }
     st.session_state["voxel_cache"] = cache
     return cache
@@ -659,7 +696,7 @@ vtk_dir      = "VTK"
 mold_trimesh = st.session_state.get("mesh")
 
 if os.path.exists(vtk_dir) and mold_trimesh is not None:
-    st.subheader("🌊 3D Filling Animation (Solid Voxel Mesh)")
+    st.subheader("🌊 3D Filling Animation (Physics-Based Voxel Flow)")
 
     num_frames    = st.session_state.get("num_frames", 15)
     sampled_files = sample_vtk_files(vtk_dir, num_frames)
@@ -716,12 +753,12 @@ if os.path.exists(vtk_dir) and mold_trimesh is not None:
         )
         st.session_state["current_frame"] = current_frame
 
-        # ─── Voxel grid & BFS (캐시) ───
+        # ─── Voxel grid & Flow Calculation (캐시) ───
         gate_mm = (st.session_state["gx_final"],
                    st.session_state["gy_final"],
                    st.session_state["gz_final"])
 
-        with st.spinner("⚙️ Building 3D voxel grid inside mold (cached after first build)…"):
+        with st.spinner("⚙️ Calculating physics-based flow paths (cached after first build)…"):
             try:
                 cache = get_or_build_voxel_cache(mold_trimesh, gate_mm, res_mm_ui)
             except Exception as e:
@@ -731,9 +768,9 @@ if os.path.exists(vtk_dir) and mold_trimesh is not None:
         if cache is None or cache["total"] == 0:
             st.warning("Voxel grid is empty. Check STL mesh or gate position.")
         else:
-            bfs_order = cache["bfs_order"]
-            total_vox = cache["total"]
-            origin    = cache["origin"]
+            fill_order = cache["fill_order"]
+            total_vox  = cache["total"]
+            origin     = cache["origin"]
 
             # ─── 충진 비율 결정 ───
             fpath     = sampled_files[current_frame]
@@ -746,7 +783,7 @@ if os.path.exists(vtk_dir) and mold_trimesh is not None:
                 ratio_src  = f"frame {current_frame+1}/{total_steps}"
 
             n_show       = max(1, int(fill_ratio * total_vox))
-            shown_voxels = bfs_order[:n_show]
+            shown_voxels = fill_order[:n_show]
             fill_vals    = np.linspace(0.0, 1.0, n_show)   # 게이트=파랑, 끝=빨강
 
             with st.spinner(f"Rendering {n_show:,} solid voxels…"):
@@ -808,4 +845,4 @@ else:
     st.info("📁 No VTK directory found. Run a simulation and click 'Sync Results'.")
 
 st.divider()
-st.caption("MIM-Ops Pro v2.4 | 3D Solid Voxel Fill | BFS Gate-Origin | Min-Dim/5 Mesh | AI-Powered Injection Molding")
+st.caption("MIM-Ops Pro v2.5 | Physics-based Voxel Flow (Hele-Shaw) | AI-Powered Injection Molding")
