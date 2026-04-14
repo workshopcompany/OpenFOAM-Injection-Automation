@@ -826,9 +826,10 @@ if os.path.exists(vtk_dir):
 
 else:
     st.error("VTK directory not found. Please sync results first.")
+
 FIELD = "alpha.water"
 
-# ── [1] 데이터 직렬화 헬퍼 (Numpy 데이터 대응) ────────────────
+# ── [1] 데이터 직렬화 헬퍼 ────────────────────────────────
 class _NpEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.ndarray): return obj.tolist()
@@ -837,124 +838,107 @@ class _NpEncoder(json.JSONEncoder):
 def _safe_json_fixed(obj):
     return json.dumps(obj, cls=_NpEncoder).replace('</', '<\\/')
 
-# ── [2] 3D Filling Animation 섹션 (흐름 가시화 수정본) ─────────
-vtk_dir = "VTK"
+# ── [2] 핵심 수정: 유체 데이터 로드 및 강제 좌표 이동 ──────────────
+def load_and_threshold_debug(fpath, mold_mesh=None, x_off=0, y_off=0, z_off=0):
+    try:
+        mesh = pv.read(fpath)
+        if isinstance(mesh, pv.MultiBlock): mesh = mesh.combine()
+        
+        # 필드 추출 (alpha.water 또는 alpha1)
+        f_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
+        if f_name not in mesh.array_names: return None, None, 0
+        
+        # 0.5 이상인 영역만 추출
+        fluid = mesh.threshold(0.5, scalars=f_name)
+        if fluid.n_cells == 0: return None, None, 0
+        
+        surf = fluid.triangulate().extract_surface()
+        
+        # [핵심] 스케일 및 오프셋 강제 적용
+        # OpenFOAM(m) -> STL(mm) 변환을 위해 기본 1000배 확대 후 사용자 오프셋 적용
+        pts = surf.points * 1000 
+        pts[:, 0] += x_off
+        pts[:, 1] += y_off
+        pts[:, 2] += z_off
+        
+        faces = surf.faces.reshape(-1, 4)[:, 1:]
+        alpha = surf.point_data[f_name].tolist()
+        return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha, fluid.n_cells
+    except:
+        return None, None, 0
 
+# ── [3] 3D Animation 섹션 ─────────────────────────────────
+vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation (alpha.water)")
 
-    all_files = list(dict.fromkeys(
-        glob.glob(f"{vtk_dir}/case_*.vtm") +
-        glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
-        glob.glob(f"{vtk_dir}/case_*.vtk") +
-        glob.glob(f"{vtk_dir}/**/case_*.vtk", recursive=True)
-    ))
-    all_files = sorted(all_files, key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[-1]) if re.findall(r'\d+', os.path.basename(x)) else 0)
+    all_files = sorted(glob.glob(f"{vtk_dir}/**/*.vt*", recursive=True), 
+                       key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[-1]) if re.findall(r'\d+', os.path.basename(x)) else 0)
 
-    if not all_files:
-        st.warning("VTK 결과를 찾을 수 없습니다.")
-    else:
+    if all_files:
         total_steps = len(all_files)
         mold_mesh = st.session_state.get("mesh")
 
-        # ── (A) 단일 스텝 뷰어 (수동 확인용) ──
-        st.markdown("#### 🎚 Step-by-Step Viewer")
-        step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, 0, key="slider_v")
+        # ── (A) 좌표 미세 조정 (빨간 선만 보일 때 사용) ──
+        with st.expander("🛠️ 유체 위치 미세 조정 (유체가 안 보일 때)", expanded=False):
+            st.info("빨간 선만 보인다면 아래 슬라이더로 유체를 금형 안으로 이동시키세요.")
+            off_x = st.slider("X Offset", -200.0, 200.0, 0.0)
+            off_y = st.slider("Y Offset", -200.0, 200.0, 0.0)
+            off_z = st.slider("Z Offset", -200.0, 200.0, 0.0)
+
+        # ── (B) Viewer ──
+        step_idx = st.slider("⏱ Step", 0, total_steps - 1, 0, key="s_v")
         
-        try:
-            # mold_mesh=None으로 설정하여 좌표계 충돌로 인한 미표시 방지
-            res, a_vals, n_cells, _ = load_and_threshold_corrected(all_files[step_idx], mold_mesh=None)
+        res, a_vals, n_c = load_and_threshold_debug(all_files[step_idx], mold_mesh, off_x, off_y, off_z)
+        
+        fig = go.Figure()
+        if mold_mesh: fig.add_trace(make_mold_trace(mold_mesh, opacity=0.1))
+        if res:
+            p, i, j, k = res
+            fig.add_trace(make_fluid_trace(p, i, j, k, a_vals, show_colorbar=True))
+            st.metric("Fill Cells", f"{n_c:,} (Step {step_idx})")
+        
+        fig.update_layout(scene=dict(aspectmode="data"), height=500, margin=dict(l=0,r=0,b=0,t=0))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ── (C) Animation Build ──
+        if st.button("🎬 Build Animation (With Current Offset)", use_container_width=True):
+            prog = st.progress(0)
+            step_data = []
+            mold_json = _trace_to_json(make_mold_trace(mold_mesh, opacity=0.1)) if mold_mesh else None
+
+            for i, fpath in enumerate(all_files):
+                prog.progress((i+1)/total_steps)
+                r, av, nc = load_and_threshold_debug(fpath, mold_mesh, off_x, off_y, off_z)
+                f_j = _trace_to_json(make_fluid_trace(r[0], r[1], r[2], r[3], av)) if r else None
+                step_data.append({"fluid": f_j, "pct": round(nc/9.2, 1)})
             
-            fig = go.Figure()
-            if mold_mesh: fig.add_trace(make_mold_trace(mold_mesh, opacity=0.1))
-            if res:
-                pts, fi, fj, fk = res
-                fig.add_trace(make_fluid_trace(pts, fi, fj, fk, a_vals))
-            
-            fig.update_layout(scene=dict(aspectmode="data"), height=500, margin=dict(l=0,r=0,b=0,t=0))
-            st.plotly_chart(fig, use_container_width=True, key="plot_v")
-        except Exception as e:
-            st.error(f"Viewer Error: {e}")
+            prog.empty()
+            s_js = _safe_json_fixed(step_data)
+            m_js = _safe_json_fixed(mold_json)
 
-        # ── (B) 애니메이션 (실시간 흐름 갱신 로직) ──
-        st.divider()
-        if st.button("🎬 Build & Play Animation", key="btn_anim_play", use_container_width=True):
-            prog = st.progress(0, text="데이터 수집 중...")
-            try:
-                mold_t = make_mold_trace(mold_mesh, opacity=0.1)
-                mold_json = _trace_to_json(mold_t) if mold_t else None
-                step_data = []
-
-                for i, fpath in enumerate(all_files):
-                    prog.progress((i + 1) / total_steps)
-                    r, av, nc, _ = load_and_threshold_corrected(fpath, mold_mesh=None)
-                    
-                    f_json = None
-                    if r:
-                        pts, fi, fj, fk = r
-                        # show_colorbar=True를 추가하여 유동 변화 시각화 강화
-                        ft = make_fluid_trace(pts, fi, fj, fk, av, show_colorbar=True)
-                        f_json = _trace_to_json(ft)
-                    
-                    step_data.append({"fluid": f_json, "pct": round((nc/920)*100,1)})
-
-                prog.empty()
-                
-                s_js = _safe_json_fixed(step_data)
-                m_js = _safe_json_fixed(mold_json)
-                
-                # JavaScript 핵심 수정: Plotly.react 시 traces 배열을 매 스텝마다 완전히 새로 생성
-                html_code = f"""
-                <html>
-                <head><script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script></head>
-                <body style="margin:0; background:#0e1117; color:white; font-family:sans-serif;">
-                    <div style="padding:10px; background:#1a1d27; display:flex; align-items:center; gap:10px; border-bottom:1px solid #333;">
-                        <button id="pB" onclick="toggle()" style="padding:5px 15px; cursor:pointer;">▶ Play</button>
-                        <span id="lb">Step 1 / {total_steps}</span>
-                        <input type="range" id="sd" min="0" max="{total_steps-1}" value="0" style="flex:1" oninput="draw(parseInt(this.value))">
-                    </div>
-                    <div id="gd" style="width:100vw; height:550px;"></div>
-                    <script>
-                        const D={s_js}; const M={m_js}; let c=0, p=false, t=null;
-                        
-                        function draw(idx) {{
-                            c = idx;
-                            const traces = [];
-                            if(M) traces.push(M);
-                            if(D[idx] && D[idx].fluid) traces.push(D[idx].fluid);
-                            
-                            // Plotly.react를 사용하여 기존 scene을 유지하면서 데이터만 교체
-                            Plotly.react('gd', traces, {{
-                                scene: {{ aspectmode: 'data' }},
-                                paper_bgcolor: 'rgba(0,0,0,0)',
-                                plot_bgcolor: 'rgba(0,0,0,0)',
-                                font: {{ color: '#eee' }},
-                                margin: {{ l:0, r:0, b:0, t:0 }}
-                            }});
-                            document.getElementById('lb').innerText = `Step ${{idx+1}} / {total_steps} (${{D[idx].pct}}%)`;
-                            document.getElementById('sd').value = idx;
-                        }}
-
-                        function toggle() {{
-                            p = !p;
-                            document.getElementById('pB').innerText = p ? "⏸ Pause" : "▶ Play";
-                            if(p) loop(); else clearTimeout(t);
-                        }}
-
-                        function loop() {{
-                            if(!p) return;
-                            draw(c);
-                            c = (c + 1) % {total_steps};
-                            t = setTimeout(loop, 200); // 0.2초 간격으로 유동 갱신
-                        }}
-
-                        window.onload = () => draw(0);
-                    </script>
-                </body>
-                </html>
-                """
-                components.html(html_code, height=650)
-            except Exception as e:
-                st.error(f"애니메이션 오류: {e}")
+            html_code = f"""
+            <html>
+            <head><script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script></head>
+            <body style="margin:0; background:#0e1117;">
+                <div style="padding:10px; background:#1a1d27; color:white;">
+                    <button id="pb" onclick="t()">▶ Play</button> <span id="lb">Step 1</span>
+                </div>
+                <div id="gd" style="width:100vw; height:500px;"></div>
+                <script>
+                    const D={s_js}; const M={m_js}; let c=0, p=false, t_o=null;
+                    function draw(i) {{
+                        c=i; const ts=[M, D[i].fluid].filter(Boolean);
+                        Plotly.react('gd', ts, {{scene:{{aspectmode:'data'}}, paper_bgcolor:'rgba(0,0,0,0)', margin:{{l:0,r:0,b:0,t:0}}, font:{{color:'#eee'}}}});
+                        document.getElementById('lb').innerText = `Step ${{i+1}} (${{D[i].pct}}%)`;
+                    }}
+                    function t() {{ p=!p; document.getElementById('pb').innerText=p?"⏸ Pause":"▶ Play"; if(p) loop(); }}
+                    function loop() {{ if(!p) return; draw(c); c=(c+1)%{total_steps}; t_o=setTimeout(loop, 200); }}
+                    window.onload = () => draw(0);
+                </script>
+            </body>
+            </html>
+            """
+            components.html(html_code, height=600)
 else:
-    st.info("VTK 디렉토리를 확인해주세요.")
+    st.info("VTK 데이터가 없습니다.")
