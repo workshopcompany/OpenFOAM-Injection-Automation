@@ -52,7 +52,6 @@ jobs:
             plotly \
             kaleido \
             rtree \
-            kaleido \
             pandas
 
       # ── 4. Prepare STL file ───────────────────────────────────
