@@ -6,7 +6,21 @@ import trimesh
 import plotly.graph_objects as go
 import heapq
 import time
+# solver.py 상단에 추가
+import plotly.io as pio
 
+def save_visual_frame(coords, mask, frame_idx, current_phys_time, out_dir):
+    filled_coords = coords[mask]
+    if len(filled_coords) == 0: return
+
+    fig = go.Figure(data=[go.Scatter3d(
+        x=filled_coords[:,0], y=filled_coords[:,1], z=filled_coords[:,2],
+        mode='markers',
+        marker=dict(size=3, color='blue', opacity=0.8)
+    )])
+    img_path = os.path.join(out_dir, f"frame_{frame_idx}.png")
+    fig.write_image(img_path, engine="kaleido")
+    
 def parse_args():
     p = argparse.ArgumentParser(description="MIM-Ops Cloud Solver: Visual Flow Optimization")
     p.add_argument("--signal_id", type=str, default="manual")
