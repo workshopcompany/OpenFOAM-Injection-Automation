@@ -1,11 +1,12 @@
 """
-MIM-Ops Pro v2.8
-=================
+MIM-Ops Pro v2.8 (Hotfix)
+=========================
 Updates (v2.8):
   [1] Voxel Resolution 2x Refined: min_dim / 10.0 → min_dim / 20.0 (Max 1.0mm, Min 0.10mm)
   [2] Fill Time Margin: Changed from 1.2x to 1.5x of theoretical fill time (Max 180s)
   [3] UI Internationalization: All Korean UI elements translated to English
   [4] Previous functionalities (AI Gate Suggestion, material_property.txt DB) strictly preserved
+  [5] Hotfix: Fixed StreamlitAPIException related to duplicate widget keys and slider step mismatches
 """
 
 import streamlit as st
@@ -53,7 +54,7 @@ _init("animation_playing", False); _init("current_frame", 0)
 _init("vtk_files", [])
 _init("last_synced_signal_id", None)
 _init("executed_params", None)
-_init("num_frames", 15)
+_init("num_frames", 10) # Default set to 10
 _init("voxel_cache", None)
 _init("gate_ai_suggested", False)
 
@@ -165,13 +166,13 @@ def sync_simulation_results():
 def compute_voxel_res_mm(mold_trimesh):
     """
     [v2.8 Update] Refined resolution to 1/20 of minimum thickness.
-    Max 1.0mm, Min 0.10mm.
+    Max 1.0mm, Min 0.10mm to prevent memory overflow.
     """
     bb   = mold_trimesh.bounds
     dims = np.array(bb[1]) - np.array(bb[0])
     valid = dims[dims > 0.1]
     min_dim = float(np.min(valid)) if len(valid) else 10.0
-    return float(np.clip(min_dim / 20.0, 0.10, 1.0))   # Changed from 1/10 to 1/20
+    return float(np.clip(min_dim / 20.0, 0.10, 1.0))
 
 def build_voxel_grid(mold_trimesh, res_mm):
     vox = mold_trimesh.voxelized(pitch=res_mm)
@@ -334,7 +335,7 @@ def build_summary_text():
         f"Melt Temp: {ep.get('melt_temp',0):.1f} °C",
         f"Injection Temp: {ep.get('temp',0):.1f} °C",
         f"Pressure: {ep.get('press',0):.1f} MPa",
-        f"End Time (Max 180s): {ep.get('etime',0):.2f} s",
+        f"End Time: {ep.get('etime',0):.2f} s",
         f"Gate Dia: {ep.get('gate_dia',0):.1f} mm",
         f"Signal ID: {ep.get('signal_id','N/A')}",
     ]
@@ -352,9 +353,6 @@ def build_summary_text():
 
 @st.cache_data(ttl=10)
 def load_material_db(filepath: str) -> dict:
-    """
-    Reads material_property.txt. Uses default fallback if file not found.
-    """
     db = {}
     if not os.path.exists(filepath):
         return {
@@ -496,7 +494,7 @@ with st.sidebar:
     st.divider()
 
     st.header("📍 2. Gate Configuration")
-    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
+    st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
 
     mesh_obj = st.session_state.get("mesh")
 
@@ -531,15 +529,17 @@ with st.sidebar:
                         add_log(f"Gate selected: {s['label']}")
                         st.rerun()
 
-    vx = st.number_input("Gate X", value=float(st.session_state["gx"]), step=0.1, key="gx")
-    vy = st.number_input("Gate Y", value=float(st.session_state["gy"]), step=0.1, key="gy")
-    vz = st.number_input("Gate Z", value=float(st.session_state["gz"]), step=0.1, key="gz")
+    # Do not set `value=` when using `key=` to prevent StreamlitAPIException
+    st.number_input("Gate X", step=0.1, key="gx")
+    st.number_input("Gate Y", step=0.1, key="gy")
+    st.number_input("Gate Z", step=0.1, key="gz")
 
     if mesh_obj:
-        snap, _, _ = trimesh.proximity.closest_point(mesh_obj, [[vx, vy, vz]])
+        snap, _, _ = trimesh.proximity.closest_point(mesh_obj, [[st.session_state["gx"], st.session_state["gy"], st.session_state["gz"]]])
         gx, gy, gz = float(snap[0][0]), float(snap[0][1]), float(snap[0][2])
     else:
-        gx, gy, gz = vx, vy, vz
+        gx, gy, gz = st.session_state["gx"], st.session_state["gy"], st.session_state["gz"]
+    
     st.session_state["gx_final"] = gx
     st.session_state["gy_final"] = gy
     st.session_state["gz_final"] = gz
@@ -559,7 +559,7 @@ with st.sidebar:
 
     col_ai, col_db = st.columns(2)
     with col_ai:
-        if st.button("🤖 AI Material Search", use_container_width=True, type="primary"):
+        if st.button("🤖 Material Search", use_container_width=True, type="primary"):
             found = get_props(mat_name_input)
             st.session_state["props"] = found
             st.session_state["props_confirmed"] = False
@@ -575,7 +575,7 @@ with st.sidebar:
             st.session_state["show_material_list"] = not st.session_state.get("show_material_list", False)
 
     if st.session_state.get("show_material_list", False):
-        with st.expander("📦 Materials in material_property.txt", expanded=True):
+        with st.expander("📦 Materials in DB", expanded=True):
             db = load_material_db(MATERIAL_FILE)
             for k, v in db.items():
                 if st.button(f"  {k}", key=f"mat_pick_{k}", use_container_width=True):
@@ -611,7 +611,7 @@ with st.sidebar:
                         "vel_mms":   p.get("vel_mms", 50.0),
                     }
                     if save_material_to_txt(mat_key, save_data):
-                        st.toast(f"💾 '{mat_key}' → Saved to material_property.txt!", icon="💾")
+                        st.toast(f"💾 '{mat_key}' → Saved to DB successfully!", icon="💾")
                         add_log(f"Material saved to DB: {mat_key}")
 
     st.divider()
@@ -619,6 +619,8 @@ with st.sidebar:
     st.header("⚙️ 4. Process")
 
     theo_time = 1.0
+    g_size = st.session_state["gsize"]
+    
     if mesh_obj:
         vel_current = float(st.session_state["vel"])
         theo_time = calc_theoretical_fill_time(mesh_obj, float(g_size), vel_current)
@@ -636,14 +638,13 @@ with st.sidebar:
         st.session_state["etime"] = safe_etime
         st.toast(f"Process optimized! (Auto End Time: {safe_etime:.1f}s)", icon="🤖")
 
-    temp_c    = st.number_input("Temp (°C)",       50.0,  450.0, value=float(st.session_state["temp"]),  step=1.0, key="temp")
-    press_mpa = st.number_input("Pressure (MPa)",  10.0,  250.0, value=float(st.session_state["press"]), step=1.0, key="press")
-    vel_mms   = st.number_input("Velocity (mm/s)",  1.0,  600.0, value=float(st.session_state["vel"]),   step=1.0, key="vel")
+    st.number_input("Temp (°C)", 50.0, 450.0, step=1.0, key="temp")
+    st.number_input("Pressure (MPa)", 10.0, 250.0, step=1.0, key="press")
+    st.number_input("Velocity (mm/s)", 1.0, 600.0, step=1.0, key="vel")
 
-    etime = st.number_input(
+    st.number_input(
         "End Time (s)",
         min_value=0.1, max_value=180.0,
-        value=min(float(st.session_state["etime"]), 180.0),
         step=0.1, key="etime",
         help=(
             "Automatically sets 1.5x of the theoretical fill time.\n"
@@ -657,8 +658,8 @@ with st.sidebar:
         st.toast("Process confirmed!", icon="✅")
 
     st.divider()
-    num_frames_sel = st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], value=st.session_state.get("num_frames", 15))
-    st.session_state["num_frames"] = num_frames_sel
+    
+    st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], key="num_frames")
 
     run_disabled = (
         st.session_state["sim_running"]
@@ -673,6 +674,12 @@ with st.sidebar:
             clear_old_results()
             sig_id  = str(uuid.uuid4())[:8]
             res_mm  = compute_voxel_res_mm(mesh_obj) if mesh_obj else 0.5
+            
+            temp_c = st.session_state["temp"]
+            press_mpa = st.session_state["press"]
+            vel_mms = st.session_state["vel"]
+            etime = st.session_state["etime"]
+            num_frames_sel = st.session_state["num_frames"]
 
             st.session_state["executed_params"] = {
                 "signal_id":   sig_id, "material": st.session_state["mat_name"],
@@ -802,7 +809,7 @@ if os.path.exists(vtk_dir) and mesh_obj is not None:
             with c2:
                 default_res = compute_voxel_res_mm(mesh_obj)
                 res_mm_ui = st.slider("Voxel Resolution (mm)", 0.10, 2.0,
-                                      float(round(default_res, 2)), 0.05,
+                                      float(round(default_res, 2)), 0.01,
                                       help="v2.8: Default voxel resolution is 1/20 of min thickness.")
                 cache = st.session_state.get("voxel_cache")
                 if cache and abs(cache["res_mm"] - res_mm_ui) > 0.05:
