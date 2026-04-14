@@ -826,8 +826,9 @@ if os.path.exists(vtk_dir):
 
 else:
     st.error("VTK directory not found. Please sync results first.")
-    import json
-    return json.dumps(data).replace('</', '<\\/')
+    
+import json
+return json.dumps(data).replace('</', '<\\/')
 # ─────────────────────────────────────────────────────────────
 # 3. 3D Filling Animation (수정된 전체 섹션)
 # ─────────────────────────────────────────────────────────────
