@@ -826,19 +826,26 @@ if os.path.exists(vtk_dir):
 
 else:
     st.error("VTK directory not found. Please sync results first.")
-    
-import json
-return json.dumps(data).replace('</', '<\\/')
 # ─────────────────────────────────────────────────────────────
-# 3. 3D Filling Animation (수정된 전체 섹션)
+# 2. 도움 함수 (데이터 직렬화 및 변환)
 # ─────────────────────────────────────────────────────────────
-# 3. 3D Filling Animation (수정된 전체 섹션 - 들여쓰기 교정본)
+def _safe_json_fixed(data):
+    """HTML 내 JavaScript 삽입을 위해 데이터를 JSON으로 안전하게 변환 (오류 수정본)"""
+    import json
+    if data is None:
+        return "null"
+    # JS에서 안전하게 읽을 수 있도록 특수문자 처리
+    return json.dumps(data, cls=_NpEncoder).replace('</', '<\\/')
+
+# ─────────────────────────────────────────────────────────────
+# 3. 3D Filling Animation (전체 기능 통합본)
+# ─────────────────────────────────────────────────────────────
 vtk_dir = "VTK"
 
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation (alpha.water)")
 
-    # ── 파일 수집 및 정렬 ────────────────────────────────────
+    # 1. 파일 수집 및 정렬 (기존 로직 유지)
     all_files = list(dict.fromkeys(
         glob.glob(f"{vtk_dir}/case_*.vtm") +
         glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
@@ -852,213 +859,139 @@ if os.path.exists(vtk_dir):
     )
 
     if not all_files:
-        st.warning("No 'case_*.vtm / case_*.vtk' files found in VTK directory.")
+        st.warning("No time-step file(s) found in VTK directory.")
     else:
         total_steps = len(all_files)
-        st.caption(f"✅ {total_steps} time-step file(s) found")
+        mold_mesh = st.session_state.get("mesh")
 
-        # ── [A] 슬라이더 단일 스텝 뷰 ───────────────────────
+        # ── [A] 슬라이더 단일 스텝 뷰 (좌표 보정 적용) ──
         st.markdown("#### 🎚 Step-by-Step Viewer")
         step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, 0, format="Step %d")
-        selected_file = all_files[step_idx]
-
+        
         try:
-            result, alpha_vals, n_fluid_cells, dbg = load_and_threshold(selected_file)
-            fig = go.Figure()
+            # 보정된 함수 호출 (금형 데이터 기반 정렬)
+            result, alpha_vals, n_fluid_cells, dbg = load_and_threshold_corrected(all_files[step_idx], mold_mesh)
             
-            # 금형(Mold) 표시
-            mold_t = make_mold_trace(st.session_state.get("mesh"))
+            fig = go.Figure()
+            mold_t = make_mold_trace(mold_mesh, opacity=0.08)
             if mold_t: fig.add_trace(mold_t)
 
             if result is not None:
                 pts_tuple, fi, fj, fk = result
                 fig.add_trace(make_fluid_trace(pts_tuple, fi, fj, fk, alpha_vals))
                 
-                total_mesh_cells = 920  # 전체 격자수 (필요시 수정)
+                # 충전율 계산 (격자수 920 기준)
+                total_mesh_cells = 920 
                 real_fill = (n_fluid_cells / total_mesh_cells) * 100
-                st.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
+                c2.metric("Active Cells", f"{n_fluid_cells:,}")
+                c3.caption(f"🔍 {dbg}")
             else:
-                st.warning("No fluid detected at this step.")
+                st.warning("No valid fluid cells detected (inside mold bounds).")
 
-            fig.update_layout(scene=dict(aspectmode="data"), height=520, margin=dict(l=0, r=0, b=0, t=30))
+            fig.update_layout(
+                scene=dict(aspectmode="data", xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)"),
+                height=520, margin=dict(l=0, r=0, b=0, t=30)
+            )
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e:
-            st.error(f"Visualization Error: {e}")
+            st.error(f"Viewer Error: {e}")
 
-
-# ── [B] JS-driven 애니메이션 (통합 렌더링 섹션) ───────────────────────
+        # ── [B] JS-driven 애니메이션 (자동 재생 및 시점 유지) ──
         st.divider()
-        st.subheader("▶ Auto-Play Filling Animation (All Steps)")
+        st.subheader("▶ Auto-Play Filling Animation")
 
-        if st.button("🎬 Build & Play Animation", key="btn_play_anim_fixed", use_container_width=True):
+        if st.button("🎬 Build & Play Animation", key="btn_anim_final_play", use_container_width=True):
             prog = st.progress(0, text="Preparing animation data...")
             try:
-                mold_trimesh = st.session_state.get("mesh")
-                
-                # 1. 금형 트레이스 생성 (JSON 직렬화)
-                mold_json = None
-                if mold_trimesh is not None:
-                    mold_t = make_mold_trace(mold_trimesh, opacity=0.08)
-                    mold_json = _trace_to_json(mold_t)
-
-                # 2. 모든 스텝의 유체 데이터 추출 및 직렬화
+                # 금형 데이터 준비
+                mold_json = _trace_to_json(make_mold_trace(mold_mesh, opacity=0.08))
                 step_data = []
-                # 기존 디버그 정보에서 확인된 전체 격자 수 적용
-                total_mesh_cells = 920 
 
                 for i, fpath in enumerate(all_files):
-                    prog.progress((i + 1) / total_steps, text=f"Processing {i+1}/{total_steps}: {os.path.basename(fpath)}")
-                    
-                    # 데이터 로드 및 삼각화 결과 언패킹
-                    res, a_vals, n_cells, _ = load_and_threshold(fpath)
+                    prog.progress((i + 1) / total_steps, text=f"Processing Step {i+1}...")
+                    # 좌표 보정 로직을 모든 프레임에 적용
+                    res, a_vals, n_cells, _ = load_and_threshold_corrected(fpath, mold_mesh)
                     
                     fluid_json = None
                     if res is not None:
                         f_pts, fi, fj, fk = res
-                        ft = make_fluid_trace(
-                            pts=f_pts, 
-                            fi=fi, 
-                            fj=fj, 
-                            fk=fk, 
-                            alpha_vals=a_vals, 
-                            show_colorbar=True
-                        )
+                        ft = make_fluid_trace(f_pts, fi, fj, fk, a_vals, show_colorbar=True)
                         fluid_json = _trace_to_json(ft)
 
                     step_data.append({
-                        "label": os.path.basename(fpath),
                         "fluid": fluid_json,
-                        "n_fluid": n_cells,
-                        "fill_pct": round((n_cells / total_mesh_cells) * 100, 1),
+                        "fill_pct": round((n_cells / 920) * 100, 1),
                     })
 
                 prog.empty()
 
-                # 3. JavaScript 전달을 위한 JSON 변환
-                step_data_js  = _safe_json(step_data)
-                mold_json_js  = _safe_json(mold_json)
-                layout_js     = _safe_json({
-                    "scene": {
-                        "aspectmode": "data",
-                        "xaxis": {"title": "X", "color": "#888"},
-                        "yaxis": {"title": "Y", "color": "#888"},
-                        "zaxis": {"title": "Z", "color": "#888"}
-                    },
-                    "height": 560,
-                    "margin": {"l":0,"r":0,"b":0,"t":40},
-                    "paper_bgcolor": "rgba(0,0,0,0)",
-                    "plot_bgcolor": "rgba(0,0,0,0)",
-                    "font": {"color": "#eee"}
+                # 안전하게 JSON 변환 (함수 사용)
+                step_data_js = _safe_json_fixed(step_data)
+                mold_json_js = _safe_json_fixed(mold_json)
+                layout_js = _safe_json_fixed({
+                    "scene": {"aspectmode": "data", "xaxis": {"title": "X"}, "yaxis": {"title": "Y"}, "zaxis": {"title": "Z"}},
+                    "height": 560, "margin": {"l":0,"r":0,"b":0,"t":40},
+                    "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)", "font": {"color": "#eee"}
                 })
 
-                # 4. 전체 HTML/JS 코드 (화이트아웃 방지 로직 포함)
+                # HTML/JS 렌더링
                 html_code = f"""
                 <!DOCTYPE html>
                 <html>
-                <head>
-                    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-                    <style>
-                        body {{ margin:0; background:#0e1117; color:#eee; font-family: sans-serif; overflow:hidden; }}
-                        #controls {{ 
-                            padding:12px; background:#1a1d27; display:flex; align-items:center; gap:15px;
-                            border-bottom: 1px solid #333;
-                        }}
-                        button {{ 
-                            padding:6px 16px; background:#4a90e2; color:white; border:none; 
-                            border-radius:4px; cursor:pointer; font-weight:bold;
-                        }}
-                        button:hover {{ background:#357abd; }}
-                        input[type=range] {{ flex: 1; accent-color: #4a90e2; }}
-                        #stepLabel {{ font-size:13px; min-width:180px; font-family: monospace; }}
-                        #plot {{ width: 100vw; height: calc(100vh - 65px); }}
-                    </style>
-                </head>
-                <body>
-                    <div id="controls">
-                        <button id="btnPlay" onclick="togglePlay()">▶ Play</button>
-                        <span id="stepLabel">Initializing...</span>
-                        <input type="range" id="slider" min="0" max="{total_steps - 1}" value="0" oninput="goToStep(parseInt(this.value))">
+                <head><script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script></head>
+                <body style="margin:0; background:#0e1117; color:#eee; font-family:sans-serif; overflow:hidden;">
+                    <div id="controls" style="padding:10px; background:#1a1d27; display:flex; align-items:center; gap:10px; border-bottom:1px solid #333;">
+                        <button id="btnPlay" onclick="togglePlay()" style="padding:6px 16px; background:#4a90e2; color:white; border:none; border-radius:4px; cursor:pointer;">▶ Play</button>
+                        <span id="stepLabel" style="min-width:150px;">Step 1 / {total_steps}</span>
+                        <input type="range" id="slider" min="0" max="{total_steps-1}" value="0" style="flex:1;" oninput="goToStep(parseInt(this.value))">
                     </div>
-                    <div id="plot"></div>
+                    <div id="plot" style="width:100vw; height:calc(100vh - 65px);"></div>
                     <script>
-                        const STEPS = {step_data_js};
-                        const MOLD = {mold_json_js};
-                        const LAYOUT = {layout_js};
-                        const TOTAL = {total_steps};
-                        
-                        let currentIdx = 0;
-                        let isPlaying = false;
-                        let timer = null;
-                        let userCamera = null;
-
-                        function getTraces(idx) {{
-                            const traces = [];
-                            if (MOLD) traces.push(MOLD);
-                            if (STEPS[idx] && STEPS[idx].fluid) traces.push(STEPS[idx].fluid);
-                            return traces;
-                        }}
-
-                        function updateUI() {{
-                            const s = STEPS[currentIdx];
-                            document.getElementById('stepLabel').textContent = `Step ${{currentIdx + 1}} / ${{TOTAL}} (${{s.fill_pct}}%)`;
-                            document.getElementById('slider').value = currentIdx;
-                            document.getElementById('btnPlay').textContent = isPlaying ? "⏸ Pause" : "▶ Play";
-                        }}
+                        const STEPS = {step_data_js}; const MOLD = {mold_json_js}; const LAYOUT = {layout_js};
+                        let current = 0; let playing = false; let timer = null; let camera = null;
 
                         function goToStep(idx) {{
-                            currentIdx = idx;
-                            const currentLayout = JSON.parse(JSON.stringify(LAYOUT));
-                            if (userCamera) currentLayout.scene.camera = userCamera;
+                            current = idx;
+                            const layout = JSON.parse(JSON.stringify(LAYOUT));
+                            if(camera) layout.scene.camera = camera;
+                            const traces = [];
+                            if(MOLD) traces.push(MOLD);
+                            if(STEPS[idx].fluid) traces.push(STEPS[idx].fluid);
                             
-                            Plotly.react('plot', getTraces(currentIdx), currentLayout);
-                            updateUI();
+                            Plotly.react('plot', traces, layout);
+                            document.getElementById('stepLabel').textContent = `Step ${{idx+1}} / {total_steps} (${{STEPS[idx].fill_pct}}%)`;
+                            document.getElementById('slider').value = idx;
                         }}
 
                         function togglePlay() {{
-                            isPlaying = !isPlaying;
-                            if (isPlaying) {{
-                                if (currentIdx >= TOTAL - 1) currentIdx = 0;
-                                runAnimation();
-                            }} else {{
-                                clearTimeout(timer);
-                            }}
-                            updateUI();
+                            playing = !playing;
+                            document.getElementById('btnPlay').textContent = playing ? "⏸ Pause" : "▶ Play";
+                            if(playing) {{ if(current >= {total_steps-1}) current=0; run(); }}
+                            else clearTimeout(timer);
                         }}
 
-                        function runAnimation() {{
-                            if (!isPlaying) return;
-                            goToStep(currentIdx);
-                            if (currentIdx < TOTAL - 1) {{
-                                currentIdx++;
-                                timer = setTimeout(runAnimation, 250); // 재생 속도 조절
-                            }} else {{
-                                isPlaying = false;
-                                updateUI();
-                            }}
+                        function run() {{
+                            if(!playing) return;
+                            goToStep(current);
+                            if(current < {total_steps-1}) {{ current++; timer = setTimeout(run, 250); }}
+                            else {{ playing = false; document.getElementById('btnPlay').textContent = "▶ Play"; }}
                         }}
 
-                        // 초기 렌더링
-                        window.onload = function() {{
-                            Plotly.newPlot('plot', getTraces(0), LAYOUT, {{responsive: true}});
-                            
-                            document.getElementById('plot').on('plotly_relayout', function(ed) {{
-                                if (ed['scene.camera']) userCamera = ed['scene.camera'];
+                        window.onload = () => {{
+                            Plotly.newPlot('plot', [MOLD, STEPS[0].fluid].filter(Boolean), LAYOUT);
+                            document.getElementById('plot').on('plotly_relayout', (ed) => {{
+                                if(ed['scene.camera']) camera = ed['scene.camera'];
                             }});
-                            updateUI();
                         }};
                     </script>
                 </body>
                 </html>
                 """
-# ... (이전의 html_code와 components.html 코드가 있는 위치) ...
-                components.html(html_code, height=680, scrolling=False)
-
+                components.html(html_code, height=680)
             except Exception as e:
-                st.error(f"Animation failed: {e}")
-                st.exception(e)
-        
-        # ─── [중요] 이 else는 'if os.path.exists(vtk_dir):'와 수직 위치가 같아야 합니다 ───
-        else:
-            st.error("VTK directory not found. Please sync results first.")
-
-# ─── 만약 전체 흐름을 감싸는 다른 if문이 있다면 그에 맞춰 들여쓰기를 조절하세요 ───
+                st.error(f"Animation execution failed: {e}")
+else:
+    st.error("VTK directory not found. Please sync results first.")
