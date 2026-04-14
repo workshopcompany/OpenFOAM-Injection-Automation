@@ -17,7 +17,7 @@ st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
 
 ZAPIER_URL = st.secrets.get("ZAPIER_URL", "")
 
-# Session state init
+# ------------------- Session State Initialization -------------------
 def _init(k, v):
     if k not in st.session_state:
         st.session_state[k] = v
@@ -30,7 +30,7 @@ _init("sim_running", False)
 _init("sim_status", "idle")
 _init("sim_logs", [])
 _init("last_signal_id", None)
-_init("mesh", None)
+_init("mesh", None)                # trimesh object for visualization & clipping
 _init("props", None)
 _init("props_confirmed", False)
 _init("process_confirmed", False)
@@ -43,18 +43,159 @@ _init("gz_final", 0.0)
 _init("animation_playing", False)
 _init("current_frame", 0)
 _init("vtk_files", [])
-_init("last_synced_signal_id", None)  # 마지막으로 동기화된 시뮬레이션 ID
+_init("last_synced_signal_id", None)
+_init("executed_params", None)     # stores the parameters used when simulation was launched
 
-# Custom CSS
-st.markdown("""
-<style>
-    .stApp h1 { font-size: 2.2rem !important; }
-    .stApp h2 { font-size: 1.55rem !important; }
-    .stApp h3 { font-size: 1.3rem !important; }
-</style>
-""", unsafe_allow_html=True)
+# ------------------- Helper Functions -------------------
+def add_log(message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    st.session_state["sim_logs"].append(f"[{timestamp}] {message}")
+    if len(st.session_state["sim_logs"]) > 100:
+        st.session_state["sim_logs"] = st.session_state["sim_logs"][-100:]
 
-# Material Database (생략 - 동일)
+def clear_old_results():
+    """Delete previous results to avoid confusion."""
+    if os.path.exists("VTK"):
+        shutil.rmtree("VTK")
+    if os.path.exists("results.txt"):
+        os.remove("results.txt")
+    if os.path.exists("logs.zip"):
+        os.remove("logs.zip")
+    st.session_state["vtk_files"] = []
+    add_log("Cleared old simulation results.")
+
+def sample_vtk_files(vtk_dir, num_frames):
+    """Return exactly `num_frames` VTK files, evenly spaced."""
+    all_files = sorted(glob.glob(os.path.join(vtk_dir, "**", "case_*.vt*"), recursive=True) +
+                       glob.glob(os.path.join(vtk_dir, "case_*.vt*"), recursive=True))
+    all_files = sorted(set(all_files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
+    if not all_files:
+        return []
+    total = len(all_files)
+    if total <= num_frames:
+        return all_files
+    indices = np.linspace(0, total-1, num_frames, dtype=int)
+    return [all_files[i] for i in indices]
+
+def sync_simulation_results():
+    """Download latest artifact from GitHub."""
+    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
+    REPO_OWNER = "workshopcompany"
+    REPO_NAME = "OpenFOAM-Injection-Automation"
+    ARTIFACT_NAME = "simulation-results"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
+    try:
+        with st.spinner("Fetching from GitHub..."):
+            resp = requests.get(url, headers=headers)
+            if resp.status_code != 200:
+                st.error(f"GitHub API error: {resp.status_code}")
+                return False
+            artifacts = resp.json().get("artifacts", [])
+            target = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
+            if not target:
+                st.warning("No simulation results found. Run a simulation first.")
+                return False
+            dl_url = target["archive_download_url"]
+            file_resp = requests.get(dl_url, headers=headers)
+            if file_resp.status_code == 200:
+                clear_old_results()
+                with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
+                    z.extractall(".")
+                # update VTK list
+                vtk_dir = "VTK"
+                if os.path.exists(vtk_dir):
+                    st.session_state["vtk_files"] = sample_vtk_files(vtk_dir, 100)  # temporary, will be resampled later
+                # read signal ID from results.txt if present
+                if os.path.exists("results.txt"):
+                    with open("results.txt", "r") as f:
+                        content = f.read()
+                        match = re.search(r"Signal ID[:\s]+([A-Za-z0-9\-]+)", content)
+                        if match:
+                            st.session_state["last_synced_signal_id"] = match.group(1)
+                add_log("Results synchronized from GitHub.")
+                st.success("Synchronization complete!")
+                return True
+            else:
+                st.error("Failed to download artifact.")
+                return False
+    except Exception as e:
+        st.error(f"Sync error: {e}")
+        return False
+
+def load_fluid_solid_clipped(fpath, mold_pv=None, scale=1000.0, thres=0.05):
+    """
+    Load fluid as solid mesh (threshold) and clip by mold surface.
+    mold_pv : pyvista.PolyData of the mold (converted from trimesh once)
+    Returns (points, i, j, k), alpha_values, n_cells
+    """
+    try:
+        mesh = pv.read(fpath)
+        if isinstance(mesh, pv.MultiBlock):
+            mesh = mesh.combine()
+        # detect field name
+        fname = None
+        for candidate in ["alpha.water", "alpha1", "alpha"]:
+            if candidate in mesh.array_names:
+                fname = candidate
+                break
+        if fname is None:
+            return None, None, 0
+        # threshold: cells with alpha > thres
+        fluid = mesh.threshold(thres, scalars=fname)
+        if fluid.n_cells == 0:
+            # try even lower threshold
+            fluid = mesh.threshold(0.001, scalars=fname)
+            if fluid.n_cells == 0:
+                return None, None, 0
+        # scale (OpenFOAM meters -> mm)
+        fluid.points *= scale
+        # clip by mold (keep inside)
+        if mold_pv is not None:
+            try:
+                fluid = fluid.clip_surface(mold_pv, invert=True)  # invert=True keeps inside
+            except:
+                pass
+        # extract surface for plotting
+        surf = fluid.extract_surface().triangulate()
+        if surf.n_points == 0:
+            return None, None, 0
+        pts = surf.points
+        faces = surf.faces.reshape(-1, 4)[:, 1:] if surf.faces.size > 0 else np.empty((0,3), dtype=int)
+        # alpha values for coloring
+        if fname in surf.point_data:
+            alpha_vals = surf.point_data[fname].tolist()
+        else:
+            alpha_vals = [thres] * len(pts)
+        return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid.n_cells
+    except Exception as e:
+        add_log(f"Error loading {os.path.basename(fpath)}: {e}")
+        return None, None, 0
+
+def make_fluid_trace(pts, fi, fj, fk, alpha_vals, opacity=0.8):
+    intensity = np.array(alpha_vals) if alpha_vals is not None else np.ones(len(pts))
+    return go.Mesh3d(
+        x=pts[:,0], y=pts[:,1], z=pts[:,2],
+        i=fi, j=fj, k=fk,
+        intensity=intensity,
+        colorscale="Viridis",
+        opacity=opacity,
+        name="Fluid",
+        showscale=True,
+        colorbar=dict(title="Fill Ratio", thickness=15, len=0.5)
+    )
+
+def make_mold_trace(mold_trimesh, opacity=0.1, color="lightgray"):
+    if mold_trimesh is None:
+        return None
+    v, f = mold_trimesh.vertices, mold_trimesh.faces
+    return go.Mesh3d(
+        x=v[:,0], y=v[:,1], z=v[:,2],
+        i=f[:,0], j=f[:,1], k=f[:,2],
+        opacity=opacity, color=color, name="Mold", showlegend=True
+    )
+
+# ------------------- Material Database -------------------
 LOCAL_DB = {
     "PP": {"nu": 1e-3, "rho": 900.0, "Tmelt": 230.0, "Tmold": 40.0, "press_mpa": 70.0, "vel_mms": 80.0, "desc": "General-purpose polypropylene"},
     "ABS": {"nu": 2e-3, "rho": 1050.0, "Tmelt": 240.0, "Tmold": 60.0, "press_mpa": 80.0, "vel_mms": 70.0, "desc": "ABS resin"},
@@ -79,166 +220,9 @@ def get_props(material: str) -> dict:
 
 def get_process(material: str) -> dict:
     props = get_props(material)
-    return {"temp": float(props.get("Tmelt", 230.0)), "press": float(props.get("press_mpa", 70.0)), "vel": float(props.get("vel_mms", 80.0))}
+    return {"temp": float(props["Tmelt"]), "press": float(props["press_mpa"]), "vel": float(props["vel_mms"])}
 
-def add_log(message):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    log_entry = f"[{timestamp}] {message}"
-    st.session_state["sim_logs"].append(log_entry)
-    if len(st.session_state["sim_logs"]) > 100:
-        st.session_state["sim_logs"] = st.session_state["sim_logs"][-100:]
-
-def clear_old_results():
-    """기존 결과 파일 삭제 (혼란 방지)"""
-    if os.path.exists("VTK"):
-        shutil.rmtree("VTK")
-    if os.path.exists("results.txt"):
-        os.remove("results.txt")
-    if os.path.exists("logs.zip"):
-        os.remove("logs.zip")
-    st.session_state["vtk_files"] = []
-    add_log("🗑 Cleared old simulation results")
-
-def sync_simulation_results():
-    """GitHub에서 시뮬레이션 결과 동기화"""
-    GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
-    REPO_OWNER = "workshopcompany"
-    REPO_NAME = "OpenFOAM-Injection-Automation"
-    ARTIFACT_NAME = "simulation-results"
-    
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json"}
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
-    
-    try:
-        with st.spinner("Fetching from GitHub..."):
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                st.error(f"GitHub API failed: {response.status_code}")
-                return False
-            
-            artifacts = response.json().get("artifacts", [])
-            target = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
-            if not target:
-                st.warning("No simulation results found. Run a simulation first.")
-                return False
-            
-            # 아티팩트 다운로드 (기존 결과 덮어쓰기)
-            download_url = target["archive_download_url"]
-            file_res = requests.get(download_url, headers=headers)
-            if file_res.status_code == 200:
-                # 기존 결과 삭제 후 압축 해제
-                clear_old_results()
-                with zipfile.ZipFile(io.BytesIO(file_res.content)) as z:
-                    z.extractall(".")
-                
-                # VTK 파일 목록 업데이트
-                update_vtk_file_list()
-                
-                # 결과 파일에서 시그널 ID 추출 (있다면)
-                signal_id = None
-                if os.path.exists("results.txt"):
-                    with open("results.txt", "r") as f:
-                        content = f.read()
-                        match = re.search(r"Signal ID[:\s]+([A-Za-z0-9\-]+)", content)
-                        if match:
-                            signal_id = match.group(1)
-                    st.session_state["last_synced_signal_id"] = signal_id
-                
-                add_log(f"✅ Results synced (Signal: {signal_id or 'unknown'})")
-                st.success("Results synchronized successfully!")
-                return True
-            else:
-                st.error("Failed to download artifact")
-                return False
-    except Exception as e:
-        st.error(f"Sync error: {e}")
-        return False
-
-def update_vtk_file_list():
-    vtk_dir = "VTK"
-    if os.path.exists(vtk_dir):
-        files = glob.glob(f"{vtk_dir}/**/case_*.vt*", recursive=True) + glob.glob(f"{vtk_dir}/case_*.vt*", recursive=True)
-        files = sorted(set(files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
-        st.session_state["vtk_files"] = files
-        add_log(f"Found {len(files)} VTK files")
-        return files
-    return []
-
-def load_fluid_volume(fpath, mold_mesh=None, scale=1000.0, thres=0.01):
-    """유체 데이터 로드 - 여러 필드 이름 시도"""
-    try:
-        mesh = pv.read(fpath)
-        if isinstance(mesh, pv.MultiBlock):
-            mesh = mesh.combine()
-        
-        # 가능한 필드 이름들
-        possible_fields = ["alpha.water", "alpha1", "alpha", "water"]
-        f_name = None
-        for pf in possible_fields:
-            if pf in mesh.array_names:
-                f_name = pf
-                break
-        if f_name is None:
-            return None, None, 0
-        
-        # Threshold 적용
-        fluid = mesh.threshold(thres, scalars=f_name)
-        if fluid.n_cells == 0:
-            # 더 낮은 threshold로 재시도
-            fluid = mesh.threshold(0.001, scalars=f_name)
-            if fluid.n_cells == 0:
-                return None, None, 0
-        
-        # 스케일 적용
-        fluid.points *= scale
-        
-        # 금형 클리핑
-        if mold_mesh is not None:
-            try:
-                fluid = fluid.clip_surface(mold_mesh, invert=True)
-            except:
-                pass
-        
-        # 표면 추출
-        surf = fluid.extract_surface()
-        if surf.n_points == 0:
-            return None, None, 0
-        
-        pts = surf.points
-        faces = surf.faces.reshape(-1, 4)[:, 1:] if surf.faces.size > 0 else np.empty((0,3), dtype=int)
-        
-        if f_name in surf.point_data:
-            alpha_vals = surf.point_data[f_name].tolist()
-        else:
-            alpha_vals = [thres] * len(pts)
-        
-        return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid.n_cells
-    except Exception as e:
-        return None, None, 0
-
-def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.8):
-    intensity = np.array(alpha_vals) if alpha_vals is not None else np.ones(len(pts))
-    return go.Mesh3d(
-        x=pts[:,0], y=pts[:,1], z=pts[:,2],
-        i=fi, j=fj, k=fk,
-        intensity=intensity,
-        colorscale="Viridis",
-        opacity=opacity,
-        name=name,
-        showscale=True,
-        colorbar=dict(title="Fill Ratio", thickness=15, len=0.5)
-    )
-
-def make_mold_trace(mold_trimesh, opacity=0.1, color="lightgray"):
-    if mold_trimesh is None: return None
-    mv, mf = mold_trimesh.vertices, mold_trimesh.faces
-    return go.Mesh3d(
-        x=mv[:,0], y=mv[:,1], z=mv[:,2],
-        i=mf[:,0], j=mf[:,1], k=mf[:,2],
-        opacity=opacity, color=color, name="Mold", showlegend=True
-    )
-
-# ========== SIDEBAR ==========
+# ------------------- Sidebar -------------------
 with st.sidebar:
     st.header("📂 1. Geometry")
     uploaded = st.file_uploader("Upload STL (mm)", type=["stl"])
@@ -255,7 +239,7 @@ with st.sidebar:
     st.header("📍 2. Gate Configuration")
     if st.button("🪄 AI Gate Suggestion", use_container_width=True):
         mesh = st.session_state.get("mesh")
-        if mesh is not None:
+        if mesh:
             center = mesh.centroid
             snap, _, _ = trimesh.proximity.closest_point(mesh, [center])
             pos = snap[0]
@@ -263,18 +247,16 @@ with st.sidebar:
             st.session_state["gy"] = float(pos[1])
             st.session_state["gz"] = float(pos[2])
             st.session_state["gsize"] = 2.5
-            st.toast("AI Gate Suggestion Completed!", icon="🪄")
-            add_log(f"AI Gate: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
+            st.toast("Gate suggested!", icon="🪄")
+            add_log(f"Gate set to ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
         else:
             st.warning("Upload STL first")
-    
     g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
     vx = st.number_input("Gate X", value=float(st.session_state["gx"]), step=0.1, key="gx")
     vy = st.number_input("Gate Y", value=float(st.session_state["gy"]), step=0.1, key="gy")
     vz = st.number_input("Gate Z", value=float(st.session_state["gz"]), step=0.1, key="gz")
-    
     mesh = st.session_state.get("mesh")
-    if mesh is not None:
+    if mesh:
         snap, _, _ = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])
         gx, gy, gz = snap[0]
     else:
@@ -287,13 +269,11 @@ with st.sidebar:
     st.header("🧪 3. Material")
     mat_name = st.text_input("Material Name", value=st.session_state["mat_name"], key="mat_name_input")
     st.session_state["mat_name"] = mat_name
-    
     if st.button("🤖 AI Material Properties", use_container_width=True, type="primary"):
         props = get_props(mat_name)
         st.session_state["props"] = props
         st.session_state["props_confirmed"] = False
         add_log(f"Material properties loaded: {mat_name}")
-    
     if st.session_state["props"]:
         p = st.session_state["props"]
         st.caption(f"🟢 Source: {p.get('source', 'Database')}")
@@ -308,7 +288,7 @@ with st.sidebar:
             with col1:
                 if st.button("✅ Confirm Properties", use_container_width=True):
                     st.session_state["props_confirmed"] = True
-                    st.toast("Properties Confirmed!", icon="✅")
+                    st.toast("Properties confirmed!", icon="✅")
                     add_log("Material properties confirmed")
             with col2:
                 if st.button("🔄 Reset", use_container_width=True):
@@ -324,21 +304,19 @@ with st.sidebar:
         st.session_state["temp"] = opt["temp"]
         st.session_state["press"] = opt["press"]
         st.session_state["vel"] = opt["vel"]
-        st.toast("Process Optimized!", icon="🤖")
-        add_log(f"Process optimized: {opt['temp']}°C, {opt['press']}MPa, {opt['vel']}mm/s")
-    
+        st.toast("Process optimized!", icon="🤖")
+        add_log(f"Optimized: {opt['temp']}°C, {opt['press']}MPa, {opt['vel']}mm/s")
     temp_c = st.number_input("Temp (°C)", 50.0, 450.0, value=float(st.session_state["temp"]), step=1.0, key="temp")
     press_mpa = st.number_input("Pressure (MPa)", 10.0, 250.0, value=float(st.session_state["press"]), step=1.0, key="press")
     vel_mms = st.number_input("Velocity (mm/s)", 1.0, 600.0, value=float(st.session_state["vel"]), step=1.0, key="vel")
     etime = st.number_input("End Time (s)", value=float(st.session_state["etime"]), min_value=0.1, max_value=10.0, step=0.1, key="etime")
     st.session_state["last_vel_mms"] = vel_mms
     st.session_state["last_etime"] = etime
-    
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Confirm Process", use_container_width=True):
             st.session_state["process_confirmed"] = True
-            st.toast("Process Confirmed!", icon="✅")
+            st.toast("Process confirmed!", icon="✅")
             add_log("Process conditions confirmed")
     with col2:
         if st.button("🔄 Reset Process", use_container_width=True):
@@ -350,72 +328,81 @@ with st.sidebar:
     
     st.divider()
     num_frames = st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], value=15)
-    
     run_disabled = st.session_state["sim_running"] or not st.session_state["props_confirmed"] or not st.session_state.get("process_confirmed", False)
     if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True, disabled=run_disabled):
         if not ZAPIER_URL:
-            st.error("❌ ZAPIER_URL not configured")
+            st.error("ZAPIER_URL not configured")
         else:
-            # 기존 결과 삭제 (혼란 방지)
+            # Clear previous results
             clear_old_results()
-            
-            props = st.session_state["props"]
-            sig_id = str(uuid.uuid4())[:8]
+            # Store the current parameters for later display
+            st.session_state["executed_params"] = {
+                "signal_id": str(uuid.uuid4())[:8],
+                "material": st.session_state["mat_name"],
+                "viscosity": float(st.session_state["props"]["nu"]),
+                "density": float(st.session_state["props"]["rho"]),
+                "melt_temp": float(st.session_state["props"]["Tmelt"]),
+                "mold_temp": float(st.session_state["props"]["Tmold"]),
+                "temp": float(temp_c),
+                "press": float(press_mpa),
+                "vel_mms": float(vel_mms),
+                "etime": float(etime),
+                "gate_x": float(gx),
+                "gate_y": float(gy),
+                "gate_z": float(gz),
+                "gate_dia": float(g_size),
+            }
+            sig_id = st.session_state["executed_params"]["signal_id"]
             st.session_state["last_signal_id"] = sig_id
             st.session_state["sim_running"] = True
             st.session_state["sim_status"] = "running"
-            
-            add_log(f"🚀 New simulation started | ID: {sig_id}")
-            add_log(f"Material: {mat_name} (user selected)")
-            add_log(f"Properties: nu={props['nu']:.2e}, rho={props['rho']} kg/m³")
-            add_log(f"Tmelt={props['Tmelt']}°C, Tmold={props['Tmold']}°C")
-            add_log(f"Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f}) mm, Dia: {g_size} mm")
-            add_log(f"Injection: {temp_c}°C, {press_mpa} MPa, {vel_mms} mm/s")
-            add_log(f"End time: {etime} s")
-            
+            add_log(f"🚀 Simulation launched | ID: {sig_id}")
+            add_log(f"Material: {st.session_state['executed_params']['material']}")
+            add_log(f"Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f}) mm, Dia={g_size}mm")
+            add_log(f"Injection: {temp_c}°C, {press_mpa}MPa, {vel_mms}mm/s")
+            # Build payload for Zapier
             payload = {
                 "signal_id": sig_id,
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "material": mat_name,
-                "viscosity": float(props["nu"]),
-                "density": float(props["rho"]),
-                "melt_temp": float(props["Tmelt"]),
-                "mold_temp": float(props["Tmold"]),
-                "temp": float(temp_c),
-                "press": float(press_mpa),
-                "vel": round(vel_mms / 1000, 6),
-                "etime": float(etime),
-                "gate_pos": {"x": round(gx, 3), "y": round(gy, 3), "z": round(gz, 3)},
-                "gate_size": float(g_size),
+                "material": st.session_state["executed_params"]["material"],
+                "viscosity": st.session_state["executed_params"]["viscosity"],
+                "density": st.session_state["executed_params"]["density"],
+                "melt_temp": st.session_state["executed_params"]["melt_temp"],
+                "mold_temp": st.session_state["executed_params"]["mold_temp"],
+                "temp": st.session_state["executed_params"]["temp"],
+                "press": st.session_state["executed_params"]["press"],
+                "vel": round(st.session_state["executed_params"]["vel_mms"] / 1000, 6),
+                "etime": st.session_state["executed_params"]["etime"],
+                "gate_pos": {"x": round(gx,3), "y": round(gy,3), "z": round(gz,3)},
+                "gate_size": st.session_state["executed_params"]["gate_dia"],
             }
-            
             try:
-                add_log("📡 Sending to Zapier...")
-                res = requests.post(ZAPIER_URL, json=payload, timeout=10)
-                if res.status_code == 200:
+                add_log("Sending to Zapier...")
+                r = requests.post(ZAPIER_URL, json=payload, timeout=10)
+                if r.status_code == 200:
                     st.toast(f"Signal sent! ID: {sig_id}", icon="🚀")
-                    add_log(f"✅ Signal sent (HTTP {res.status_code})")
-                    add_log("⏳ GitHub Actions will process. Wait ~2-3 min then click 'Sync Results'")
+                    add_log(f"Signal sent successfully (HTTP {r.status_code})")
+                    add_log("⏳ GitHub Actions will process. Wait 2-3 min then click 'Sync Results'.")
                 else:
-                    st.error(f"Failed: HTTP {res.status_code}")
-                    add_log(f"❌ Failed: HTTP {res.status_code}")
+                    st.error(f"Failed: HTTP {r.status_code}")
+                    add_log(f"Failed to send: HTTP {r.status_code}")
                     st.session_state["sim_running"] = False
             except Exception as e:
                 st.error(f"Error: {e}")
-                add_log(f"❌ Error: {e}")
+                add_log(f"Error: {e}")
                 st.session_state["sim_running"] = False
 
-# ========== MAIN AREA ==========
+# ------------------- Main Area: Geometry Preview & Logs -------------------
 col_geo, col_log = st.columns([2, 1])
 with col_geo:
     st.header("🎥 3D Geometry & Gate")
     mesh = st.session_state.get("mesh")
-    if mesh is not None:
+    if mesh:
         v, f = mesh.vertices, mesh.faces
         fig = go.Figure(data=[
             go.Mesh3d(x=v[:,0], y=v[:,1], z=v[:,2], i=f[:,0], j=f[:,1], k=f[:,2], color="#AAAAAA", opacity=0.7),
             go.Scatter3d(x=[st.session_state["gx_final"]], y=[st.session_state["gy_final"]], z=[st.session_state["gz_final"]],
-                        mode="markers", marker=dict(size=st.session_state["gsize"]*3, color="red"), name="Gate")
+                         mode="markers", marker=dict(size=st.session_state["gsize"]*3, color="red"), name="Gate")
         ])
         fig.update_layout(margin=dict(l=0,r=0,b=0,t=0), scene=dict(aspectmode="data"), height=500)
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
@@ -425,7 +412,7 @@ with col_geo:
         c2.metric("Y Size", f"{bb[1][1]-bb[0][1]:.1f} mm")
         c3.metric("Z Size", f"{bb[1][2]-bb[0][2]:.1f} mm")
     else:
-        st.info("Upload STL file")
+        st.info("Upload STL file to see 3D model")
 with col_log:
     st.header("📟 Simulation Logs")
     if st.session_state["sim_running"]:
@@ -444,23 +431,22 @@ with col_log:
             if st.button("✅ Mark Complete", use_container_width=True):
                 st.session_state["sim_running"] = False
                 st.session_state["sim_status"] = "completed"
-                add_log("Simulation marked complete")
+                add_log("Simulation marked as completed by user")
                 st.rerun()
     with col_btn2:
         if st.button("🗑 Clear Logs", use_container_width=True):
             st.session_state["sim_logs"] = []
             st.rerun()
 
-st.info(f"📍 Gate: ({st.session_state['gx_final']:.2f}, {st.session_state['gy_final']:.2f}, {st.session_state['gz_final']:.2f}) mm")
+st.info(f"📍 Final Gate: ({st.session_state['gx_final']:.2f}, {st.session_state['gy_final']:.2f}, {st.session_state['gz_final']:.2f}) mm")
 if st.session_state["props_confirmed"] and st.session_state.get("process_confirmed", False) and st.session_state["props"]:
     p = st.session_state["props"]
     st.caption(f"ℹ️ Current settings: {st.session_state['mat_name']} | nu={p['nu']:.2e} | rho={p['rho']} kg/m³ | Tmelt={p['Tmelt']}°C")
 else:
-    st.caption("ℹ️ Confirm properties and process before running")
+    st.caption("ℹ️ Confirm properties and process before running simulation.")
 
-# ========== RESULTS SECTION ==========
+# ------------------- Results & Animation -------------------
 st.title("📊 Simulation Results")
-
 col_res1, col_res2, col_res3 = st.columns([2,1,1])
 with col_res1:
     st.markdown("### Download & Sync")
@@ -474,52 +460,49 @@ with col_res3:
         st.success("Results cleared")
         st.rerun()
 
-# 현재 로드된 결과의 정보 표시
+# Show summary if results.txt exists
 if os.path.exists("results.txt"):
     with open("results.txt", "r") as f:
-        summary = f.read()
-    st.text_area("📄 Simulation Summary", summary, height=150)
-    
-    # 경고: 결과와 현재 설정이 다른 경우
-    if st.session_state["last_synced_signal_id"] and st.session_state["last_synced_signal_id"] != st.session_state.get("last_signal_id"):
-        st.warning(f"⚠️ Displaying results from a different simulation (ID: {st.session_state['last_synced_signal_id']}). Current simulation ID: {st.session_state.get('last_signal_id', 'none')}. Please sync after new simulation completes.")
+        summary_text = f.read()
+    st.text_area("📄 Simulation Summary", summary_text, height=150)
+    # Check if the displayed results match the last executed simulation
+    if st.session_state.get("executed_params") and st.session_state.get("last_synced_signal_id"):
+        if st.session_state["last_synced_signal_id"] != st.session_state["executed_params"]["signal_id"]:
+            st.warning(f"⚠️ Displayed results belong to a different simulation (ID: {st.session_state['last_synced_signal_id']}). Current simulation ID: {st.session_state['executed_params']['signal_id']}. Please sync after new simulation completes.")
 else:
     st.info("No results loaded. Run a simulation and click 'Sync Results'.")
 
 if os.path.exists("logs.zip"):
     with open("logs.zip", "rb") as f:
-        st.download_button("📂 Download Logs", f, "logs.zip", use_container_width=True)
+        st.download_button("📂 Download Logs (logs.zip)", f, "logs.zip", use_container_width=True)
 
-# ========== ANIMATION ==========
+# VTK Animation Section
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
-    st.subheader("🌊 3D Filling Animation")
-    if not st.session_state["vtk_files"]:
-        update_vtk_file_list()
-    all_files = st.session_state["vtk_files"]
-    if not all_files:
-        st.warning("No VTK files found. Click 'Sync Results' to download.")
+    st.subheader("🌊 3D Filling Animation (Solid Mesh)")
+    # Convert mold trimesh to pyvista once (for clipping)
+    mold_trimesh = st.session_state.get("mesh")
+    mold_pv = None
+    if mold_trimesh is not None:
+        # trimesh -> pyvista PolyData
+        mold_pv = pv.wrap(mold_trimesh)
+    
+    # Get sampled VTK files based on user's frame count
+    sampled_files = sample_vtk_files(vtk_dir, num_frames)
+    total_steps = len(sampled_files)
+    if total_steps == 0:
+        st.warning("No VTK files found. Please sync results first.")
     else:
-        mold_mesh = st.session_state.get("mesh")
         with st.expander("🔧 Visualization Settings", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                scale_factor = st.slider("Scale (m→mm)", 100.0, 2000.0, 1000.0, 50.0)
-                threshold = st.slider("Fluid Threshold", 0.001, 0.1, 0.01, 0.001, format="%.3f")
+                scale_factor = st.slider("Scale (m→mm)", 100.0, 2000.0, 1000.0, 50.0, help="OpenFOAM uses meters, STL uses mm.")
+                threshold = st.slider("Fluid Threshold (alpha)", 0.001, 0.2, 0.05, 0.001, format="%.3f", help="Lower = more fluid volume")
             with col2:
                 mold_opacity = st.slider("Mold Opacity", 0.0, 0.5, 0.1, 0.01)
                 fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.8, 0.05)
             with col3:
                 view_mode = st.radio("View Mode", ["Auto", "Uniform"], index=0)
-        
-        total_files = len(all_files)
-        if total_files > num_frames:
-            indices = np.linspace(0, total_files-1, num_frames, dtype=int)
-            sampled_files = [all_files[i] for i in indices]
-        else:
-            sampled_files = all_files
-            num_frames = total_files
-        total_steps = len(sampled_files)
         
         st.markdown("### 🎮 Animation Controls")
         col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([1,1,3,1])
@@ -547,19 +530,24 @@ if os.path.exists(vtk_dir):
         
         with st.spinner(f"Loading frame {current_frame+1}/{total_steps}..."):
             fpath = sampled_files[current_frame]
-            res, alpha_vals, n_cells = load_fluid_volume(fpath, mold_mesh, scale=scale_factor, thres=threshold)
+            res, alpha_vals, n_cells = load_fluid_solid_clipped(fpath, mold_pv, scale=scale_factor, thres=threshold)
             fig = go.Figure()
-            if mold_mesh:
-                fig.add_trace(make_mold_trace(mold_mesh, opacity=mold_opacity))
+            if mold_trimesh:
+                fig.add_trace(make_mold_trace(mold_trimesh, opacity=mold_opacity))
+            # Gate marker
             gate_x, gate_y, gate_z = st.session_state["gx_final"], st.session_state["gy_final"], st.session_state["gz_final"]
-            fig.add_trace(go.Scatter3d(x=[gate_x], y=[gate_y], z=[gate_z], mode="markers", marker=dict(size=st.session_state["gsize"]*2, color="red", symbol="x"), name="Gate"))
+            fig.add_trace(go.Scatter3d(x=[gate_x], y=[gate_y], z=[gate_z], mode="markers",
+                                       marker=dict(size=st.session_state["gsize"]*2, color="red", symbol="x", line=dict(width=2, color="white")),
+                                       name="Gate"))
             if res:
                 pts, fi, fj, fk = res
                 fig.add_trace(make_fluid_trace(pts, fi, fj, fk, alpha_vals, opacity=fluid_opacity))
-                st.success(f"Frame {current_frame+1}/{total_steps} | Cells: {n_cells:,}")
+                st.success(f"Frame {current_frame+1}/{total_steps} | Fluid cells: {n_cells:,}")
             else:
                 st.info(f"Frame {current_frame+1}: No fluid at threshold={threshold}. Try lowering threshold.")
-            scene_config = dict(aspectmode="data" if view_mode=="Auto" else "cube", camera=dict(eye=dict(x=1.5,y=1.5,z=1.5)), xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)")
+            scene_config = dict(aspectmode="data" if view_mode=="Auto" else "cube",
+                                camera=dict(eye=dict(x=1.5,y=1.5,z=1.5)),
+                                xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)")
             fig.update_layout(scene=scene_config, height=600, margin=dict(l=0,r=0,b=0,t=0))
             st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
         
@@ -569,11 +557,11 @@ if os.path.exists(vtk_dir):
             time.sleep(0.2)
             st.rerun()
         
-        if mold_mesh:
-            bounds = mold_mesh.bounds
-            st.caption(f"Bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
+        if mold_trimesh:
+            bounds = mold_trimesh.bounds
+            st.caption(f"📐 Model bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
 else:
-    st.info("📁 No VTK results yet. Run a simulation and sync.")
+    st.info("📁 No VTK directory found. Run a simulation and click 'Sync Results'.")
 
 st.divider()
-st.caption("MIM-Ops Pro v2.1 | AI-Powered Injection Molding Simulation")
+st.caption("MIM-Ops Pro v2.2 | Solid Mesh + Clipping | AI-Powered Injection Molding Simulation")
