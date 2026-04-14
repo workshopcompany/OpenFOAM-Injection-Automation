@@ -42,6 +42,7 @@ _init("gy_final", 0.0)
 _init("gz_final", 0.0)
 _init("animation_playing", False)
 _init("current_frame", 0)
+_init("vtk_files", [])
 
 # Custom CSS
 st.markdown("""
@@ -49,8 +50,6 @@ st.markdown("""
     .stApp h1 { font-size: 2.2rem !important; }
     .stApp h2 { font-size: 1.55rem !important; }
     .stApp h3 { font-size: 1.3rem !important; }
-    .stMetricLabel { font-size: 1.1rem !important; }
-    .sim-log { font-family: monospace; font-size: 0.85rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,17 +65,12 @@ LOCAL_DB = {
     "PET": {"nu": 6e-4, "rho": 1370.0, "Tmelt": 265.0, "Tmold": 70.0, "press_mpa": 80.0, "vel_mms": 85.0, "desc": "PET"},
     "CATAMOLD": {"nu": 5e-3, "rho": 4900.0, "Tmelt": 185.0, "Tmold": 40.0, "press_mpa": 100.0, "vel_mms": 30.0, "desc": "BASF Catamold MIM feedstock"},
     "MIM": {"nu": 5e-3, "rho": 5000.0, "Tmelt": 185.0, "Tmold": 40.0, "press_mpa": 100.0, "vel_mms": 30.0, "desc": "Metal injection molding feedstock"},
-    "17-4PH": {"nu": 4e-3, "rho": 7780.0, "Tmelt": 185.0, "Tmold": 40.0, "press_mpa": 110.0, "vel_mms": 25.0, "desc": "17-4PH stainless steel MIM feedstock"},
-    "316L": {"nu": 4e-3, "rho": 7900.0, "Tmelt": 185.0, "Tmold": 40.0, "press_mpa": 110.0, "vel_mms": 25.0, "desc": "316L stainless steel MIM feedstock"},
 }
 
 def get_props(material: str) -> dict:
     name = material.upper().strip()
     for key in LOCAL_DB:
         if key.upper() == name:
-            return {**LOCAL_DB[key], "material": key, "source": "Gemini recommendation"}
-    for key in LOCAL_DB:
-        if key.upper() in name or name in key.upper():
             return {**LOCAL_DB[key], "material": key, "source": "Gemini recommendation"}
     return {"nu": 1e-3, "rho": 1000.0, "Tmelt": 220.0, "Tmold": 50.0, "press_mpa": 70.0, "vel_mms": 80.0, "material": material, "source": "Gemini recommendation", "desc": f"{material} — default"}
 
@@ -85,13 +79,16 @@ def get_process(material: str) -> dict:
     return {"temp": float(props.get("Tmelt", 230.0)), "press": float(props.get("press_mpa", 70.0)), "vel": float(props.get("vel_mms", 80.0))}
 
 def add_log(message):
+    """시뮬레이션 로그 추가"""
     timestamp = datetime.now().strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] {message}"
     st.session_state["sim_logs"].append(log_entry)
-    if len(st.session_state["sim_logs"]) > 50:
-        st.session_state["sim_logs"] = st.session_state["sim_logs"][-50:]
+    # 로그는 최대 100개 유지
+    if len(st.session_state["sim_logs"]) > 100:
+        st.session_state["sim_logs"] = st.session_state["sim_logs"][-100:]
 
 def sync_simulation_results():
+    """GitHub에서 시뮬레이션 결과 동기화"""
     GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]
     REPO_OWNER = "workshopcompany"
     REPO_NAME = "OpenFOAM-Injection-Automation"
@@ -100,38 +97,64 @@ def sync_simulation_results():
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
     }
     
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
     
     try:
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            st.error(f"GitHub API failed: {response.status_code}")
-            return False
-        
-        artifacts = response.json().get("artifacts", [])
-        target_artifact = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
-        
-        if not target_artifact:
-            st.warning("No simulation results yet.")
-            return False
-        
-        download_url = target_artifact["archive_download_url"]
-        file_res = requests.get(download_url, headers=headers)
-        
-        if file_res.status_code == 200:
-            with zipfile.ZipFile(io.BytesIO(file_res.content)) as z:
-                z.extractall(".")
-            add_log("✅ Simulation results downloaded")
-            return True
-        return False
+        with st.spinner("Fetching from GitHub..."):
+            response = requests.get(url, headers=headers)
+            if response.status_code != 200:
+                st.error(f"GitHub API failed: {response.status_code}")
+                return False
+            
+            artifacts = response.json().get("artifacts", [])
+            target = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
+            
+            if not target:
+                st.warning("No simulation results found. Run simulation first.")
+                return False
+            
+            # 아티팩트 다운로드
+            download_url = target["archive_download_url"]
+            file_res = requests.get(download_url, headers=headers)
+            
+            if file_res.status_code == 200:
+                # 기존 VTK 디렉토리 삭제
+                if os.path.exists("VTK"):
+                    import shutil
+                    shutil.rmtree("VTK")
+                
+                # 압축 해제
+                with zipfile.ZipFile(io.BytesIO(file_res.content)) as z:
+                    z.extractall(".")
+                
+                # VTK 파일 목록 업데이트
+                update_vtk_file_list()
+                
+                add_log("✅ Simulation results downloaded successfully")
+                st.success("Results synced successfully!")
+                return True
+            else:
+                st.error("Failed to download artifact")
+                return False
     except Exception as e:
         st.error(f"Sync error: {e}")
         return False
 
-def load_fluid_volume(fpath, mold_mesh=None, scale=1000.0, thres=0.05):
+def update_vtk_file_list():
+    """VTK 파일 목록 업데이트"""
+    vtk_dir = "VTK"
+    if os.path.exists(vtk_dir):
+        files = glob.glob(f"{vtk_dir}/**/case_*.vt*", recursive=True) + glob.glob(f"{vtk_dir}/case_*.vt*", recursive=True)
+        files = sorted(set(files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
+        st.session_state["vtk_files"] = files
+        add_log(f"Found {len(files)} VTK files")
+        return files
+    return []
+
+def load_fluid_volume(fpath, mold_mesh=None, scale=1000.0, thres=0.01):
+    """유체 데이터 로드 - 낮은 threshold로 더 많은 유체 표시"""
     try:
         mesh = pv.read(fpath)
         if isinstance(mesh, pv.MultiBlock):
@@ -141,20 +164,25 @@ def load_fluid_volume(fpath, mold_mesh=None, scale=1000.0, thres=0.05):
         if f_name not in mesh.array_names:
             return None, None, 0
         
+        # 낮은 threshold로 유체 영역 추출
         fluid = mesh.threshold(thres, scalars=f_name)
         if fluid.n_cells == 0:
-            fluid = mesh.threshold(0.01, scalars=f_name)
+            # 더 낮은 threshold로 재시도
+            fluid = mesh.threshold(0.001, scalars=f_name)
             if fluid.n_cells == 0:
                 return None, None, 0
         
+        # 스케일 적용 (OpenFOAM meter -> mm)
         fluid.points *= scale
         
+        # 금형 클리핑 (선택적)
         if mold_mesh is not None:
             try:
                 fluid = fluid.clip_surface(mold_mesh, invert=True)
             except:
                 pass
         
+        # 표면 추출
         surf = fluid.extract_surface()
         if surf.n_points == 0:
             return None, None, 0
@@ -171,38 +199,27 @@ def load_fluid_volume(fpath, mold_mesh=None, scale=1000.0, thres=0.05):
     except Exception as e:
         return None, None, 0
 
-def get_sampled_files(all_files, num_steps=10):
-    if not all_files:
-        return []
-    total = len(all_files)
-    if total <= num_steps:
-        return all_files
-    indices = np.linspace(0, total-1, num_steps, dtype=int)
-    return [all_files[i] for i in indices]
-
-def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.7):
+def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.8):
     intensity = np.array(alpha_vals) if alpha_vals is not None else np.ones(len(pts))
     return go.Mesh3d(
         x=pts[:,0], y=pts[:,1], z=pts[:,2],
         i=fi, j=fj, k=fk,
         intensity=intensity,
-        colorscale=[[0, 'blue'], [0.3, 'cyan'], [0.6, 'lime'], [0.8, 'orange'], [1.0, 'red']],
+        colorscale="Viridis",
         opacity=opacity,
         name=name,
         showscale=True,
-        colorbar=dict(title="Fill Ratio", thickness=20, len=0.6),
-        lighting=dict(ambient=0.4, diffuse=0.8, specular=0.3)
+        colorbar=dict(title="Fill Ratio", thickness=15, len=0.5)
     )
 
-def make_mold_trace(mold_trimesh, opacity=0.15, color="lightgray"):
+def make_mold_trace(mold_trimesh, opacity=0.1, color="lightgray"):
     if mold_trimesh is None:
         return None
     mv, mf = mold_trimesh.vertices, mold_trimesh.faces
     return go.Mesh3d(
         x=mv[:,0], y=mv[:,1], z=mv[:,2],
         i=mf[:,0], j=mf[:,1], k=mf[:,2],
-        opacity=opacity, color=color, name="Mold", showlegend=True,
-        lighting=dict(ambient=0.3, diffuse=0.7)
+        opacity=opacity, color=color, name="Mold", showlegend=True
     )
 
 # ========== SIDEBAR ==========
@@ -220,6 +237,7 @@ with st.sidebar:
             st.error(f"STL load failed: {e}")
     
     st.divider()
+    
     st.header("📍 2. Gate Configuration")
     
     if st.button("🪄 AI Gate Suggestion", use_container_width=True):
@@ -235,7 +253,7 @@ with st.sidebar:
             st.toast("AI Gate Suggestion Completed!", icon="🪄")
             add_log(f"AI Gate: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})")
         else:
-            st.warning("Upload STL first")
+            st.warning("Please upload an STL file first.")
     
     g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
     vx = st.number_input("Gate X", value=float(st.session_state["gx"]), step=0.1, key="gx")
@@ -256,6 +274,7 @@ with st.sidebar:
     st.session_state["gz_final"] = gz
     
     st.divider()
+    
     st.header("🧪 3. Material")
     mat_name = st.text_input("Material Name", value="PA66+30GF", key="mat_name_input")
     st.session_state["mat_name"] = mat_name
@@ -264,19 +283,19 @@ with st.sidebar:
         props = get_props(mat_name)
         st.session_state["props"] = props
         st.session_state["props_confirmed"] = False
-        add_log(f"Material properties loaded: {mat_name}")
+        add_log(f"AI Material properties loaded for: {mat_name}")
     
     if st.session_state["props"]:
         p = st.session_state["props"]
-        st.caption(f"🟢 Source: {p.get('source', 'Gemini')}")
+        st.caption(f"🟢 Source: {p.get('source', 'Gemini recommendation')}")
         if p.get("desc"):
             st.info(p["desc"])
         
-        with st.expander("📋 Edit Properties", expanded=True):
-            p["nu"] = st.number_input("Viscosity (m²/s)", value=float(p["nu"]), format="%.2e", min_value=1e-7, max_value=1.0, key="edit_nu")
-            p["rho"] = st.number_input("Density (kg/m³)", value=float(p["rho"]), min_value=100.0, max_value=9000.0, step=1.0, key="edit_rho")
-            p["Tmelt"] = st.number_input("Melt Temp (°C)", value=float(p["Tmelt"]), min_value=100.0, max_value=450.0, step=1.0, key="edit_tmelt")
-            p["Tmold"] = st.number_input("Mold Temp (°C)", value=float(p["Tmold"]), min_value=10.0, max_value=200.0, step=1.0, key="edit_tmold")
+        with st.expander("📋 Material Properties", expanded=True):
+            p["nu"] = st.number_input("Viscosity (m²/s)", value=float(p["nu"]), format="%.2e", key="edit_nu")
+            p["rho"] = st.number_input("Density (kg/m³)", value=float(p["rho"]), key="edit_rho")
+            p["Tmelt"] = st.number_input("Melt Temp (°C)", value=float(p["Tmelt"]), key="edit_tmelt")
+            p["Tmold"] = st.number_input("Mold Temp (°C)", value=float(p["Tmold"]), key="edit_tmold")
             
             col1, col2 = st.columns(2)
             with col1:
@@ -292,6 +311,7 @@ with st.sidebar:
                     st.rerun()
     
     st.divider()
+    
     st.header("⚙️ 4. Process")
     
     if st.button("🤖 Optimize Process", use_container_width=True):
@@ -302,9 +322,9 @@ with st.sidebar:
         st.toast("Process Optimized!", icon="🤖")
         add_log(f"Process optimized: {opt['temp']}°C, {opt['press']}MPa, {opt['vel']}mm/s")
     
-    temp_c = st.number_input("Temp (°C)", 50.0, 450.0, step=1.0, key="temp")
-    press_mpa = st.number_input("Pressure (MPa)", 10.0, 250.0, step=1.0, key="press")
-    vel_mms = st.number_input("Velocity (mm/s)", 1.0, 600.0, step=1.0, key="vel")
+    temp_c = st.number_input("Temp (°C)", 50.0, 450.0, value=float(st.session_state["temp"]), step=1.0, key="temp")
+    press_mpa = st.number_input("Pressure (MPa)", 10.0, 250.0, value=float(st.session_state["press"]), step=1.0, key="press")
+    vel_mms = st.number_input("Velocity (mm/s)", 1.0, 600.0, value=float(st.session_state["vel"]), step=1.0, key="vel")
     etime = st.number_input("End Time (s)", value=float(st.session_state["etime"]), min_value=0.1, max_value=10.0, step=0.1, key="etime")
     
     st.session_state["last_vel_mms"] = vel_mms
@@ -333,7 +353,7 @@ with st.sidebar:
     
     if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True, disabled=run_disabled):
         if not ZAPIER_URL:
-            st.error("❌ ZAPIER_URL not configured")
+            st.error("❌ ZAPIER_URL is not configured")
         else:
             props = st.session_state["props"]
             sig_id = str(uuid.uuid4())[:8]
@@ -341,12 +361,14 @@ with st.sidebar:
             st.session_state["sim_running"] = True
             st.session_state["sim_status"] = "running"
             
-            add_log(f"🚀 Simulation started: {sig_id}")
+            # 상세 로그 추가
+            add_log(f"🚀 Simulation started with ID: {sig_id}")
             add_log(f"Material: {mat_name}")
-            add_log(f"nu={props['nu']:.2e}, rho={props['rho']} kg/m³")
+            add_log(f"Properties: nu={props['nu']:.2e}, rho={props['rho']} kg/m³")
             add_log(f"Tmelt={props['Tmelt']}°C, Tmold={props['Tmold']}°C")
-            add_log(f"Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f}) mm, Dia={g_size}mm")
-            add_log(f"Injection: {temp_c}°C, {press_mpa}MPa, {vel_mms}mm/s")
+            add_log(f"Gate: ({gx:.2f}, {gy:.2f}, {gz:.2f}) mm, Diameter: {g_size} mm")
+            add_log(f"Injection: {temp_c}°C, {press_mpa} MPa, {vel_mms} mm/s")
+            add_log(f"End time: {etime} s")
             
             payload = {
                 "signal_id": sig_id,
@@ -360,47 +382,62 @@ with st.sidebar:
                 "press": float(press_mpa),
                 "vel": round(vel_mms / 1000, 6),
                 "etime": float(etime),
-                "gate_pos": {"x": round(gx, 3), "y": round(gy, 3), "z": round(gz, 3)},
+                "gate_pos": {
+                    "x": round(gx, 3),
+                    "y": round(gy, 3),
+                    "z": round(gz, 3)
+                },
                 "gate_size": float(g_size),
             }
             
             try:
-                add_log("📡 Sending to Zapier...")
+                add_log("📡 Sending signal to Zapier webhook...")
                 res = requests.post(ZAPIER_URL, json=payload, timeout=10)
                 if res.status_code == 200:
-                    st.toast(f"Signal Sent! ID: {sig_id}", icon="🚀")
-                    add_log(f"✅ Signal sent: HTTP {res.status_code}")
-                    add_log("⏳ Waiting for GitHub Actions...")
+                    st.toast(f"🚀 Signal Sent Successfully! (ID: {sig_id})", icon="🚀")
+                    add_log(f"✅ Signal sent successfully! HTTP {res.status_code}")
+                    add_log("⏳ Waiting for GitHub Actions to process...")
+                    add_log("📊 Check results: Click 'Sync from GitHub' after ~2-3 minutes")
                 else:
-                    st.error(f"Failed: HTTP {res.status_code}")
-                    add_log(f"❌ Failed: HTTP {res.status_code}")
+                    st.error(f"Transmission failed: HTTP {res.status_code}")
+                    add_log(f"❌ Transmission failed: HTTP {res.status_code}")
                     st.session_state["sim_running"] = False
+                    st.session_state["sim_status"] = "failed"
             except Exception as e:
-                st.error(f"Error: {e}")
-                add_log(f"❌ Error: {e}")
+                st.error(f"Connection error: {e}")
+                add_log(f"❌ Connection error: {e}")
                 st.session_state["sim_running"] = False
+                st.session_state["sim_status"] = "failed"
 
 # ========== MAIN AREA ==========
 col_geo, col_log = st.columns([2, 1])
 
 with col_geo:
-    st.header("🎥 3D Geometry")
+    st.header("🎥 3D Geometry & Gate")
     mesh = st.session_state.get("mesh")
     
     if mesh is not None:
         v, f = mesh.vertices, mesh.faces
         fig = go.Figure(data=[
-            go.Mesh3d(x=v[:,0], y=v[:,1], z=v[:,2], i=f[:,0], j=f[:,1], k=f[:,2], color="#AAAAAA", opacity=0.7),
+            go.Mesh3d(
+                x=v[:,0], y=v[:,1], z=v[:,2],
+                i=f[:,0], j=f[:,1], k=f[:,2],
+                color="#AAAAAA", opacity=0.7
+            ),
             go.Scatter3d(
                 x=[st.session_state["gx_final"]], 
                 y=[st.session_state["gy_final"]], 
                 z=[st.session_state["gz_final"]],
                 mode="markers",
-                marker=dict(size=st.session_state["gsize"] * 3, color="red"),
-                name="Gate"
+                marker=dict(size=st.session_state["gsize"] * 3, color="red", symbol="circle"),
+                name="Gate Location"
             )
         ])
-        fig.update_layout(margin=dict(l=0, r=0, b=0, t=0), scene=dict(aspectmode="data"), height=500)
+        fig.update_layout(
+            margin=dict(l=0, r=0, b=0, t=0),
+            scene=dict(aspectmode="data"),
+            height=500
+        )
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
         
         bb = mesh.bounds
@@ -409,152 +446,213 @@ with col_geo:
         c2.metric("Y Size", f"{bb[1][1]-bb[0][1]:.1f} mm")
         c3.metric("Z Size", f"{bb[1][2]-bb[0][2]:.1f} mm")
     else:
-        st.info("Upload STL file to see 3D model")
+        st.info("Upload an STL file in the sidebar to display the 3D model.")
 
 with col_log:
-    st.header("📟 Logs")
+    st.header("📟 Simulation Logs")
     
+    # 상태 표시
     if st.session_state["sim_running"]:
-        st.info("🟢 RUNNING...")
+        st.info("🟢 STATUS: SIMULATION RUNNING...")
     elif st.session_state["sim_status"] == "failed":
-        st.error("🔴 FAILED")
+        st.error("🔴 STATUS: SIMULATION FAILED")
     else:
-        st.success("✅ READY")
+        st.success("✅ STATUS: READY")
     
-    log_container = st.container(height=400)
+    # 로그 표시
+    log_container = st.container(height=350)
     with log_container:
-        for log in st.session_state["sim_logs"][-30:]:
+        for log in st.session_state["sim_logs"][-25:]:
             st.code(log, language="bash")
     
-    if st.session_state["sim_running"]:
-        if st.button("✅ Mark Complete", use_container_width=True):
-            st.session_state["sim_running"] = False
-            st.session_state["sim_status"] = "completed"
-            add_log("Simulation marked complete")
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.session_state["sim_running"]:
+            if st.button("✅ Mark Complete", use_container_width=True):
+                st.session_state["sim_running"] = False
+                st.session_state["sim_status"] = "completed"
+                add_log("🏁 Simulation marked as completed by user")
+                st.rerun()
+    with col_btn2:
+        if st.button("🗑 Clear Logs", use_container_width=True):
+            st.session_state["sim_logs"] = []
+            add_log("Logs cleared")
             st.rerun()
-    
-    if st.button("🗑 Clear Logs", use_container_width=True):
-        st.session_state["sim_logs"] = []
-        st.rerun()
 
-st.info(f"📍 Gate: ({st.session_state['gx_final']:.2f}, {st.session_state['gy_final']:.2f}, {st.session_state['gz_final']:.2f}) mm")
+st.info(f"📍 Final Gate Position: ({st.session_state['gx_final']:.2f}, {st.session_state['gy_final']:.2f}, {st.session_state['gz_final']:.2f}) mm")
 
 if st.session_state["props_confirmed"] and st.session_state.get("process_confirmed", False) and st.session_state["props"]:
     p = st.session_state["props"]
     st.caption(f"ℹ️ Confirmed | nu={p['nu']:.2e} | rho={p['rho']} kg/m³ | Tmelt={p['Tmelt']}°C")
 else:
-    st.caption("ℹ️ Confirm properties and process before running")
+    st.caption("ℹ️ Confirm both Material Properties and Process Conditions before running simulation")
 
-# ========== RESULTS ==========
-st.title("📊 Results")
+# ========== RESULTS SECTION ==========
+st.title("📊 Simulation Results")
 
-if st.button("🔄 Sync from GitHub", use_container_width=True):
-    with st.spinner("Syncing..."):
+col_result1, col_result2 = st.columns([3, 1])
+with col_result1:
+    st.markdown("### Download & Sync Results")
+with col_result2:
+    if st.button("🔄 Sync from GitHub", use_container_width=True, type="primary"):
         if sync_simulation_results():
-            st.success("Synced!")
             st.rerun()
 
+# 결과 파일 표시
 if os.path.exists("results.txt"):
-    with open("results.txt") as f:
-        st.text_area("Summary", f.read(), height=150)
+    with open("results.txt", "r") as f:
+        summary = f.read()
+    st.text_area("📄 Simulation Summary", summary, height=150)
 
 if os.path.exists("logs.zip"):
     with open("logs.zip", "rb") as f:
-        st.download_button("📂 Download Logs", f, "logs.zip", use_container_width=True)
+        st.download_button(
+            label="📂 Download Logs (logs.zip)",
+            data=f,
+            file_name="logs.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
 
-# ========== ANIMATION ==========
+# ========== ANIMATION SECTION ==========
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation")
     
-    all_files = sorted(glob.glob(f"{vtk_dir}/**/case_*.vt*", recursive=True) + glob.glob(f"{vtk_dir}/case_*.vt*", recursive=True))
-    all_files = sorted(set(all_files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
+    # VTK 파일 목록 업데이트
+    if not st.session_state["vtk_files"]:
+        update_vtk_file_list()
+    
+    all_files = st.session_state["vtk_files"]
     
     if not all_files:
-        st.warning("No VTK files found")
+        st.warning("No VTK files found. Click 'Sync from GitHub' to download results.")
     else:
         mold_mesh = st.session_state.get("mesh")
         
-        with st.expander("🔧 Settings", expanded=True):
+        with st.expander("🔧 Visualization Settings", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                scale_factor = st.slider("Scale (m→mm)", 100.0, 2000.0, 1000.0, 50.0)
-                threshold = st.slider("Threshold", 0.01, 0.5, 0.05, 0.01)
+                scale_factor = st.slider("Scale (m → mm)", 100.0, 2000.0, 1000.0, 50.0)
+                threshold = st.slider("Fluid Threshold", 0.001, 0.1, 0.01, 0.001, format="%.3f")
             with col2:
                 mold_opacity = st.slider("Mold Opacity", 0.0, 0.5, 0.1, 0.01)
-                fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.75, 0.05)
+                fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.8, 0.05)
             with col3:
-                view_mode = st.radio("View", ["Auto", "Uniform"], index=0)
+                view_mode = st.radio("View Mode", ["Auto", "Uniform"], index=0)
         
-        sampled_files = get_sampled_files(all_files, num_frames)
+        # 프레임 수 제한 (성능)
+        total_files = len(all_files)
+        if total_files > num_frames:
+            indices = np.linspace(0, total_files - 1, num_frames, dtype=int)
+            sampled_files = [all_files[i] for i in indices]
+        else:
+            sampled_files = all_files
+            num_frames = total_files
+        
         total_steps = len(sampled_files)
         
-        st.markdown("### 🎮 Controls")
+        st.markdown("### 🎮 Animation Controls")
         col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([1, 1, 3, 1])
         
         with col_ctrl1:
-            if st.button("⏮ First"):
+            if st.button("⏮ First", use_container_width=True):
                 st.session_state["current_frame"] = 0
                 st.session_state["animation_playing"] = False
                 st.rerun()
         with col_ctrl2:
-            if st.button("⏸ Pause"):
+            if st.button("⏸ Pause", use_container_width=True):
                 st.session_state["animation_playing"] = False
                 st.rerun()
         with col_ctrl3:
-            if st.button("▶ Play", type="primary"):
+            if st.button("▶ Play", use_container_width=True, type="primary"):
                 st.session_state["animation_playing"] = True
                 st.rerun()
         with col_ctrl4:
-            if st.button("⏭ Last"):
+            if st.button("⏭ Last", use_container_width=True):
                 st.session_state["current_frame"] = total_steps - 1
                 st.session_state["animation_playing"] = False
                 st.rerun()
         
-        current_frame = st.slider("Frame", 0, total_steps - 1, value=st.session_state.get("current_frame", 0), key="frame_slider")
+        # 프레임 슬라이더
+        current_frame = st.slider(
+            "Time Step", 0, total_steps - 1, 
+            value=min(st.session_state.get("current_frame", 0), total_steps - 1),
+            key="frame_slider"
+        )
         st.session_state["current_frame"] = current_frame
         
-        with st.spinner("Loading..."):
+        # 현재 프레임 로드 및 표시
+        with st.spinner(f"Loading frame {current_frame + 1}/{total_steps}..."):
             fpath = sampled_files[current_frame]
-            res, alpha_vals, n_cells = load_fluid_volume(fpath, mold_mesh, scale=scale_factor, thres=threshold)
+            res, alpha_vals, n_cells = load_fluid_volume(
+                fpath, mold_mesh, 
+                scale=scale_factor, 
+                thres=threshold
+            )
             
             fig = go.Figure()
             
+            # 금형 추가
             if mold_mesh:
                 fig.add_trace(make_mold_trace(mold_mesh, opacity=mold_opacity))
             
+            # 게이트 위치 표시
             gate_x, gate_y, gate_z = st.session_state["gx_final"], st.session_state["gy_final"], st.session_state["gz_final"]
             fig.add_trace(go.Scatter3d(
                 x=[gate_x], y=[gate_y], z=[gate_z],
                 mode="markers",
-                marker=dict(size=st.session_state["gsize"] * 2, color="red", symbol="x"),
-                name="Gate"
+                marker=dict(size=st.session_state["gsize"] * 2, color="red", symbol="x", line=dict(width=2, color="white")),
+                name="Gate Location"
             ))
             
+            # 유체 추가
             if res:
                 pts, fi, fj, fk = res
                 fig.add_trace(make_fluid_trace(pts, fi, fj, fk, alpha_vals, opacity=fluid_opacity))
-                st.success(f"Frame {current_frame+1}/{total_steps} | Cells: {n_cells:,}")
+                st.success(f"✅ Frame {current_frame + 1}/{total_steps} | Fluid cells: {n_cells:,}")
             else:
-                st.warning("No fluid detected")
+                st.info(f"Frame {current_frame + 1}/{total_steps}: No fluid at threshold={threshold}")
+                st.caption("💡 Try lowering the 'Fluid Threshold' value")
             
+            # 3D 뷰 설정
             scene_config = dict(
                 aspectmode="data" if view_mode == "Auto" else "cube",
-                camera=dict(eye=dict(x=1.8, y=1.8, z=1.5), up=dict(x=0, y=0, z=1)),
-                xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)"
+                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5)),
+                xaxis_title="X (mm)",
+                yaxis_title="Y (mm)", 
+                zaxis_title="Z (mm)"
             )
             
-            fig.update_layout(scene=scene_config, height=650, margin=dict(l=0, r=0, b=0, t=0))
-            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
+            fig.update_layout(
+                scene=scene_config,
+                height=600,
+                margin=dict(l=0, r=0, b=0, t=0),
+                legend=dict(x=0.02, y=0.98, bgcolor="rgba(0,0,0,0.5)")
+            )
+            
+            st.plotly_chart(fig, use_container_width=True, config={
+                'scrollZoom': True,
+                'displayModeBar': True,
+                'displaylogo': False
+            })
         
+        # 자동 재생 (0.2초 간격)
         if st.session_state.get("animation_playing", False):
             next_frame = (current_frame + 1) % total_steps
             st.session_state["current_frame"] = next_frame
-            time.sleep(0.15)
+            time.sleep(0.2)
             st.rerun()
         
+        # 모델 정보
         if mold_mesh:
             bounds = mold_mesh.bounds
-            st.caption(f"Bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
+            st.caption(f"📐 Model bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | "
+                      f"Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | "
+                      f"Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
 else:
-    st.error("VTK directory not found. Run simulation and sync first.")
+    st.info("📁 VTK directory not found. Run a simulation and click 'Sync from GitHub' to get results.")
+
+# 하단 정보
+st.divider()
+st.caption("MIM-Ops Pro v2.0 | AI-Powered Injection Molding Simulation")
