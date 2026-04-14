@@ -80,16 +80,18 @@ jobs:
       - name: Parse packed payload fields
         env:
           GATE_POS:  ${{ github.event.client_payload.gate_pos  || '0.0,0.0,0.0,2.0' }}
-          SIM_OPTS:  ${{ github.event.client_payload.sim_opts  || '15,0.5' }}
+          SIM_OPTS:  ${{ github.event.client_payload.sim_opts  || '15,0.5||| |||part.stl' }}
         run: |
           IFS=',' read -r gx gy gz dia <<< "$GATE_POS"
-          IFS=',' read -r nf res       <<< "$SIM_OPTS"
+          IFS='|' read -r nf res stl_b64 stl_filename <<< "$SIM_OPTS"
           echo "GATE_X=${gx:-0.0}"       >> $GITHUB_ENV
           echo "GATE_Y=${gy:-0.0}"       >> $GITHUB_ENV
           echo "GATE_Z=${gz:-0.0}"       >> $GITHUB_ENV
           echo "GATE_DIA=${dia:-2.0}"    >> $GITHUB_ENV
           echo "NUM_FRAMES=${nf:-15}"    >> $GITHUB_ENV
           echo "MESH_RES_MM=${res:-0.5}" >> $GITHUB_ENV
+          echo "STL_B64=${stl_b64}"      >> $GITHUB_ENV
+          echo "STL_FILENAME=${stl_filename:-part.stl}" >> $GITHUB_ENV
 
       - name: Run MIM Voxel Flow Solver
         env:
