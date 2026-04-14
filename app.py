@@ -1,12 +1,12 @@
 """
-MIM-Ops Pro v2.8 (Hotfix)
-=========================
-Updates (v2.8):
-  [1] Voxel Resolution 2x Refined: min_dim / 10.0 → min_dim / 20.0 (Max 1.0mm, Min 0.10mm)
-  [2] Fill Time Margin: Changed from 1.2x to 1.5x of theoretical fill time (Max 180s)
-  [3] UI Internationalization: All Korean UI elements translated to English
-  [4] Previous functionalities (AI Gate Suggestion, material_property.txt DB) strictly preserved
-  [5] Hotfix: Fixed StreamlitAPIException related to duplicate widget keys and slider step mismatches
+MIM-Ops Pro v2.7
+=================
+변경사항 (v2.7):
+  [1] Voxel 해상도 2배 세밀화: min_dim / 5.0 → min_dim / 10.0 (상한 1.0mm, 하한 0.15mm)
+  [2] 충진 시뮬레이션 시간: 고정 30초 폐기 → 이론 충진 시간 자동 계산 후 20% 여유, 최대 3분(180초) 상한
+  [3] 게이트 위치 AI 제안: '🤖 AI Gate Suggest' 버튼 → DFT 기반 최적 위치 추천 + 수정 가능
+  [4] 재료 DB를 material_property.txt 파일 기반으로 전환: 앱 재시작 없이 파일 수정으로 업데이트 가능
+      AI 추천 버튼은 txt에서 가장 유사한 재료를 찾아 반환, 없으면 Claude API 호출 fallback
 """
 
 import streamlit as st
@@ -29,7 +29,7 @@ st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
 
 ZAPIER_URL = st.secrets.get("ZAPIER_URL", "")
 
-# ── Path for material_property.txt ──
+# ── material_property.txt 경로 (앱과 같은 폴더 or 지정 경로) ──
 MATERIAL_FILE = os.path.join(os.path.dirname(__file__), "material_property.txt")
 
 # ───────────────────── Session State ─────────────────────
@@ -54,7 +54,7 @@ _init("animation_playing", False); _init("current_frame", 0)
 _init("vtk_files", [])
 _init("last_synced_signal_id", None)
 _init("executed_params", None)
-_init("num_frames", 10) # Default set to 10
+_init("num_frames", 15)
 _init("voxel_cache", None)
 _init("gate_ai_suggested", False)
 
@@ -105,7 +105,8 @@ def read_alpha_fill_ratio(fpath):
 
 def calc_theoretical_fill_time(mesh_obj, gate_dia, vel_mms):
     """
-    Calculates the theoretical fill time based on volume, gate size, and velocity.
+    부피, 게이트 크기, 속도를 바탕으로 100% 충진 예상 시간 계산.
+    반환값에 20% 여유를 더해 End Time으로 사용하고 최대 180초로 제한.
     """
     try:
         vol_mm3 = abs(mesh_obj.volume)
@@ -160,19 +161,19 @@ def sync_simulation_results():
         st.error(f"Sync error: {e}"); return False
 
 # ═══════════════════════════════════════════════════════════
-#  ★★★ SOLID VOXEL ENGINE (Physics-based flow) ★★★
+#  ★★★ SOLID VOXEL ENGINE (물리 기반 흐름) ★★★
 # ═══════════════════════════════════════════════════════════
 
 def compute_voxel_res_mm(mold_trimesh):
     """
-    [v2.8 Update] Refined resolution to 1/20 of minimum thickness.
-    Max 1.0mm, Min 0.10mm to prevent memory overflow.
+    [v2.7 변경] 해상도를 기존 1/5 → 1/10 으로 2배 세밀화.
+    상한을 1.0mm, 하한을 0.15mm로 설정 (너무 작으면 메모리 폭발 방지).
     """
     bb   = mold_trimesh.bounds
     dims = np.array(bb[1]) - np.array(bb[0])
     valid = dims[dims > 0.1]
     min_dim = float(np.min(valid)) if len(valid) else 10.0
-    return float(np.clip(min_dim / 20.0, 0.10, 1.0))
+    return float(np.clip(min_dim / 10.0, 0.15, 1.0))   # ← 핵심 변경 (1/5 → 1/10)
 
 def build_voxel_grid(mold_trimesh, res_mm):
     vox = mold_trimesh.voxelized(pitch=res_mm)
@@ -243,7 +244,7 @@ def get_or_build_voxel_cache(mold_trimesh, gate_mm, res_mm):
             and cache["gate"] == gate_key):
         return cache
 
-    add_log(f"Building voxel grid (res={res_mm:.2f} mm)...")
+    add_log(f"Building voxel grid (res={res_mm:.2f} mm)…")
     occupied, origin = build_voxel_grid(mold_trimesh, res_mm)
     shape     = occupied.shape
     start_vox = gate_to_voxel(gate_mm, origin, res_mm, shape)
@@ -335,7 +336,7 @@ def build_summary_text():
         f"Melt Temp: {ep.get('melt_temp',0):.1f} °C",
         f"Injection Temp: {ep.get('temp',0):.1f} °C",
         f"Pressure: {ep.get('press',0):.1f} MPa",
-        f"End Time: {ep.get('etime',0):.2f} s",
+        f"End Time (Max 180s): {ep.get('etime',0):.2f} s",
         f"Gate Dia: {ep.get('gate_dia',0):.1f} mm",
         f"Signal ID: {ep.get('signal_id','N/A')}",
     ]
@@ -348,13 +349,19 @@ def build_summary_text():
     return "\n".join(lines)
 
 # ═══════════════════════════════════════════════════════════
-#  ★★★ MATERIAL DB – txt file based ★★★
+#  ★★★ MATERIAL DB – txt 파일 기반 (v2.7) ★★★
 # ═══════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=10)   # 10초 캐시 → 파일 수정 후 10초 내 반영
 def load_material_db(filepath: str) -> dict:
+    """
+    material_property.txt를 읽어 딕셔너리로 반환.
+    파일이 없으면 내장 기본값 반환.
+    형식: MATERIAL_NAME | nu | rho | Tmelt | Tmold | press_mpa | vel_mms
+    """
     db = {}
     if not os.path.exists(filepath):
+        # 파일 없을 때 내장 기본값 (최초 실행 fallback)
         return {
             "PA66+30GF": {"nu":4e-4,  "rho":1300.0, "Tmelt":285.0, "Tmold":85.0,  "press_mpa":110.0, "vel_mms":80.0},
             "MIM":       {"nu":5e-3,  "rho":5000.0, "Tmelt":185.0, "Tmold":40.0,  "press_mpa":100.0, "vel_mms":30.0},
@@ -381,23 +388,31 @@ def load_material_db(filepath: str) -> dict:
                         "vel_mms":   float(parts[6]),
                     }
                 except ValueError:
-                    continue
+                    continue  # 숫자 파싱 실패한 줄 무시
     except Exception as e:
-        st.warning(f"material_property.txt load error: {e}")
+        st.warning(f"material_property.txt 로드 오류: {e}")
     return db
 
 def get_props(material: str) -> dict:
+    """
+    1순위: material_property.txt 에서 exact match (대소문자 무시)
+    2순위: 부분 문자열 포함 검색
+    3순위: Default fallback
+    """
     name = material.upper().strip()
     db   = load_material_db(MATERIAL_FILE)
 
+    # exact match
     if name in db:
         return {**db[name], "material": name, "source": f"material_property.txt (exact)"}
 
+    # partial match – e.g. user types "316" → finds "316L"
     candidates = [k for k in db if name in k or k in name]
     if candidates:
         best = candidates[0]
         return {**db[best], "material": best, "source": f"material_property.txt (partial: '{best}')"}
 
+    # fallback
     return {
         "nu": 1e-3, "rho": 1000.0, "Tmelt": 220.0, "Tmold": 50.0,
         "press_mpa": 70.0, "vel_mms": 80.0,
@@ -413,6 +428,7 @@ def list_known_materials() -> list[str]:
     return sorted(db.keys())
 
 def save_material_to_txt(name: str, props: dict) -> bool:
+    """사용자가 새 재료를 추가하거나 기존 재료를 갱신할 때 txt 파일에 저장."""
     try:
         db = load_material_db(MATERIAL_FILE)
         key = name.upper().strip()
@@ -438,27 +454,36 @@ def save_material_to_txt(name: str, props: dict) -> bool:
             f.writelines(lines_to_keep)
             f.write(new_line)
 
-        load_material_db.clear()
+        load_material_db.clear()   # 캐시 무효화
         return True
     except Exception as e:
-        st.error(f"Material save error: {e}")
+        st.error(f"재료 저장 오류: {e}")
         return False
 
 # ═══════════════════════════════════════════════════════════
-#  ★★★ GATE POSITION AI SUGGESTION ★★★
+#  ★★★ GATE POSITION AI SUGGESTION (v2.7) ★★★
 # ═══════════════════════════════════════════════════════════
 
 def suggest_gate_positions_ai(mesh_obj: trimesh.Trimesh) -> list[dict]:
+    """
+    STL 형상에서 게이트 후보 위치를 물리 기반으로 제안.
+    알고리즘:
+      - 형상의 부피 중심(centroid)에서 가장 먼 표면 포인트 3곳을 후보로
+      - 각 후보를 표면에 스냅 후 법선 벡터 방향 기록
+      - 라벨: 'Bottom-Center', 'Max Extent', 'Balanced'
+    """
     suggestions = []
     try:
         bb    = mesh_obj.bounds
         dims  = bb[1] - bb[0]
         center = mesh_obj.centroid
 
+        # 1) 부피 중심 바로 아래 (바닥 중심)
         pt1 = np.array([center[0], center[1], bb[0][2]])
         snap1, _, _ = trimesh.proximity.closest_point(mesh_obj, [pt1])
         suggestions.append({"label": "Bottom-Center", "pos": snap1[0].tolist()})
 
+        # 2) 가장 큰 단면 방향의 끝점 (최대 치수 방향)
         axis = int(np.argmax(dims))
         pt2  = center.copy()
         pt2[axis] = bb[0][axis]
@@ -466,6 +491,7 @@ def suggest_gate_positions_ai(mesh_obj: trimesh.Trimesh) -> list[dict]:
         axis_label = ["X-Min Side", "Y-Min Side", "Z-Min Side"][axis]
         suggestions.append({"label": axis_label, "pos": snap2[0].tolist()})
 
+        # 3) 균형 위치 (무게중심에서 상위 표면 스냅)
         pt3 = np.array([center[0], center[1], bb[1][2]])
         snap3, _, _ = trimesh.proximity.closest_point(mesh_obj, [pt3])
         suggestions.append({"label": "Top-Center (Balanced)", "pos": snap3[0].tolist()})
@@ -493,17 +519,20 @@ with st.sidebar:
 
     st.divider()
 
+    # ═══════ 2. GATE CONFIGURATION ═══════
     st.header("📍 2. Gate Configuration")
-    st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
+    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
 
     mesh_obj = st.session_state.get("mesh")
 
+    # ── AI Gate Suggest 버튼 ──
     if mesh_obj:
         if st.button("🤖 AI Gate Suggest", use_container_width=True, type="secondary"):
             with st.spinner("Analyzing geometry for optimal gate position..."):
                 suggestions = suggest_gate_positions_ai(mesh_obj)
             if suggestions:
                 st.session_state["gate_suggestions"] = suggestions
+                # 1번 후보를 기본으로 설정
                 best = suggestions[0]["pos"]
                 st.session_state["gx"] = float(best[0])
                 st.session_state["gy"] = float(best[1])
@@ -511,12 +540,13 @@ with st.sidebar:
                 st.session_state["gate_ai_suggested"] = True
                 st.session_state["voxel_cache"] = None
                 add_log(f"AI Gate: {suggestions[0]['label']} → ({best[0]:.2f}, {best[1]:.2f}, {best[2]:.2f})")
-                st.toast(f"✅ AI Suggestion: {suggestions[0]['label']}", icon="📍")
+                st.toast(f"✅ AI 추천: {suggestions[0]['label']}", icon="📍")
                 st.rerun()
 
+        # 여러 후보 표시 및 선택
         suggestions = st.session_state.get("gate_suggestions", [])
         if suggestions:
-            with st.expander("📌 Select AI Suggested Gate", expanded=st.session_state.get("gate_ai_suggested", False)):
+            with st.expander("📌 AI 후보 위치 선택", expanded=st.session_state.get("gate_ai_suggested", False)):
                 for i, s in enumerate(suggestions):
                     p = s["pos"]
                     btn_label = f"{s['label']}  ({p[0]:.1f}, {p[1]:.1f}, {p[2]:.1f})"
@@ -529,53 +559,55 @@ with st.sidebar:
                         add_log(f"Gate selected: {s['label']}")
                         st.rerun()
 
-    # Do not set `value=` when using `key=` to prevent StreamlitAPIException
-    st.number_input("Gate X", step=0.1, key="gx")
-    st.number_input("Gate Y", step=0.1, key="gy")
-    st.number_input("Gate Z", step=0.1, key="gz")
+    # ── 수동 입력 (AI 추천 후에도 수정 가능) ──
+    vx = st.number_input("Gate X", value=float(st.session_state["gx"]), step=0.1, key="gx")
+    vy = st.number_input("Gate Y", value=float(st.session_state["gy"]), step=0.1, key="gy")
+    vz = st.number_input("Gate Z", value=float(st.session_state["gz"]), step=0.1, key="gz")
 
     if mesh_obj:
-        snap, _, _ = trimesh.proximity.closest_point(mesh_obj, [[st.session_state["gx"], st.session_state["gy"], st.session_state["gz"]]])
+        snap, _, _ = trimesh.proximity.closest_point(mesh_obj, [[vx, vy, vz]])
         gx, gy, gz = float(snap[0][0]), float(snap[0][1]), float(snap[0][2])
     else:
-        gx, gy, gz = st.session_state["gx"], st.session_state["gy"], st.session_state["gz"]
-    
+        gx, gy, gz = vx, vy, vz
     st.session_state["gx_final"] = gx
     st.session_state["gy_final"] = gy
     st.session_state["gz_final"] = gz
 
     st.divider()
 
+    # ═══════ 3. MATERIAL ═══════
     st.header("🧪 3. Material")
 
+    # 알려진 재료 목록 표시
     known = list_known_materials()
     mat_name_input = st.text_input(
         "Material Name",
         value=st.session_state["mat_name"],
         key="mat_name_input",
-        help=f"Registered materials in DB: {', '.join(known[:8])}{'...' if len(known) > 8 else ''}"
+        help=f"DB에 등록된 재료: {', '.join(known[:8])}{'…' if len(known) > 8 else ''}"
     )
     st.session_state["mat_name"] = mat_name_input
 
     col_ai, col_db = st.columns(2)
     with col_ai:
-        if st.button("🤖 Material Search", use_container_width=True, type="primary"):
+        if st.button("🤖 AI 재료 조회", use_container_width=True, type="primary"):
             found = get_props(mat_name_input)
             st.session_state["props"] = found
             st.session_state["props_confirmed"] = False
             src = found.get("source", "")
             if "not found" in src:
-                st.warning(f"⚠️ '{mat_name_input}' not found in DB. Applying default values.")
+                st.warning(f"⚠️ '{mat_name_input}'을 DB에서 찾지 못했습니다. 기본값 적용.")
                 add_log(f"Material not found: {mat_name_input}")
             else:
-                st.toast(f"✅ Material loaded: {src}", icon="🧪")
+                st.toast(f"✅ 재료 로드: {src}", icon="🧪")
                 add_log(f"Material loaded: {found['material']} ({src})")
     with col_db:
-        if st.button("📋 DB List", use_container_width=True):
+        if st.button("📋 DB 목록", use_container_width=True):
             st.session_state["show_material_list"] = not st.session_state.get("show_material_list", False)
 
+    # 재료 DB 목록 팝업
     if st.session_state.get("show_material_list", False):
-        with st.expander("📦 Materials in DB", expanded=True):
+        with st.expander("📦 material_property.txt 등록 재료", expanded=True):
             db = load_material_db(MATERIAL_FILE)
             for k, v in db.items():
                 if st.button(f"  {k}", key=f"mat_pick_{k}", use_container_width=True):
@@ -588,9 +620,10 @@ with st.sidebar:
     if st.session_state["props"]:
         p = st.session_state["props"]
         with st.expander("📋 Edit Properties", expanded=True):
+            # source 표시
             src_info = p.get("source", "")
             if src_info:
-                st.caption(f"Source: {src_info}")
+                st.caption(f"출처: {src_info}")
             p["nu"]    = st.number_input("Viscosity (m²/s)", value=float(p["nu"]), format="%.2e")
             p["rho"]   = st.number_input("Density (kg/m³)",  value=float(p["rho"]))
             p["Tmelt"] = st.number_input("Melt Temp (°C)",   value=float(p["Tmelt"]))
@@ -602,7 +635,7 @@ with st.sidebar:
                     st.session_state["props_confirmed"] = True
                     st.toast("Properties confirmed!", icon="✅")
             with c_save:
-                if st.button("💾 Save to DB", use_container_width=True):
+                if st.button("💾 DB 저장", use_container_width=True):
                     mat_key = p.get("material", st.session_state["mat_name"]).upper().strip()
                     save_data = {
                         "nu": p["nu"], "rho": p["rho"], "Tmelt": p["Tmelt"],
@@ -611,23 +644,23 @@ with st.sidebar:
                         "vel_mms":   p.get("vel_mms", 50.0),
                     }
                     if save_material_to_txt(mat_key, save_data):
-                        st.toast(f"💾 '{mat_key}' → Saved to DB successfully!", icon="💾")
+                        st.toast(f"💾 '{mat_key}' → material_property.txt saved!", icon="💾")
                         add_log(f"Material saved to DB: {mat_key}")
 
     st.divider()
 
+    # ═══════ 4. PROCESS ═══════
     st.header("⚙️ 4. Process")
 
+    # --- 이론적 충진 시간 계산 ---
     theo_time = 1.0
-    g_size = st.session_state["gsize"]
-    
     if mesh_obj:
         vel_current = float(st.session_state["vel"])
         theo_time = calc_theoretical_fill_time(mesh_obj, float(g_size), vel_current)
-        safe_etime_preview = min(theo_time * 1.5, 180.0)
+        safe_etime_preview = min(theo_time * 1.2, 180.0)
         st.info(
-            f"💡 Est. 100% Fill Time: ~**{theo_time:.2f}s**\n\n"
-            f"→ Recommended End Time (×1.5 Margin): **{safe_etime_preview:.2f}s**"
+            f"💡 calculated filling time: 약 **{theo_time:.2f}sec**\n\n"
+            f"→ safe End Time (×1.5): **{safe_etime_preview:.2f}sec**"
         )
 
     if st.button("🤖 Optimize Process", use_container_width=True):
@@ -638,18 +671,19 @@ with st.sidebar:
         st.session_state["etime"] = safe_etime
         st.toast(f"Process optimized! (Auto End Time: {safe_etime:.1f}s)", icon="🤖")
 
-    st.number_input("Temp (°C)", 50.0, 450.0, step=1.0, key="temp")
-    st.number_input("Pressure (MPa)", 10.0, 250.0, step=1.0, key="press")
-    st.number_input("Velocity (mm/s)", 1.0, 600.0, step=1.0, key="vel")
+    temp_c    = st.number_input("Temp (°C)",       50.0,  450.0, value=float(st.session_state["temp"]),  step=1.0, key="temp")
+    press_mpa = st.number_input("Pressure (MPa)",  10.0,  250.0, value=float(st.session_state["press"]), step=1.0, key="press")
+    vel_mms   = st.number_input("Velocity (mm/s)",  1.0,  600.0, value=float(st.session_state["vel"]),   step=1.0, key="vel")
 
-    st.number_input(
+    # ── [v2.7] End Time: 완전 충진까지 자동 설정, 최대 3분(180초) ──
+    etime = st.number_input(
         "End Time (s)",
         min_value=0.1, max_value=180.0,
+        value=min(float(st.session_state["etime"]), 180.0),
         step=0.1, key="etime",
         help=(
-            "Automatically sets 1.5x of the theoretical fill time.\n"
-            "Manual input allowed. Max 3 mins (180s).\n"
-            "Increase this value if short shot occurs."
+            "calculated filling time  × 1.5 \n"
+            "max 3min.(180sec) limited.\n"            
         )
     )
 
@@ -658,8 +692,8 @@ with st.sidebar:
         st.toast("Process confirmed!", icon="✅")
 
     st.divider()
-    
-    st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], key="num_frames")
+    num_frames_sel = st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], value=st.session_state.get("num_frames", 15))
+    st.session_state["num_frames"] = num_frames_sel
 
     run_disabled = (
         st.session_state["sim_running"]
@@ -674,12 +708,6 @@ with st.sidebar:
             clear_old_results()
             sig_id  = str(uuid.uuid4())[:8]
             res_mm  = compute_voxel_res_mm(mesh_obj) if mesh_obj else 0.5
-            
-            temp_c = st.session_state["temp"]
-            press_mpa = st.session_state["press"]
-            vel_mms = st.session_state["vel"]
-            etime = st.session_state["etime"]
-            num_frames_sel = st.session_state["num_frames"]
 
             st.session_state["executed_params"] = {
                 "signal_id":   sig_id, "material": st.session_state["mat_name"],
@@ -734,6 +762,7 @@ with col_geo:
     if mesh_obj:
         v, f = mesh_obj.vertices, mesh_obj.faces
 
+        # AI 게이트 후보들도 시각화
         fig = go.Figure(data=[
             go.Mesh3d(x=v[:,0],y=v[:,1],z=v[:,2], i=f[:,0],j=f[:,1],k=f[:,2],
                       color="#AAAAAA", opacity=0.7),
@@ -747,6 +776,7 @@ with col_geo:
             )
         ])
 
+        # AI 후보 위치도 표시
         gate_suggestions = st.session_state.get("gate_suggestions", [])
         if gate_suggestions:
             sx = [s["pos"][0] for s in gate_suggestions]
@@ -769,7 +799,7 @@ with col_geo:
         )
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom":True})
     else:
-        st.info("Please upload an STL file.")
+        st.info("Upload STL file to see 3D model")
 
 with col_log:
     st.header("📟 Simulation Logs")
@@ -808,9 +838,9 @@ if os.path.exists(vtk_dir) and mesh_obj is not None:
                 fluid_opacity = st.slider("Fluid Opacity", 0.3, 1.0, 0.90, 0.05)
             with c2:
                 default_res = compute_voxel_res_mm(mesh_obj)
-                res_mm_ui = st.slider("Voxel Resolution (mm)", 0.10, 2.0,
-                                      float(round(default_res, 2)), 0.01,
-                                      help="v2.8: Default voxel resolution is 1/20 of min thickness.")
+                res_mm_ui = st.slider("Voxel Resolution (mm)", 0.15, 2.0,
+                                      float(round(default_res, 2)), 0.05,
+                                      help="v2.7: 기본값이 기존 1/5 → 1/10으로 세밀화됨")
                 cache = st.session_state.get("voxel_cache")
                 if cache and abs(cache["res_mm"] - res_mm_ui) > 0.05:
                     st.session_state["voxel_cache"] = None
@@ -847,6 +877,7 @@ if os.path.exists(vtk_dir) and mesh_obj is not None:
             total_vox  = cache["total"]
             origin     = cache["origin"]
 
+            # ─── 강제 100% 시각화 (프레임 기반) ───
             visual_ratio = (current_frame + 1) / total_steps
             n_show = max(1, int(visual_ratio * total_vox))
 
@@ -880,8 +911,8 @@ if os.path.exists(vtk_dir) and mesh_obj is not None:
                 fig.add_trace(make_solid_fluid_trace(pts, fi, fj, fk, intensity, fluid_opacity))
                 if vtk_ratio is not None and vtk_ratio < 0.95 and current_frame == total_steps - 1:
                     st.warning(
-                        f"⚠️ Actual VTK result stopped at {vtk_ratio*100:.1f}% (Short Shot). "
-                        f"Check End Time. The visualization is forced to 100%."
+                        f"⚠️ 실제 서버 결과(Actual VTK)는 {vtk_ratio*100:.1f}% 에서 멈춘 Short Shot 상태입니다. "
+                        f"(End Time을 확인하세요) 화면은 강제로 100%를 시각화했습니다."
                     )
                 else:
                     st.success(f"Frame {current_frame+1}/{total_steps} | Voxels: {n_show:,}/{total_vox:,} | {ratio_msg}")
@@ -901,10 +932,10 @@ elif os.path.exists(vtk_dir) and mesh_obj is None:
     st.warning("⚠️ Upload STL file to enable 3D solid voxel animation.")
 
 # ═══════════════════════════════════════════════════════════════
-#  Material DB Management Page
+#  재료 DB 관리 페이지 (사이드바 하단 숨김 → 메인 영역 확장 섹션)
 # ═══════════════════════════════════════════════════════════════
-with st.expander("🗂️ Material DB Management (material_property.txt)", expanded=False):
-    st.caption(f"File path: `{MATERIAL_FILE}`")
+with st.expander("🗂️ Material DB 관리 (material_property.txt)", expanded=False):
+    st.caption(f"파일 경로: `{MATERIAL_FILE}`")
     db_now = load_material_db(MATERIAL_FILE)
     if db_now:
         import pandas as pd
@@ -916,12 +947,12 @@ with st.expander("🗂️ Material DB Management (material_property.txt)", expan
         ])
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.warning("DB is empty. Please check the material_property.txt file.")
+        st.warning("DB가 비어 있습니다. material_property.txt 파일을 확인하세요.")
 
-    st.markdown("**Add New / Update Existing Material**")
+    st.markdown("**select / materials**")
     nc1, nc2, nc3 = st.columns(3)
     with nc1:
-        new_mat   = st.text_input("Material Name", key="new_mat_name")
+        new_mat   = st.text_input("materials", key="new_mat_name")
         new_nu    = st.number_input("Viscosity (m²/s)", value=4e-3, format="%.2e", key="new_nu")
     with nc2:
         new_rho   = st.number_input("Density (kg/m³)",  value=7800.0, key="new_rho")
@@ -931,14 +962,14 @@ with st.expander("🗂️ Material DB Management (material_property.txt)", expan
         new_press = st.number_input("Press (MPa)",        value=110.0,  key="new_press")
         new_vel   = st.number_input("Vel (mm/s)",         value=25.0,   key="new_vel")
 
-    if st.button("💾 Add/Update DB", type="primary", use_container_width=True):
+    if st.button("💾 DB에 추가/갱신", type="primary", use_container_width=True):
         if new_mat.strip():
             ok = save_material_to_txt(new_mat.strip(), {
                 "nu": new_nu, "rho": new_rho, "Tmelt": new_tmelt,
                 "Tmold": new_tmold, "press_mpa": new_press, "vel_mms": new_vel
             })
             if ok:
-                st.success(f"✅ '{new_mat.upper()}' → Saved to material_property.txt")
+                st.success(f"✅ '{new_mat.upper()}' → material_property.txt saved")
                 st.rerun()
         else:
-            st.warning("Please enter a material name.")
+            st.warning("input materials.")
