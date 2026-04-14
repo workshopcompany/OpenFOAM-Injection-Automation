@@ -427,11 +427,16 @@ def sync_simulation_results():
                     st.session_state["vtk_files"] = sample_vtk_files(vtk_dir, nf)
 
                 # Load PNG frame sequence if present (from solver.py)
+                # Store as bytes in memory so Streamlit always renders correctly
                 frames_dir = "frames"
                 if os.path.exists(frames_dir):
                     pngs = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
-                    st.session_state["result_frames"] = pngs
-                    add_log(f"Loaded {len(pngs)} animation frames from GitHub.")
+                    frame_bytes_list = []
+                    for fp in pngs:
+                        with open(fp, "rb") as fh:
+                            frame_bytes_list.append(fh.read())
+                    st.session_state["result_frames"] = frame_bytes_list
+                    add_log(f"Loaded {len(frame_bytes_list)} animation frames from GitHub.")
 
                 # Parse results.txt for signal id
                 if os.path.exists("results.txt"):
@@ -675,16 +680,19 @@ with st.sidebar:
         })
         add_log(f"🚀 Dispatching to GitHub | Signal: {sig_id} | End Time: {etime:.1f}s")
 
-        # Also notify Zapier if configured
+        # Also notify Zapier if configured (send minimal summary only to avoid JSON length error)
         if ZAPIER_URL:
             try:
                 payload_zapier = {
-                    "signal_id": sig_id,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    **ep,
-                    "vel": round(vel_mms / 1000, 6),
-                    "gate_pos": {"x": round(gx,3), "y": round(gy,3), "z": round(gz,3)},
-                    "gate_size": float(g_size),
+                    "signal_id":  sig_id,
+                    "timestamp":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "material":   ep.get("material"),
+                    "vel_mms":    ep.get("vel_mms"),
+                    "etime":      ep.get("etime"),
+                    "temp":       ep.get("temp"),
+                    "press":      ep.get("press"),
+                    "gate_pos":   ep.get("gate_pos"),
+                    "status":     "dispatched",
                 }
                 requests.post(ZAPIER_URL, json=payload_zapier, timeout=10)
             except Exception:
@@ -782,8 +790,8 @@ with cr1:
     st.markdown("### Download & Sync from GitHub Actions")
 with cr2:
     if st.button("🔄 Sync Results", use_container_width=True, type="primary"):
-        if sync_simulation_results():
-            st.rerun()
+        sync_simulation_results()
+        st.rerun()
 
 summary_text = build_summary_text()
 if summary_text:
