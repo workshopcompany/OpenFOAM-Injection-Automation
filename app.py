@@ -26,7 +26,7 @@ def _init(k, v):
 
 _init("gx", 0.0); _init("gy", 0.0); _init("gz", 0.0)
 _init("gsize", 2.0)
-_init("temp", 230); _init("press", 70.0); _init("vel", 80.0)
+_init("temp", 230.0); _init("press", 70.0); _init("vel", 80.0)
 _init("etime", 0.5)
 _init("sim_running", False)
 _init("last_signal_id", None)
@@ -43,18 +43,18 @@ _init("gz_final", 0.0)
 _init("animation_playing", False)
 _init("current_frame", 0)
 
-# Material Database (same as original)
+# Material Database
 LOCAL_DB = {
-    "PP": {"nu": 1e-3, "rho": 900, "Tmelt": 230, "Tmold": 40, "press_mpa": 70, "vel_mms": 80, "desc": "General-purpose polypropylene"},
-    "ABS": {"nu": 2e-3, "rho": 1050, "Tmelt": 240, "Tmold": 60, "press_mpa": 80, "vel_mms": 70, "desc": "ABS resin"},
-    "PA66": {"nu": 5e-4, "rho": 1140, "Tmelt": 280, "Tmold": 80, "press_mpa": 90, "vel_mms": 100, "desc": "Nylon 66"},
-    "PA66+30GF": {"nu": 4e-4, "rho": 1300, "Tmelt": 285, "Tmold": 85, "press_mpa": 110, "vel_mms": 80, "desc": "30% glass-fiber reinforced nylon"},
-    "PC": {"nu": 3e-3, "rho": 1200, "Tmelt": 300, "Tmold": 85, "press_mpa": 120, "vel_mms": 60, "desc": "Polycarbonate"},
-    "POM": {"nu": 8e-4, "rho": 1410, "Tmelt": 200, "Tmold": 90, "press_mpa": 85, "vel_mms": 90, "desc": "Polyacetal"},
-    "HDPE": {"nu": 9e-4, "rho": 960, "Tmelt": 220, "Tmold": 35, "press_mpa": 60, "vel_mms": 90, "desc": "HDPE"},
-    "PET": {"nu": 6e-4, "rho": 1370, "Tmelt": 265, "Tmold": 70, "press_mpa": 80, "vel_mms": 85, "desc": "PET"},
-    "CATAMOLD": {"nu": 5e-3, "rho": 4900, "Tmelt": 185, "Tmold": 40, "press_mpa": 100, "vel_mms": 30, "desc": "BASF Catamold MIM"},
-    "MIM": {"nu": 5e-3, "rho": 5000, "Tmelt": 185, "Tmold": 40, "press_mpa": 100, "vel_mms": 30, "desc": "Metal injection molding"},
+    "PP": {"nu": 1e-3, "rho": 900.0, "Tmelt": 230.0, "Tmold": 40.0, "press_mpa": 70.0, "vel_mms": 80.0, "desc": "General-purpose polypropylene"},
+    "ABS": {"nu": 2e-3, "rho": 1050.0, "Tmelt": 240.0, "Tmold": 60.0, "press_mpa": 80.0, "vel_mms": 70.0, "desc": "ABS resin"},
+    "PA66": {"nu": 5e-4, "rho": 1140.0, "Tmelt": 280.0, "Tmold": 80.0, "press_mpa": 90.0, "vel_mms": 100.0, "desc": "Nylon 66"},
+    "PA66+30GF": {"nu": 4e-4, "rho": 1300.0, "Tmelt": 285.0, "Tmold": 85.0, "press_mpa": 110.0, "vel_mms": 80.0, "desc": "30% glass-fiber reinforced nylon"},
+    "PC": {"nu": 3e-3, "rho": 1200.0, "Tmelt": 300.0, "Tmold": 85.0, "press_mpa": 120.0, "vel_mms": 60.0, "desc": "Polycarbonate"},
+    "POM": {"nu": 8e-4, "rho": 1410.0, "Tmelt": 200.0, "Tmold": 90.0, "press_mpa": 85.0, "vel_mms": 90.0, "desc": "Polyacetal"},
+    "HDPE": {"nu": 9e-4, "rho": 960.0, "Tmelt": 220.0, "Tmold": 35.0, "press_mpa": 60.0, "vel_mms": 90.0, "desc": "HDPE"},
+    "PET": {"nu": 6e-4, "rho": 1370.0, "Tmelt": 265.0, "Tmold": 70.0, "press_mpa": 80.0, "vel_mms": 85.0, "desc": "PET"},
+    "CATAMOLD": {"nu": 5e-3, "rho": 4900.0, "Tmelt": 185.0, "Tmold": 40.0, "press_mpa": 100.0, "vel_mms": 30.0, "desc": "BASF Catamold MIM"},
+    "MIM": {"nu": 5e-3, "rho": 5000.0, "Tmelt": 185.0, "Tmold": 40.0, "press_mpa": 100.0, "vel_mms": 30.0, "desc": "Metal injection molding"},
 }
 
 def get_props(material: str) -> dict:
@@ -62,11 +62,11 @@ def get_props(material: str) -> dict:
     for key in LOCAL_DB:
         if key.upper() == name:
             return {**LOCAL_DB[key], "material": key, "source": "Gemini recommendation"}
-    return {"nu": 1e-3, "rho": 1000, "Tmelt": 220, "Tmold": 50, "press_mpa": 70, "vel_mms": 80, "material": material, "source": "Gemini recommendation", "desc": f"{material} — default"}
+    return {"nu": 1e-3, "rho": 1000.0, "Tmelt": 220.0, "Tmold": 50.0, "press_mpa": 70.0, "vel_mms": 80.0, "material": material, "source": "Gemini recommendation", "desc": f"{material} — default"}
 
 def get_process(material: str) -> dict:
     props = get_props(material)
-    return {"temp": props.get("Tmelt", 230), "press": float(props.get("press_mpa", 70)), "vel": float(props.get("vel_mms", 80))}
+    return {"temp": float(props.get("Tmelt", 230.0)), "press": float(props.get("press_mpa", 70.0)), "vel": float(props.get("vel_mms", 80.0))}
 
 # GitHub sync
 def sync_simulation_results():
@@ -92,9 +92,8 @@ def sync_simulation_results():
         return True
     return False
 
-# ========== 3D 유체 로드 함수 (개선됨) ==========
+# ========== 3D 유체 로드 함수 ==========
 def load_fluid_3d_clipped(fpath, mold_mesh=None, scale=1.0, thres=0.5):
-    """VTK에서 3D 유체 표면 생성 및 클리핑"""
     try:
         mesh = pv.read(fpath)
         if isinstance(mesh, pv.MultiBlock):
@@ -104,15 +103,12 @@ def load_fluid_3d_clipped(fpath, mold_mesh=None, scale=1.0, thres=0.5):
         if f_name not in mesh.array_names:
             return None, None, 0
         
-        # 등치면 생성
         fluid_3d = mesh.contour([thres], scalars=f_name)
         if fluid_3d.n_points == 0:
             return None, None, 0
         
-        # 스케일 조정 (기본값 1, 사용자가 조절 가능)
         fluid_3d.points *= scale
         
-        # 금형 클리핑
         if mold_mesh is not None:
             try:
                 fluid_3d = fluid_3d.clip_surface(mold_mesh, invert=True)
@@ -148,11 +144,7 @@ class _NpEncoder(json.JSONEncoder):
         if isinstance(obj, (np.floating,)): return float(obj)
         return super().default(obj)
 
-def _safe_json_fixed(obj) -> str:
-    return json.dumps(obj, cls=_NpEncoder).replace('</', '<\\/')
-
 def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.8):
-    """유체 트레이스 생성 - 색상으로 농도 표현"""
     intensity = np.array(alpha_vals) if alpha_vals is not None else np.ones(len(pts))
     return go.Mesh3d(
         x=pts[:,0], y=pts[:,1], z=pts[:,2],
@@ -166,7 +158,6 @@ def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.8):
     )
 
 def make_mold_trace(mold_trimesh, opacity=0.15, color="lightgray"):
-    """금형 트레이스 - 반투명"""
     if mold_trimesh is None: return None
     mv, mf = mold_trimesh.vertices, mold_trimesh.faces
     return go.Mesh3d(
@@ -201,15 +192,15 @@ with st.sidebar:
             st.session_state["gz"] = float(pos[2])
             st.toast("Gate position suggested!", icon="🪄")
     
-    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, 2.0, key="gsize")
-    vx = st.number_input("Gate X", value=st.session_state["gx"], key="gx")
-    vy = st.number_input("Gate Y", value=st.session_state["gy"], key="gy")
-    vz = st.number_input("Gate Z", value=st.session_state["gz"], key="gz")
+    g_size = st.number_input("Gate Diameter (mm)", min_value=0.5, max_value=10.0, value=2.0, step=0.1, key="gsize")
+    vx = st.number_input("Gate X", value=float(st.session_state["gx"]), step=0.1, key="gx")
+    vy = st.number_input("Gate Y", value=float(st.session_state["gy"]), step=0.1, key="gy")
+    vz = st.number_input("Gate Z", value=float(st.session_state["gz"]), step=0.1, key="gz")
     
     mesh = st.session_state.get("mesh")
     if mesh:
         snap, _, _ = trimesh.proximity.closest_point(mesh, [[vx, vy, vz]])
-        gx, gy, gz = snap[0]
+        gx, gy, gz = float(snap[0][0]), float(snap[0][1]), float(snap[0][2])
     else:
         gx, gy, gz = vx, vy, vz
     st.session_state["gx_final"] = gx
@@ -227,9 +218,9 @@ with st.sidebar:
     if st.session_state["props"]:
         p = st.session_state["props"]
         with st.expander("📋 Edit Properties", expanded=True):
-            p["nu"] = st.number_input("Viscosity (m²/s)", value=float(p["nu"]), format="%.2e")
-            p["rho"] = st.number_input("Density (kg/m³)", value=float(p["rho"]))
-            p["Tmelt"] = st.number_input("Melt Temp (°C)", value=int(p["Tmelt"]))
+            p["nu"] = st.number_input("Viscosity (m²/s)", value=float(p["nu"]), format="%.2e", step=1e-5)
+            p["rho"] = st.number_input("Density (kg/m³)", value=float(p["rho"]), step=10.0)
+            p["Tmelt"] = st.number_input("Melt Temp (°C)", value=float(p["Tmelt"]), step=1.0)
             if st.button("✅ Confirm Properties"):
                 st.session_state["props_confirmed"] = True
                 st.toast("Properties confirmed!")
@@ -238,13 +229,13 @@ with st.sidebar:
     st.header("⚙️ 4. Process")
     if st.button("🤖 Optimize Process"):
         opt = get_process(mat_name)
-        st.session_state["temp"] = opt["temp"]
-        st.session_state["press"] = opt["press"]
-        st.session_state["vel"] = opt["vel"]
+        st.session_state["temp"] = float(opt["temp"])
+        st.session_state["press"] = float(opt["press"])
+        st.session_state["vel"] = float(opt["vel"])
     
-    temp_c = st.number_input("Temp (°C)", 50, 450, st.session_state["temp"], key="temp")
-    press_mpa = st.number_input("Pressure (MPa)", 10, 250, st.session_state["press"], key="press")
-    vel_mms = st.number_input("Velocity (mm/s)", 1, 600, st.session_state["vel"], key="vel")
+    temp_c = st.number_input("Temp (°C)", min_value=50.0, max_value=450.0, value=float(st.session_state["temp"]), step=1.0, key="temp")
+    press_mpa = st.number_input("Pressure (MPa)", min_value=10.0, max_value=250.0, value=float(st.session_state["press"]), step=1.0, key="press")
+    vel_mms = st.number_input("Velocity (mm/s)", min_value=1.0, max_value=600.0, value=float(st.session_state["vel"]), step=1.0, key="vel")
     
     if st.button("✅ Confirm Process"):
         st.session_state["process_confirmed"] = True
@@ -252,15 +243,14 @@ with st.sidebar:
     
     st.divider()
     
-    # 프레임 수 선택
     num_frames = st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], value=15)
     
-    if st.button("🚀 Run Simulation", disabled=not (st.session_state["props_confirmed"] and st.session_state.get("process_confirmed"))):
+    run_disabled = not (st.session_state["props_confirmed"] and st.session_state.get("process_confirmed", False))
+    if st.button("🚀 Run Simulation", disabled=run_disabled):
         if ZAPIER_URL:
             sig_id = str(uuid.uuid4())[:8]
             st.session_state["last_signal_id"] = sig_id
             st.session_state["sim_running"] = True
-            # Send payload...
             st.toast(f"Simulation started! ID: {sig_id}")
         else:
             st.error("ZAPIER_URL not configured")
@@ -310,7 +300,6 @@ vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation")
     
-    # VTK 파일 찾기
     all_files = sorted(glob.glob(f"{vtk_dir}/**/case_*.vt*", recursive=True) + glob.glob(f"{vtk_dir}/case_*.vt*", recursive=True))
     all_files = sorted(set(all_files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
     
@@ -319,23 +308,20 @@ if os.path.exists(vtk_dir):
     else:
         mold_mesh = st.session_state.get("mesh")
         
-        # 시각화 설정
         with st.expander("🔧 Visualization Settings", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                scale_factor = st.slider("Model Scale", 0.1, 10.0, 1.0, help="Adjust if fluid is too small")
-                contour_thresh = st.slider("Fill Threshold", 0.01, 0.99, 0.3, help="Lower = more fluid visible")
+                scale_factor = st.slider("Model Scale", 0.1, 10.0, 1.0, 0.1)
+                contour_thresh = st.slider("Fill Threshold", 0.01, 0.99, 0.3, 0.01)
             with col2:
-                mold_opacity = st.slider("Mold Opacity", 0.0, 0.5, 0.1)
-                fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.8)
+                mold_opacity = st.slider("Mold Opacity", 0.0, 0.5, 0.1, 0.01)
+                fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.8, 0.05)
             with col3:
                 view_scale = st.radio("View Scale", ["Auto", "Uniform"], index=0)
         
-        # 샘플링된 파일
         sampled_files = get_sampled_files(all_files, num_frames)
         total_steps = len(sampled_files)
         
-        # ===== 프레임 컨트롤 UI =====
         st.markdown("### 🎮 Animation Controls")
         col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([1, 1, 3, 1])
         
@@ -358,41 +344,32 @@ if os.path.exists(vtk_dir):
                 st.session_state["animation_playing"] = False
                 st.rerun()
         
-        # 프레임 슬라이더
         current_frame = st.slider(
             "Frame", 0, total_steps - 1, 
             value=st.session_state.get("current_frame", 0),
-            key="frame_slider",
-            on_change=lambda: st.session_state.update({"animation_playing": False, "current_frame": st.session_state.frame_slider})
+            key="frame_slider"
         )
+        st.session_state["current_frame"] = current_frame
         
-        # 현재 프레임 로드 및 표시
         with st.spinner("Loading frame..."):
             fpath = sampled_files[current_frame]
             res, alpha_vals, n_cells = load_fluid_3d_clipped(fpath, mold_mesh, scale=scale_factor, thres=contour_thresh)
             
-            # 3D 플롯 생성
             fig = go.Figure()
             
-            # 금형 추가
             if mold_mesh:
                 fig.add_trace(make_mold_trace(mold_mesh, opacity=mold_opacity))
             
-            # 유체 추가 (있을 경우)
             if res:
                 pts, fi, fj, fk = res
                 fig.add_trace(make_fluid_trace(pts, fi, fj, fk, alpha_vals, opacity=fluid_opacity))
                 st.success(f"Frame {current_frame+1}/{total_steps} - Fluid cells: {n_cells:,}")
             else:
-                st.warning(f"Frame {current_frame+1}: No fluid detected (threshold may be too high)")
+                st.warning(f"Frame {current_frame+1}: No fluid detected")
             
-            # 레이아웃 설정 - 확대/축소/회전 가능하도록!
             scene_config = dict(
                 aspectmode="data" if view_scale == "Auto" else "cube",
-                camera=dict(
-                    eye=dict(x=1.5, y=1.5, z=1.5),
-                    up=dict(x=0, y=0, z=1)
-                ),
+                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5), up=dict(x=0, y=0, z=1)),
                 xaxis_title="X (mm)",
                 yaxis_title="Y (mm)", 
                 zaxis_title="Z (mm)"
@@ -411,21 +388,20 @@ if os.path.exists(vtk_dir):
                 'modeBarButtonsToRemove': ['lasso2d', 'select2d']
             })
         
-        # ===== 자동 재생 로직 =====
         if st.session_state.get("animation_playing", False):
             next_frame = (current_frame + 1) % total_steps
             st.session_state["current_frame"] = next_frame
+            time.sleep(0.2)
             st.rerun()
         
-        # ===== Bounding Box 정보 =====
         if mold_mesh:
             bounds = mold_mesh.bounds
             st.caption(f"📐 Model bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
             
-            # 스케일 추천
             max_dim = max(bounds[1][0]-bounds[0][0], bounds[1][1]-bounds[0][1], bounds[1][2]-bounds[0][2])
-            recommended_scale = 1000.0 / max_dim if max_dim > 0 else 1.0
-            st.info(f"💡 Tip: If fluid is too small, try Scale ≈ {recommended_scale:.1f}")
+            if max_dim > 0:
+                recommended_scale = 1000.0 / max_dim
+                st.info(f"💡 Tip: If fluid is too small, try Scale ≈ {recommended_scale:.1f}")
 
 else:
     st.error("VTK directory not found. Run simulation and sync results first.")
