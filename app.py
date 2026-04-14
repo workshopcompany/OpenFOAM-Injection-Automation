@@ -553,37 +553,24 @@ if os.path.exists("logs.zip"):
 # ─────────────────────────────────────────────────────────────
 FIELD = "alpha.water"
 
-# ── numpy/plotly 직렬화 헬퍼 ────────────────────────────────
-class _NpEncoder(_json.JSONEncoder):
+# ── [1] 데이터 직렬화 및 헬퍼 함수 ────────────────────────────────
+class _NpEncoder(json.JSONEncoder):
     """numpy scalar/array → Python native types."""
     def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, (np.integer,)):
-            return int(obj)
-        if isinstance(obj, (np.floating,)):
-            return float(obj)
-        if isinstance(obj, (np.bool_,)):
-            return bool(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, (np.integer,)): return int(obj)
+        if isinstance(obj, (np.floating,)): return float(obj)
+        if isinstance(obj, (np.bool_,)): return bool(obj)
         return super().default(obj)
 
-def _safe_json(obj) -> str:
-    """to_plotly_json() 결과에 남아있는 ndarray를 안전하게 직렬화."""
-    return _json.dumps(obj, cls=_NpEncoder)
+def _safe_json_fixed(obj) -> str:
+    return json.dumps(obj, cls=_NpEncoder).replace('</', '<\\/')
 
 def _trace_to_json(trace):
-    """Plotly trace → JSON-serializable dict (ndarray 포함)."""
     raw = trace.to_plotly_json()
-    # round-trip: ndarray를 list로 변환
-    return _json.loads(_safe_json(raw))
-
-
-
-
+    return json.loads(_safe_json_fixed(raw))
 
 def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", show_legend=True, show_colorbar=True):
-    """Plotly Mesh3d trace for fluid surface."""
-    # pts가 튜플(pts, i, j, k)로 들어오는 경우를 대비한 안전장치
     if isinstance(pts, tuple) and len(pts) == 4:
         real_pts, fi, fj, fk = pts
     else:
@@ -596,267 +583,39 @@ def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", show_legend=True
         x=real_pts[:, 0], y=real_pts[:, 1], z=real_pts[:, 2],
         i=fi, j=fj, k=fk,
         intensity=intensity,
-        colorscale="RdYlBu_r",
-        cmin=0.5, cmax=1.0,
+        colorscale="Jet", # 유체 시각화에 좋은 Jet 컬러맵
         opacity=1.0,
         name=name,
         showlegend=show_legend,
         colorbar=cb,
     )
 
-
-def make_mold_trace(mold_trimesh, opacity=0.08, show_legend=True):
-    """Plotly Mesh3d trace for mold STL."""
-    if mold_trimesh is None:
-        return None
+def make_mold_trace(mold_trimesh, opacity=0.1, show_legend=True):
+    if mold_trimesh is None: return None
     mv, mf = mold_trimesh.vertices, mold_trimesh.faces
     return go.Mesh3d(
         x=mv[:, 0], y=mv[:, 1], z=mv[:, 2],
         i=mf[:, 0], j=mf[:, 1], k=mf[:, 2],
-        opacity=opacity,
-        color="lightgray",
-        name="Mold",
-        showlegend=show_legend,
+        opacity=opacity, color="lightgray", name="Mold", showlegend=show_legend,
     )
 
-
-# ==============================================================================
-# [A] 도움 함수 섹션 (좌표 보정 및 데이터 처리 로직 포함)
-# ==============================================================================
-def load_and_threshold_corrected(fpath, mold_mesh=None):
-    """
-    VTK 데이터를 읽고, 금형 좌표계에 맞춰 원점 및 스케일을 재정렬하여 유체 추출.
-    Step 0의 비정상적인 초기 위치 데이터는 시각화에서 제외함.
-    """
-    try:
-        # 1. 파일명에서 타임스텝 추출 (Step 0 확인용)
-        try:
-            time_step = int(re.findall(r'\d+', os.path.basename(fpath))[-1])
-        except:
-            time_step = -1 # 타임스텝 추출 실패 시 기본값
-
-        # 2. VTK 데이터 로드 및 병합
-        mesh = pv.read(fpath)
-        if isinstance(mesh, pv.MultiBlock):
-            mesh = mesh.combine()
-        
-        # 3. 유체 영역 필드 확인
-        field_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
-        if field_name not in mesh.array_names:
-            return None, None, 0, f"Field '{field_name}' not found."
-
-        # ──────────────────────────────────────────────────
-        # [핵심 보정] 좌표계 및 원점 재정렬 (Coordinate Alignment)
-        # ──────────────────────────────────────────────────
-        # PyVista의 transform 함수를 사용하여 금형 좌표계와 맞춤
-        # 원점이 STL과 VTK에서 다른 경우, translation matrix를 적용해야 함.
-        # 해석 시 원점이 게이트 중심이라고 가정하고, 금형 중심과 오프셋 조정.
-        
-        if mold_mesh is not None:
-            mold_bounds = mold_mesh.bounds
-            # 금형 중심 계산
-            mold_center = [(mold_bounds[1]+mold_bounds[0])/2, 
-                           (mold_bounds[3]+mold_bounds[2])/2, 
-                           (mold_bounds[5]+mold_bounds[4])/2]
-            
-            # [가정] OpenFOAM 해석 원점이 게이트 입구임. 
-            # 금형 바닥 중심에 게이트가 있다고 가정하고 오프셋 적용 (예시 오프셋)
-            alignment_offset = [mold_center[0], mold_center[1], mold_bounds[4]]
-            
-            # 좌표이동 매트릭스 생성
-            align_matrix = np.eye(4)
-            align_matrix[0:3, 3] = alignment_offset
-            
-            # 메시 전체에 매트릭스 적용 (좌표계 변환)
-            mesh = mesh.transform(align_matrix)
-
-        # ──────────────────────────────────────────────────
-        # [핵심 보정] 초기 제트 흐름 제거 (Jet Flow Cleanup)
-        # ──────────────────────────────────────────────────
-        # Step 0에서 금형 외부에 있는 긴 비정상 데이터는 clipping으로 제거
-        if time_step == 0 and mold_mesh is not None:
-            # 금형 Bounds 내부 영역만 남기고 Clip (금형 Bounds보다 약간 여유를 둠)
-            clip_bounds = [mold_bounds[0]-1, mold_bounds[1]+1,
-                           mold_bounds[2]-1, mold_bounds[3]+1,
-                           mold_bounds[4]-1, mold_bounds[5]+1]
-            mesh = mesh.clip_box(clip_bounds, invert=False)
-
-        # 4. Threshold 적용: 유체가 50% 이상 찬 격자만 물리적으로 추출
-        fluid_mesh = mesh.threshold(0.5, scalars=field_name)
-        
-        if fluid_mesh.n_cells == 0:
-            return None, None, 0, "No valid fluid cells (inside mold)."
-
-        # 5. 시각화 최적화 (삼각형화 + 표면 추출)
-        surf = fluid_mesh.triangulate().extract_surface()
-        
-        # ──────────────────────────────────────────────────
-        # [핵심 보정] 단위 스케일 조정 (m -> mm)
-        # ──────────────────────────────────────────────────
-        # STL 금형이 mm 단위라면 VTK 좌표에 반드시 1000을 곱해야 함.
-        # transform 함수를 사용했으므로 스케일링 matrix를 적용하거나 직접 좌표 곱함.
-        pts = surf.points * 1000  # Scale up
-        
-        faces = surf.faces.reshape(-1, 4)[:, 1:]
-        alpha_vals = surf.point_data[field_name].tolist()
-        
-        dbg_info = f"Corrected: Pts Offset Apply, Scale 1000x, Step {time_step}"
-        
-        return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid_mesh.n_cells, dbg_info
-
-    except Exception as e:
-        return None, None, 0, f"Load Error: {str(e)}"
-
-# ==============================================================================
-# [B] 메인 시각화 섹션 (Section 3)
-# ==============================================================================
-vtk_dir = "VTK"
-
-if os.path.exists(vtk_dir):
-    st.subheader("🌊 3D Filling Animation (alpha.water) - Corrected Alignment")
-
-    # ── 파일 수집 및 정렬 ────────────────────────────────────
-    all_files = list(dict.fromkeys(
-        glob.glob(f"{vtk_dir}/case_*.vtm") +
-        glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
-        glob.glob(f"{vtk_dir}/case_*.vtk") +
-        glob.glob(f"{vtk_dir}/**/case_*.vtk", recursive=True)
-    ))
-    all_files = sorted(
-        all_files,
-        key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[-1])
-        if re.findall(r'\d+', os.path.basename(x)) else 0
-    )
-
-    if not all_files:
-        st.warning("No time-step file(s) found in VTK directory.")
-    else:
-        total_steps = len(all_files)
-        st.caption(f"✅ {total_steps} time-step file(s) found. Applying coordinate correction...")
-
-        # 금형 메시 세션 상태에서 가져오기
-        mold_mesh = st.session_state.get("mesh")
-
-        # ── [A] 슬라이더 단일 스텝 뷰 ───────────────────────
-        st.markdown("#### 🎚 Step-by-Step Viewer")
-        step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, 0, format="Step %d")
-        selected_file = all_files[step_idx]
-
-        try:
-            # 금형 메시를 함수 인자로 전달하여 좌표 보정에 사용
-            result, alpha_vals, n_fluid_cells, dbg = load_and_threshold_corrected(selected_file, mold_mesh)
-
-            fig = go.Figure()
-            
-            # 1. 금형(Mold) 표시
-            mold_t = make_mold_trace(mold_mesh, opacity=0.08)
-            if mold_t: fig.add_trace(mold_t)
-
-            # 2. 유체(Fluid) 표시 (보정된 데이터)
-            if result is not None:
-                pts_tuple, fi, fj, fk = result
-                fig.add_trace(make_fluid_trace(pts_tuple, fi, fj, fk, alpha_vals))
-                
-                # 충전율 계산 (920은 예시 격자수이므로 실제 해석 파일에서 추출하는 것이 정확함)
-                # 실제 데이터 기반 계산을 위해 load_and_threshold_corrected 함수에서 
-                # fluid_mesh.n_cells와 mesh.n_cells를 반환받아 계산하는 구조로 변경 권장.
-                total_mesh_cells = 920  
-                real_fill = (n_fluid_cells / total_mesh_cells) * 100
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
-                c2.metric("Active Cells", f"{n_fluid_cells:,}")
-                c3.caption(f"🔍 {dbg}")
-            else:
-                st.warning("No valid fluid cells detected (inside mold bounds). Check Gate position.")
-
-            fig.update_layout(
-                scene=dict(aspectmode="data", 
-                           xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)"), 
-                height=520, margin=dict(l=0,r=0,b=0,t=30)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Visualization Error: {e}")
-            st.exception(e)
-            
-        # ── [B] JS-driven 애니메이션 (자동 재생 섹션) ──────────────────
-        st.divider()
-        st.subheader("▶ Auto-Play Filling Animation (All Steps)")
-
-        if st.button("🎬 Build & Play Animation", key="btn_play_anim_align", use_container_width=True):
-            prog = st.progress(0, text="Preparing aligned animation data...")
-            try:
-                mold_trimesh = st.session_state.get("mesh")
-                
-                # 금형 트레이스 생성
-                mold_t = make_mold_trace(mold_trimesh, opacity=0.08)
-                mold_json = _trace_to_json(mold_t) if mold_t else None
-
-                step_data = []
-                total_mesh_cells = 920 
-
-                for i, fpath in enumerate(all_files):
-                    prog.progress((i + 1) / total_steps, text=f"Processing Aligned {i+1}/{total_steps}...")
-                    
-                    # 보정된 함수 호출
-                    res, a_vals, n_cells, _ = load_and_threshold_corrected(fpath, mold_mesh)
-                    
-                    fluid_json = None
-                    if res is not None:
-                        f_pts, fi, fj, fk = res
-                        ft = make_fluid_trace(f_pts, fi, fj, fk, a_vals, show_colorbar=True)
-                        fluid_json = _trace_to_json(ft)
-
-                    step_data.append({
-                        "label": os.path.basename(fpath),
-                        "fluid": fluid_json,
-                        "n_fluid": n_cells,
-                        "fill_pct": round((n_cells / total_mesh_cells) * 100, 1),
-                    })
-
-                prog.empty()
-                # ... (이하 _safe_json 및 HTML 생성 로직은 이전과 동일하므로 생략) ...
-                # components.html(html_code, height=680, scrolling=False)
-
-            except Exception as e:
-                st.error(f"Animation failed: {e}")
-                st.exception(e)
-
-else:
-    st.error("VTK directory not found. Please sync results first.")
-
-FIELD = "alpha.water"
-
-# ── [1] 데이터 직렬화 헬퍼 ────────────────────────────────
-class _NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.ndarray): return obj.tolist()
-        return super().default(obj)
-
-def _safe_json_fixed(obj):
-    return json.dumps(obj, cls=_NpEncoder).replace('</', '<\\/')
-
-# ── [2] 핵심 수정: 유체 데이터 로드 및 강제 좌표 이동 ──────────────
-def load_and_threshold_debug(fpath, mold_mesh=None, x_off=0, y_off=0, z_off=0):
+# ── [2] 유체 데이터 로드 (스케일, 임계값, 좌표 조절 통합) ──────────────
+def load_fluid_refined(fpath, x_off=0.0, y_off=0.0, z_off=0.0, scale=1000.0, thres=0.1):
     try:
         mesh = pv.read(fpath)
         if isinstance(mesh, pv.MultiBlock): mesh = mesh.combine()
         
-        # 필드 추출 (alpha.water 또는 alpha1)
         f_name = "alpha.water" if "alpha.water" in mesh.array_names else "alpha1"
         if f_name not in mesh.array_names: return None, None, 0
         
-        # 0.5 이상인 영역만 추출
-        fluid = mesh.threshold(0.5, scalars=f_name)
+        # 임계값(Threshold) 적용: 실선 방지를 위해 낮은 농도도 포함
+        fluid = mesh.threshold(thres, scalars=f_name)
         if fluid.n_cells == 0: return None, None, 0
         
         surf = fluid.triangulate().extract_surface()
         
-        # [핵심] 스케일 및 오프셋 강제 적용
-        # OpenFOAM(m) -> STL(mm) 변환을 위해 기본 1000배 확대 후 사용자 오프셋 적용
-        pts = surf.points * 1000 
+        # 스케일(Scale) 및 좌표 이동 적용
+        pts = surf.points * scale  
         pts[:, 0] += x_off
         pts[:, 1] += y_off
         pts[:, 2] += z_off
@@ -864,54 +623,67 @@ def load_and_threshold_debug(fpath, mold_mesh=None, x_off=0, y_off=0, z_off=0):
         faces = surf.faces.reshape(-1, 4)[:, 1:]
         alpha = surf.point_data[f_name].tolist()
         return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha, fluid.n_cells
-    except:
+    except Exception as e:
         return None, None, 0
 
-# ── [3] 3D Animation 섹션 ─────────────────────────────────
+# ── [3] 3D Animation 시각화 섹션 ─────────────────────────────────
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation (alpha.water)")
 
-    all_files = sorted(glob.glob(f"{vtk_dir}/**/*.vt*", recursive=True), 
-                       key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[-1]) if re.findall(r'\d+', os.path.basename(x)) else 0)
+    all_files = list(dict.fromkeys(
+        glob.glob(f"{vtk_dir}/case_*.vtm") + glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
+        glob.glob(f"{vtk_dir}/case_*.vtk") + glob.glob(f"{vtk_dir}/**/case_*.vtk", recursive=True)
+    ))
+    all_files = sorted(all_files, key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[-1]) if re.findall(r'\d+', os.path.basename(x)) else 0)
 
-    if all_files:
+    if not all_files:
+        st.warning("VTK 데이터가 없습니다.")
+    else:
         total_steps = len(all_files)
         mold_mesh = st.session_state.get("mesh")
 
-        # ── (A) 좌표 미세 조정 (빨간 선만 보일 때 사용) ──
-        with st.expander("🛠️ 유체 위치 미세 조정 (유체가 안 보일 때)", expanded=False):
-            st.info("빨간 선만 보인다면 아래 슬라이더로 유체를 금형 안으로 이동시키세요.")
-            off_x = st.slider("X Offset", -200.0, 200.0, 0.0)
-            off_y = st.slider("Y Offset", -200.0, 200.0, 0.0)
-            off_z = st.slider("Z Offset", -200.0, 200.0, 0.0)
+        # ── (A) 가시화 디버그 컨트롤 (선으로만 보일 때 조절) ──
+        with st.expander("🔍 유체 가시화 정밀 설정 (유체가 얇은 선으로만 보일 때 조절)", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                sc_val = st.slider("유체 크기 배율 (Scale)", 0.1, 2000.0, 1000.0, help="m 단위를 mm 단위로 맞춥니다.")
+                th_val = st.slider("유체 포착 농도 (Threshold)", 0.01, 0.99, 0.1, help="값을 낮출수록 얇은 선이 면적을 갖게 됩니다.")
+            with col2:
+                off_x = st.number_input("X Offset (좌표 이동)", value=0.0)
+                off_y = st.number_input("Y Offset (좌표 이동)", value=0.0)
+                off_z = st.number_input("Z Offset (좌표 이동)", value=0.0)
 
-        # ── (B) Viewer ──
-        step_idx = st.slider("⏱ Step", 0, total_steps - 1, 0, key="s_v")
+        # ── (B) Step-by-Step Viewer ──
+        step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, total_steps // 2, key="slider_step")
         
-        res, a_vals, n_c = load_and_threshold_debug(all_files[step_idx], mold_mesh, off_x, off_y, off_z)
+        res, a_vals, n_c = load_fluid_refined(all_files[step_idx], off_x, off_y, off_z, sc_val, th_val)
         
         fig = go.Figure()
         if mold_mesh: fig.add_trace(make_mold_trace(mold_mesh, opacity=0.1))
-        if res:
-            p, i, j, k = res
-            fig.add_trace(make_fluid_trace(p, i, j, k, a_vals, show_colorbar=True))
-            st.metric("Fill Cells", f"{n_c:,} (Step {step_idx})")
         
-        fig.update_layout(scene=dict(aspectmode="data"), height=500, margin=dict(l=0,r=0,b=0,t=0))
+        if res:
+            fig.add_trace(make_fluid_trace(res, None, None, None, a_vals, show_colorbar=True))
+            st.success(f"Step {step_idx}: {n_c:,}개의 유체 셀이 화면에 표시되었습니다.")
+        else:
+            st.error("⚠️ 현재 설정(스케일/오프셋/임계값)에서 유체를 찾을 수 없습니다.")
+
+        fig.update_layout(scene=dict(aspectmode="data"), height=550, margin=dict(l=0,r=0,b=0,t=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # ── (C) Animation Build ──
-        if st.button("🎬 Build Animation (With Current Offset)", use_container_width=True):
-            prog = st.progress(0)
+        # ── (C) JS-driven Animation ──
+        st.divider()
+        if st.button("🎬 현재 설정으로 애니메이션 생성 및 재생", use_container_width=True):
+            prog = st.progress(0, text="애니메이션 데이터 구축 중...")
             step_data = []
-            mold_json = _trace_to_json(make_mold_trace(mold_mesh, opacity=0.1)) if mold_mesh else None
+            mold_t = make_mold_trace(mold_mesh, opacity=0.1)
+            mold_json = _trace_to_json(mold_t) if mold_t else None
 
             for i, fpath in enumerate(all_files):
                 prog.progress((i+1)/total_steps)
-                r, av, nc = load_and_threshold_debug(fpath, mold_mesh, off_x, off_y, off_z)
-                f_j = _trace_to_json(make_fluid_trace(r[0], r[1], r[2], r[3], av)) if r else None
-                step_data.append({"fluid": f_j, "pct": round(nc/9.2, 1)})
+                r, av, nc = load_fluid_refined(fpath, off_x, off_y, off_z, sc_val, th_val)
+                f_j = _trace_to_json(make_fluid_trace(r, None, None, None, av)) if r else None
+                step_data.append({"fluid": f_j, "label": f"Step {i} ({nc} cells)"})
             
             prog.empty()
             s_js = _safe_json_fixed(step_data)
@@ -921,19 +693,31 @@ if os.path.exists(vtk_dir):
             <html>
             <head><script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script></head>
             <body style="margin:0; background:#0e1117;">
-                <div style="padding:10px; background:#1a1d27; color:white;">
-                    <button id="pb" onclick="t()">▶ Play</button> <span id="lb">Step 1</span>
+                <div style="padding:10px; background:#1a1d27; color:white; display:flex; gap:10px; align-items:center;">
+                    <button id="pBtn" onclick="togglePlay()" style="padding:5px 15px; cursor:pointer;">▶ Play</button> 
+                    <span id="lb" style="font-family:sans-serif;">Step 0</span>
+                    <input type="range" id="sd" min="0" max="{total_steps-1}" value="0" style="flex:1" oninput="draw(parseInt(this.value))">
                 </div>
                 <div id="gd" style="width:100vw; height:500px;"></div>
                 <script>
-                    const D={s_js}; const M={m_js}; let c=0, p=false, t_o=null;
+                    const D={s_js}; const M={m_js}; let c=0, p=false, tm=null;
                     function draw(i) {{
                         c=i; const ts=[M, D[i].fluid].filter(Boolean);
-                        Plotly.react('gd', ts, {{scene:{{aspectmode:'data'}}, paper_bgcolor:'rgba(0,0,0,0)', margin:{{l:0,r:0,b:0,t:0}}, font:{{color:'#eee'}}}});
-                        document.getElementById('lb').innerText = `Step ${{i+1}} (${{D[i].pct}}%)`;
+                        Plotly.react('gd', ts, {{scene:{{aspectmode:'data'}}, paper_bgcolor:'rgba(0,0,0,0)', margin:{{l:0,r:0,b:0,t:0}}, font:{{color:'#eee'}} }});
+                        document.getElementById('lb').innerText = D[i].label;
+                        document.getElementById('sd').value = i;
                     }}
-                    function t() {{ p=!p; document.getElementById('pb').innerText=p?"⏸ Pause":"▶ Play"; if(p) loop(); }}
-                    function loop() {{ if(!p) return; draw(c); c=(c+1)%{total_steps}; t_o=setTimeout(loop, 200); }}
+                    function togglePlay() {{ 
+                        p=!p; 
+                        document.getElementById('pBtn').innerText = p ? "⏸ Pause" : "▶ Play";
+                        if(p) loop(); else clearTimeout(tm); 
+                    }}
+                    function loop() {{ 
+                        if(!p) return; 
+                        draw(c); 
+                        c=(c+1)%{total_steps}; 
+                        tm=setTimeout(loop, 200); 
+                    }}
                     window.onload = () => draw(0);
                 </script>
             </body>
@@ -941,4 +725,4 @@ if os.path.exists(vtk_dir):
             """
             components.html(html_code, height=600)
 else:
-    st.info("VTK 데이터가 없습니다.")
+    st.error("VTK 디렉토리를 찾을 수 없습니다. 결과를 먼저 동기화해주세요.")
