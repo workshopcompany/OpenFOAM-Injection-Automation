@@ -10,9 +10,7 @@ import glob
 import re
 import pyvista as pv
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import trimesh
-import meshio
 
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
@@ -92,8 +90,12 @@ def sync_simulation_results():
         return True
     return False
 
-# ========== 3D 유체 로드 함수 ==========
-def load_fluid_3d_clipped(fpath, mold_mesh=None, scale=1.0, thres=0.5):
+# ========== 3D 유체 로드 함수 (threshold 기반 - 부피감 있는 표현) ==========
+def load_fluid_volume(fpath, mold_mesh=None, scale=1.0, thres=0.1):
+    """
+    threshold 방식으로 유체 데이터를 추출 (3D volume 형태)
+    thres 값이 낮을수록 더 많은 유체 영역 포함
+    """
     try:
         mesh = pv.read(fpath)
         if isinstance(mesh, pv.MultiBlock):
@@ -103,28 +105,41 @@ def load_fluid_3d_clipped(fpath, mold_mesh=None, scale=1.0, thres=0.5):
         if f_name not in mesh.array_names:
             return None, None, 0
         
-        fluid_3d = mesh.contour([thres], scalars=f_name)
-        if fluid_3d.n_points == 0:
-            return None, None, 0
+        # threshold로 유체 영역 추출 (thres 이상인 모든 셀)
+        fluid = mesh.threshold(thres, scalars=f_name)
+        if fluid.n_cells == 0:
+            # 더 낮은 threshold로 재시도
+            fluid = mesh.threshold(0.01, scalars=f_name)
+            if fluid.n_cells == 0:
+                return None, None, 0
         
-        fluid_3d.points *= scale
+        # 스케일 적용 (OpenFOAM은 meter 단위, STL은 mm 단위)
+        fluid.points *= scale
         
+        # 금형 클리핑 (선택적)
         if mold_mesh is not None:
             try:
-                fluid_3d = fluid_3d.clip_surface(mold_mesh, invert=True)
+                fluid = fluid.clip_surface(mold_mesh, invert=True)
             except:
                 pass
         
-        surf = fluid_3d.triangulate()
-        pts = surf.points
-        if len(pts) == 0:
+        # 표면 추출 (시각화를 위해)
+        surf = fluid.extract_surface()
+        if surf.n_points == 0:
             return None, None, 0
-            
-        faces = surf.faces.reshape(-1, 4)[:, 1:] if surf.faces.size > 0 else np.empty((0,3), dtype=int)
-        alpha = surf.point_data[f_name].tolist() if f_name in surf.point_data else [0.5]*len(pts)
         
-        return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha, fluid_3d.n_cells
+        pts = surf.points
+        faces = surf.faces.reshape(-1, 4)[:, 1:] if surf.faces.size > 0 else np.empty((0,3), dtype=int)
+        
+        # alpha 값 가져오기 (point data)
+        if f_name in surf.point_data:
+            alpha_vals = surf.point_data[f_name].tolist()
+        else:
+            alpha_vals = [thres] * len(pts)
+        
+        return (pts, faces[:,0], faces[:,1], faces[:,2]), alpha_vals, fluid.n_cells
     except Exception as e:
+        print(f"Error loading fluid: {e}")
         return None, None, 0
 
 def get_sampled_files(all_files, num_steps=10):
@@ -144,20 +159,24 @@ class _NpEncoder(json.JSONEncoder):
         if isinstance(obj, (np.floating,)): return float(obj)
         return super().default(obj)
 
-def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.8):
+def make_fluid_trace(pts, fi, fj, fk, alpha_vals, name="Fluid", opacity=0.7):
+    """유체 트레이스 - 부피감 있는 표현"""
     intensity = np.array(alpha_vals) if alpha_vals is not None else np.ones(len(pts))
+    
     return go.Mesh3d(
         x=pts[:,0], y=pts[:,1], z=pts[:,2],
         i=fi, j=fj, k=fk,
         intensity=intensity,
-        colorscale="Viridis",
+        colorscale=[[0, 'blue'], [0.3, 'cyan'], [0.6, 'lime'], [0.8, 'orange'], [1.0, 'red']],
         opacity=opacity,
         name=name,
         showscale=True,
-        colorbar=dict(title="Fill Ratio", thickness=20, len=0.5)
+        colorbar=dict(title="Fill Ratio", thickness=20, len=0.6, x=1.02),
+        lighting=dict(ambient=0.4, diffuse=0.8, specular=0.3)
     )
 
 def make_mold_trace(mold_trimesh, opacity=0.15, color="lightgray"):
+    """금형 트레이스 - 반투명"""
     if mold_trimesh is None: return None
     mv, mf = mold_trimesh.vertices, mold_trimesh.faces
     return go.Mesh3d(
@@ -251,6 +270,7 @@ with st.sidebar:
             sig_id = str(uuid.uuid4())[:8]
             st.session_state["last_signal_id"] = sig_id
             st.session_state["sim_running"] = True
+            # 실제 payload 전송 코드는 여기에...
             st.toast(f"Simulation started! ID: {sig_id}")
         else:
             st.error("ZAPIER_URL not configured")
@@ -265,10 +285,14 @@ with col_geo:
         fig = go.Figure(data=[
             go.Mesh3d(x=v[:,0], y=v[:,1], z=v[:,2], i=f[:,0], j=f[:,1], k=f[:,2], color="gray", opacity=0.7),
             go.Scatter3d(x=[st.session_state["gx_final"]], y=[st.session_state["gy_final"]], z=[st.session_state["gz_final"]],
-                        mode="markers", marker=dict(size=10, color="red"), name="Gate")
+                        mode="markers", marker=dict(size=10, color="red", symbol="circle"), name="Gate")
         ])
-        fig.update_layout(scene=dict(aspectmode="data"), height=500, margin=dict(l=0,r=0,b=0,t=0))
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_layout(
+            scene=dict(aspectmode="data"),
+            height=500,
+            margin=dict(l=0, r=0, b=0, t=0)
+        )
+        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
     else:
         st.info("Upload STL file to see 3D model")
 
@@ -298,30 +322,37 @@ if os.path.exists("results.txt"):
 # ========== ANIMATION SECTION ==========
 vtk_dir = "VTK"
 if os.path.exists(vtk_dir):
-    st.subheader("🌊 3D Filling Animation")
+    st.subheader("🌊 3D Filling Animation - Volume Flow")
     
+    # VTK 파일 찾기
     all_files = sorted(glob.glob(f"{vtk_dir}/**/case_*.vt*", recursive=True) + glob.glob(f"{vtk_dir}/case_*.vt*", recursive=True))
     all_files = sorted(set(all_files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
     
     if not all_files:
-        st.warning("No VTK files found")
+        st.warning("No VTK files found. Run simulation first.")
     else:
         mold_mesh = st.session_state.get("mesh")
         
-        with st.expander("🔧 Visualization Settings", expanded=True):
+        # 시각화 설정
+        with st.expander("🔧 Fluid Visualization Settings", expanded=True):
             col1, col2, col3 = st.columns(3)
             with col1:
-                scale_factor = st.slider("Model Scale", 0.1, 10.0, 1.0, 0.1)
-                contour_thresh = st.slider("Fill Threshold", 0.01, 0.99, 0.3, 0.01)
+                # 중요: 스케일 - OpenFOAM은 m 단위, STL은 mm 단위. 보통 1000이 필요
+                scale_factor = st.slider("Scale (m → mm)", 100.0, 2000.0, 1000.0, 50.0, 
+                                        help="OpenFOAM 결과는 meter 단위. 1000 = 1m → 1000mm")
+                threshold = st.slider("Fluid Threshold (alpha.water)", 0.01, 0.5, 0.05, 0.01,
+                                     help="낮을수록 더 많은 유체 표시 (0.01~0.05 추천)")
             with col2:
                 mold_opacity = st.slider("Mold Opacity", 0.0, 0.5, 0.1, 0.01)
-                fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.8, 0.05)
+                fluid_opacity = st.slider("Fluid Opacity", 0.5, 1.0, 0.75, 0.05)
             with col3:
-                view_scale = st.radio("View Scale", ["Auto", "Uniform"], index=0)
+                view_mode = st.radio("View Scale", ["Auto (Data)", "Uniform Cube"], index=0)
         
+        # 샘플링
         sampled_files = get_sampled_files(all_files, num_frames)
         total_steps = len(sampled_files)
         
+        # 애니메이션 컨트롤
         st.markdown("### 🎮 Animation Controls")
         col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns([1, 1, 3, 1])
         
@@ -344,64 +375,91 @@ if os.path.exists(vtk_dir):
                 st.session_state["animation_playing"] = False
                 st.rerun()
         
+        # 프레임 슬라이더
         current_frame = st.slider(
-            "Frame", 0, total_steps - 1, 
+            "Time Step", 0, total_steps - 1, 
             value=st.session_state.get("current_frame", 0),
             key="frame_slider"
         )
         st.session_state["current_frame"] = current_frame
         
-        with st.spinner("Loading frame..."):
+        # 현재 프레임 로드 및 표시
+        with st.spinner("Loading fluid data..."):
             fpath = sampled_files[current_frame]
-            res, alpha_vals, n_cells = load_fluid_3d_clipped(fpath, mold_mesh, scale=scale_factor, thres=contour_thresh)
+            res, alpha_vals, n_cells = load_fluid_volume(
+                fpath, mold_mesh, 
+                scale=scale_factor, 
+                thres=threshold
+            )
             
             fig = go.Figure()
             
+            # 금형 추가
             if mold_mesh:
                 fig.add_trace(make_mold_trace(mold_mesh, opacity=mold_opacity))
             
+            # 유체 추가
             if res:
                 pts, fi, fj, fk = res
                 fig.add_trace(make_fluid_trace(pts, fi, fj, fk, alpha_vals, opacity=fluid_opacity))
-                st.success(f"Frame {current_frame+1}/{total_steps} - Fluid cells: {n_cells:,}")
+                
+                # 바운딩 박스 정보로 스케일 확인
+                if mold_mesh:
+                    bounds = mold_mesh.bounds
+                    fluid_bounds = [pts[:,0].min(), pts[:,0].max(), pts[:,1].min(), pts[:,1].max(), pts[:,2].min(), pts[:,2].max()]
+                    st.success(f"✅ Frame {current_frame+1}/{total_steps} | Fluid cells: {n_cells:,} | "
+                              f"Fluid range: X[{fluid_bounds[0]:.1f}, {fluid_bounds[1]:.1f}]")
+                else:
+                    st.success(f"Frame {current_frame+1}/{total_steps} - Fluid cells: {n_cells:,}")
             else:
-                st.warning(f"Frame {current_frame+1}: No fluid detected")
+                st.warning(f"⚠️ No fluid detected at threshold={threshold}. Try lowering the threshold or check simulation data.")
+                # 디버그 정보
+                st.caption(f"File: {os.path.basename(fpath)}")
             
+            # 3D 뷰 설정
             scene_config = dict(
-                aspectmode="data" if view_scale == "Auto" else "cube",
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5), up=dict(x=0, y=0, z=1)),
+                aspectmode="data" if view_mode == "Auto (Data)" else "cube",
+                camera=dict(eye=dict(x=1.8, y=1.8, z=1.5), up=dict(x=0, y=0, z=1)),
                 xaxis_title="X (mm)",
                 yaxis_title="Y (mm)", 
-                zaxis_title="Z (mm)"
+                zaxis_title="Z (mm)",
+                bgcolor="black"
             )
             
             fig.update_layout(
                 scene=scene_config,
                 height=650,
                 margin=dict(l=0, r=0, b=0, t=0),
-                legend=dict(x=0.02, y=0.98, bgcolor="rgba(0,0,0,0.5)")
+                legend=dict(x=0.02, y=0.98, bgcolor="rgba(0,0,0,0.6)", font=dict(color="white")),
+                paper_bgcolor="black",
+                plot_bgcolor="black"
             )
             
             st.plotly_chart(fig, use_container_width=True, config={
                 'scrollZoom': True,
                 'displayModeBar': True,
+                'displaylogo': False,
                 'modeBarButtonsToRemove': ['lasso2d', 'select2d']
             })
         
+        # 자동 재생
         if st.session_state.get("animation_playing", False):
             next_frame = (current_frame + 1) % total_steps
             st.session_state["current_frame"] = next_frame
-            time.sleep(0.2)
+            time.sleep(0.15)
             st.rerun()
         
+        # 유용한 정보
         if mold_mesh:
             bounds = mold_mesh.bounds
-            st.caption(f"📐 Model bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
+            st.caption(f"📐 Model bounds: X [{bounds[0][0]:.1f}, {bounds[1][0]:.1f}] | "
+                      f"Y [{bounds[0][1]:.1f}, {bounds[1][1]:.1f}] | "
+                      f"Z [{bounds[0][2]:.1f}, {bounds[1][2]:.1f}] mm")
             
-            max_dim = max(bounds[1][0]-bounds[0][0], bounds[1][1]-bounds[0][1], bounds[1][2]-bounds[0][2])
-            if max_dim > 0:
-                recommended_scale = 1000.0 / max_dim
-                st.info(f"💡 Tip: If fluid is too small, try Scale ≈ {recommended_scale:.1f}")
+            st.info("💡 **Tip**: If fluid is not visible, try:\n"
+                   "• Lower 'Fluid Threshold' (0.01~0.05)\n"
+                   "• Check 'Scale' is 1000 (m→mm conversion)\n"
+                   "• Verify simulation completed successfully")
 
 else:
     st.error("VTK directory not found. Run simulation and sync results first.")
