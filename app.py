@@ -440,9 +440,7 @@ if os.path.exists(vtk_dir):
         # Step-by-step viewer (single frame)
         step_idx = st.slider("⏱ Preview single time step", 0, len(all_files)-1, len(all_files)//2, key="preview_step")
         fpath = all_files[step_idx]
-        # Apply offsets by transforming points after loading? We'll handle inside load function by scaling and offset.
-        # But offsets are not yet implemented in load_fluid_3d_clipped; we can add simple translation.
-        # For simplicity, we modify the function to accept xyz offset. Let's create a wrapper.
+
         def load_with_offset(fpath, mold_mesh, scale, thres, off_x, off_y, off_z):
             res, alpha, n_cells = load_fluid_3d_clipped(fpath, mold_mesh, scale, thres)
             if res is not None:
@@ -458,7 +456,9 @@ if os.path.exists(vtk_dir):
         if mold_mesh:
             fig_pre.add_trace(make_mold_trace(mold_mesh, opacity=0.1))
         if res:
-            fig_pre.add_trace(make_fluid_trace(res, a_vals, show_colorbar=True))
+            pts, fi, fj, fk = res   # 명시적 언패킹
+            trace = make_fluid_trace(pts, fi, fj, fk, a_vals, show_colorbar=True)
+            fig_pre.add_trace(trace)
             st.success(f"Step {step_idx}: {n_c} fluid cells displayed (3D surface clipped to mold).")
         else:
             st.error("No fluid surface generated with current threshold/scale.")
@@ -477,7 +477,8 @@ if os.path.exists(vtk_dir):
                 prog.progress((i+1)/len(sampled_files))
                 res, av, nc = load_with_offset(fpath, mold_mesh, scale_val, thres_val, off_x, off_y, off_z)
                 if res:
-                    ft = make_fluid_trace(res, av, show_colorbar=False)  # colorbar only in main viewer
+                    pts, fi, fj, fk = res   # 명시적 언패킹
+                    ft = make_fluid_trace(pts, fi, fj, fk, av, show_colorbar=False)
                     step_data.append({"fluid": _trace_to_json(ft), "label": f"Frame {i+1}/{len(sampled_files)} ({nc} cells)"})
                 else:
                     step_data.append({"fluid": None, "label": f"Frame {i+1} (no fluid)"})
