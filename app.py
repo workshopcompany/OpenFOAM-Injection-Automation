@@ -1,10 +1,11 @@
 """
-MIM-Ops Pro v2.7
+MIM-Ops Pro v2.6
 =================
-업데이트 내용:
-  - Voxel 해상도 강화: 1/5 -> 1/10 (더 정밀한 유동 표현)
-  - Animation Frame: 기본값 10 설정 및 서버/시각화 파라미터 완전 동기화
-  - 시뮬레이션 실행 시 선택된 프레임 수가 서버 전달 데이터에 포함됨
+핵심 변경 (유동 시간 및 충진 개선):
+  - STL 부피, 게이트 면적, 속도 기반 "이론적 충진 시간" 자동 계산 기능 추가
+  - End Time (etime) 최대값을 180초(3분)로 연장하고, 페이로드에 자동 반영
+  - VTK 결과가 미충진(Short Shot)이더라도, 시각적 애니메이션은 100% 유동 경로를 끝까지 보여주도록 로직 분리
+  - 실제 VTK 충진율은 라벨에 표기하여 물리적 단락 여부를 확인할 수 있게 보강
 """
 
 import streamlit as st
@@ -18,6 +19,7 @@ import re
 import pyvista as pv
 import plotly.graph_objects as go
 import trimesh
+from collections import deque
 import heapq
 from scipy.ndimage import distance_transform_edt
 
@@ -34,225 +36,585 @@ def _init(k, v):
 _init("gx", 0.0);  _init("gy", 0.0);  _init("gz", 0.0)
 _init("gsize", 2.0)
 _init("temp", 230.0); _init("press", 70.0); _init("vel", 80.0)
-_init("etime", 1.0)
+_init("etime", 1.0) # 기본값을 1.0초로 초기화
 _init("sim_running", False); _init("sim_status", "idle")
 _init("sim_logs", [])
+_init("last_signal_id", None)
 _init("mesh", None)
 _init("props", None); _init("props_confirmed", False)
 _init("process_confirmed", False)
 _init("mat_name", "PA66+30GF")
+_init("last_vel_mms", 80.0); _init("last_etime", 1.0)
+_init("gx_final", 0.0); _init("gy_final", 0.0); _init("gz_final", 0.0)
 _init("animation_playing", False); _init("current_frame", 0)
 _init("vtk_files", [])
-_init("num_frames", 10) # [요청반영] 기본값 10으로 변경
+_init("last_synced_signal_id", None)
+_init("executed_params", None)
+_init("num_frames", 15)
 _init("voxel_cache", None)
 
-# ───────────────────── Functions ─────────────────────
+# ───────────────────── Logging ─────────────────────
 def add_log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     st.session_state["sim_logs"].append(f"[{ts}] {msg}")
+    if len(st.session_state["sim_logs"]) > 100:
+        st.session_state["sim_logs"] = st.session_state["sim_logs"][-100:]
 
 def clear_old_results():
     for path in ["VTK", "results.txt", "logs.zip"]:
-        if os.path.exists(path):
-            if os.path.isdir(path): shutil.rmtree(path)
-            else: os.remove(path)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        elif os.path.isfile(path):
+            os.remove(path)
     st.session_state["vtk_files"] = []
-    add_log("Cleared old results.")
+    add_log("Cleared old simulation results.")
 
+# ───────────────────── VTK & Math helpers ─────────────────────
 def sample_vtk_files(vtk_dir, num_frames):
-    """[요청반영] 사이드바 설정값(num_frames)에 맞춰 VTK 파일을 샘플링합니다."""
     all_files = sorted(
         glob.glob(os.path.join(vtk_dir, "**", "case_*.vt*"), recursive=True) +
         glob.glob(os.path.join(vtk_dir, "case_*.vt*"))
     )
-    all_files = sorted(set(all_files), key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
-    if not all_files: return []
-    if len(all_files) <= num_frames: return all_files
+    all_files = sorted(set(all_files),
+        key=lambda x: int(re.findall(r'\d+', x)[-1]) if re.findall(r'\d+', x) else 0)
+    if not all_files:
+        return []
+    if len(all_files) <= num_frames:
+        return all_files
     idx = np.linspace(0, len(all_files)-1, num_frames, dtype=int)
     return [all_files[i] for i in idx]
 
 def read_alpha_fill_ratio(fpath):
     try:
         mesh = pv.read(fpath)
-        if isinstance(mesh, pv.MultiBlock): mesh = mesh.combine()
+        if isinstance(mesh, pv.MultiBlock):
+            mesh = mesh.combine()
         for fname in ["alpha.water", "alpha1", "alpha"]:
             if fname in mesh.array_names:
                 arr = mesh.get_array(fname)
-                return min(float(np.sum(arr > 0.05) / max(len(arr), 1)), 1.0)
-    except: pass
+                ratio = float(np.sum(arr > 0.05) / max(len(arr), 1))
+                return min(ratio, 1.0)
+    except Exception as e:
+        add_log(f"VTK read error: {e}")
     return None
 
 def calc_theoretical_fill_time(mesh_obj, gate_dia, vel_mms):
+    """부피, 게이트 크기, 속도를 바탕으로 100% 충진되는 예상 시간을 계산합니다."""
     try:
-        vol = abs(mesh_obj.volume)
-        area = np.pi * ((gate_dia / 2.0) ** 2)
-        flow_rate = area * vel_mms
-        return float(vol / flow_rate) if flow_rate > 0 else 1.0
-    except: return 1.0
+        vol_mm3 = abs(mesh_obj.volume)
+        if vol_mm3 <= 0 or gate_dia <= 0 or vel_mms <= 0:
+            return 1.0
+        # 게이트 단면적 = pi * r^2
+        area_mm2 = np.pi * ((gate_dia / 2.0) ** 2)
+        # 유량 (Flow Rate) = 면적 * 속도
+        flow_rate = area_mm2 * vel_mms
+        # 충진 시간 = 부피 / 유량
+        fill_time = vol_mm3 / flow_rate
+        return float(fill_time)
+    except Exception:
+        return 1.0
 
-# ───────────────────── Voxel Engine ─────────────────────
+# ───────────────────── GitHub Sync ─────────────────────
+def sync_simulation_results():
+    GITHUB_TOKEN  = st.secrets["GITHUB_TOKEN"]
+    REPO_OWNER    = "workshopcompany"
+    REPO_NAME     = "OpenFOAM-Injection-Automation"
+    ARTIFACT_NAME = "simulation-results"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}",
+               "Accept": "application/vnd.github+json"}
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/actions/artifacts"
+    try:
+        with st.spinner("Fetching from GitHub..."):
+            resp = requests.get(url, headers=headers)
+            if resp.status_code != 200:
+                st.error(f"GitHub API error: {resp.status_code}"); return False
+            artifacts = resp.json().get("artifacts", [])
+            target = next((a for a in artifacts if a["name"] == ARTIFACT_NAME), None)
+            if not target:
+                st.warning("No simulation results found."); return False
+            file_resp = requests.get(target["archive_download_url"], headers=headers)
+            if file_resp.status_code == 200:
+                clear_old_results()
+                with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
+                    z.extractall(".")
+                vtk_dir = "VTK"
+                if os.path.exists(vtk_dir):
+                    nf = st.session_state.get("num_frames", 15)
+                    st.session_state["vtk_files"] = sample_vtk_files(vtk_dir, nf)
+                if os.path.exists("results.txt"):
+                    with open("results.txt") as f:
+                        content = f.read()
+                    m = re.search(r"Signal ID[:\s]+([A-Za-z0-9\-]+)", content)
+                    if m:
+                        st.session_state["last_synced_signal_id"] = m.group(1)
+                add_log("Results synchronized from GitHub.")
+                st.success("Results synchronized successfully!")
+                return True
+            else:
+                st.error("Failed to download artifact."); return False
+    except Exception as e:
+        st.error(f"Sync error: {e}"); return False
+
+# ═══════════════════════════════════════════════════════════
+#  ★★★ SOLID VOXEL ENGINE (물리 기반 흐름) ★★★
+# ═══════════════════════════════════════════════════════════
+
 def compute_voxel_res_mm(mold_trimesh):
-    """[요청반영] 1/5 에서 1/10 해상도로 강화했습니다."""
-    bb = mold_trimesh.bounds
+    bb   = mold_trimesh.bounds
     dims = np.array(bb[1]) - np.array(bb[0])
     valid = dims[dims > 0.1]
     min_dim = float(np.min(valid)) if len(valid) else 10.0
-    return float(np.clip(min_dim / 10.0, 0.1, 2.0)) # 더 정밀한 0.1mm 하한선
+    return float(np.clip(min_dim / 5.0, 0.3, 2.0))
 
 def build_voxel_grid(mold_trimesh, res_mm):
-    vox = mold_trimesh.voxelized(pitch=res_mm).fill()
-    return vox.matrix.copy(), np.array(vox.translation, dtype=float)
+    vox = mold_trimesh.voxelized(pitch=res_mm)
+    vox = vox.fill()
+    occupied = vox.matrix.copy()
+    origin   = np.array(vox.translation, dtype=float)
+    return occupied, origin
+
+def gate_to_voxel(gate_mm, origin, res_mm, shape):
+    idx = np.round((np.array(gate_mm) - origin) / res_mm).astype(int)
+    idx = np.clip(idx, 0, np.array(shape) - 1)
+    return tuple(idx)
 
 def physics_based_fill_order(occupied, start_vox):
     Nx, Ny, Nz = occupied.shape
-    sx, sy, sz = map(int, start_vox)
+    sx, sy, sz = int(start_vox[0]), int(start_vox[1]), int(start_vox[2])
+
     if not occupied[sx, sy, sz]:
         occ_idx = np.argwhere(occupied)
-        if len(occ_idx) == 0: return []
-        sx, sy, sz = occ_idx[np.argmin(np.sum((occ_idx - [sx,sy,sz])**2, axis=1))]
+        if len(occ_idx) == 0:
+            return []
+        dists = np.sum((occ_idx - np.array([sx, sy, sz]))**2, axis=1)
+        nearest = occ_idx[np.argmin(dists)]
+        sx, sy, sz = int(nearest[0]), int(nearest[1]), int(nearest[2])
 
     dist_to_wall = distance_transform_edt(occupied)
     min_costs = np.full(occupied.shape, np.inf)
     min_costs[sx, sy, sz] = 0.0
-    pq, order, visited = [(0.0, (sx, sy, sz))], [], np.zeros_like(occupied, dtype=bool)
+    
+    pq = [(0.0, (sx, sy, sz))]
+    order = []
+    visited = np.zeros_like(occupied, dtype=bool)
 
-    offsets = [(dx, dy, dz, np.sqrt(dx**2+dy**2+dz**2)) for dx in [-1,0,1] for dy in [-1,0,1] for dz in [-1,0,1] if not (dx==dy==dz==0)]
+    offsets = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == 0 and dy == 0 and dz == 0: continue
+                dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+                offsets.append((dx, dy, dz, dist))
 
     while pq:
         cost, (cx, cy, cz) = heapq.heappop(pq)
         if visited[cx, cy, cz]: continue
         visited[cx, cy, cz] = True
         order.append((cx, cy, cz))
-        for dx, dy, dz, d_dist in offsets:
-            nx, ny, nz = cx+dx, cy+dy, cz+dz
-            if 0<=nx<Nx and 0<=ny<Ny and 0<=nz<Nz and occupied[nx,ny,nz] and not visited[nx,ny,nz]:
-                new_cost = cost + (d_dist / ((dist_to_wall[nx,ny,nz]+0.5)**2))
-                if new_cost < min_costs[nx,ny,nz]:
-                    min_costs[nx,ny,nz] = new_cost
-                    heapq.heappush(pq, (new_cost, (nx,ny,nz)))
+
+        for dx, dy, dz, step_dist in offsets:
+            nx, ny, nz = cx + dx, cy + dy, cz + dz
+            if 0 <= nx < Nx and 0 <= ny < Ny and 0 <= nz < Nz:
+                if occupied[nx, ny, nz] and not visited[nx, ny, nz]:
+                    wall_dist = dist_to_wall[nx, ny, nz]
+                    speed = (wall_dist + 0.5) ** 2.0 
+                    edge_cost = step_dist / speed
+                    new_cost = cost + edge_cost
+
+                    if new_cost < min_costs[nx, ny, nz]:
+                        min_costs[nx, ny, nz] = new_cost
+                        heapq.heappush(pq, (new_cost, (nx, ny, nz)))
+
     return order
 
 def get_or_build_voxel_cache(mold_trimesh, gate_mm, res_mm):
-    cache = st.session_state.get("voxel_cache")
+    cache    = st.session_state.get("voxel_cache")
     gate_key = tuple(np.round(gate_mm, 2))
-    if cache and abs(cache["res_mm"] - res_mm) < 0.02 and cache["gate"] == gate_key: return cache
+    if (cache is not None
+            and abs(cache["res_mm"] - res_mm) < 0.05
+            and cache["gate"] == gate_key):
+        return cache
+
+    add_log(f"Building voxel grid (res={res_mm:.2f} mm)…")
+    occupied, origin = build_voxel_grid(mold_trimesh, res_mm)
+    shape     = occupied.shape
+    start_vox = gate_to_voxel(gate_mm, origin, res_mm, shape)
     
-    add_log(f"Building high-res voxel grid (res={res_mm:.2f}mm)...")
-    occ, origin = build_voxel_grid(mold_trimesh, res_mm)
-    order = physics_based_fill_order(occ, np.round((np.array(gate_mm)-origin)/res_mm).astype(int).clip(0, np.array(occ.shape)-1))
-    cache = {"occupied": occ, "origin": origin, "res_mm": res_mm, "gate": gate_key, "fill_order": order, "total": len(order)}
+    fill_order = physics_based_fill_order(occupied, start_vox)
+    cache = {
+        "occupied":  occupied,
+        "origin":    origin,
+        "res_mm":    res_mm,
+        "gate":      gate_key,
+        "fill_order": fill_order,
+        "total":     len(fill_order),
+    }
     st.session_state["voxel_cache"] = cache
     return cache
 
-def voxels_to_mesh3d(vox_indices, origin, res_mm, fill_ratios=None, max_vox=8000):
+def voxels_to_mesh3d(vox_indices, origin, res_mm, fill_ratios=None, max_vox=6000):
     vox_arr = np.array(vox_indices, dtype=float)
-    if len(vox_arr) == 0: return None, None, None, None, None
-    if len(vox_arr) > max_vox:
-        idx = np.round(np.linspace(0, len(vox_arr)-1, max_vox)).astype(int)
-        vox_arr = vox_arr[idx]
-        if fill_ratios is not None: fill_ratios = np.asarray(fill_ratios)[idx]
-    
     N = len(vox_arr)
+    if N == 0:
+        return None, None, None, None, None
+
+    if N > max_vox:
+        idx = np.round(np.linspace(0, N-1, max_vox)).astype(int)
+        vox_arr = vox_arr[idx]
+        if fill_ratios is not None:
+            fill_ratios = np.asarray(fill_ratios)[idx]
+        N = max_vox
+
     h = res_mm * 0.5
-    corners = np.array([[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]]) * h
-    tri = np.array([[0,1,2],[0,2,3],[4,6,5],[4,7,6],[0,4,5],[0,5,1],[2,6,7],[2,7,3],[0,3,7],[0,7,4],[1,5,6],[1,6,2]])
+    corners = np.array([[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
+                         [-1,-1, 1],[1,-1, 1],[1,1, 1],[-1,1, 1]], dtype=float) * h
+
+    tri = np.array([[0,1,2],[0,2,3], [4,6,5],[4,7,6], [0,4,5],[0,5,1], 
+                    [2,6,7],[2,7,3], [0,3,7],[0,7,4], [1,5,6],[1,6,2]])
+
     centers = origin + (vox_arr + 0.5) * res_mm
-    
-    all_pts, all_i, all_j, all_k, all_int = np.empty((N*8,3)), np.empty(N*12), np.empty(N*12), np.empty(N*12), np.empty(N*8)
+
+    all_pts = np.empty((N * 8, 3), dtype=float)
+    all_i   = np.empty(N * 12, dtype=np.int32)
+    all_j   = np.empty(N * 12, dtype=np.int32)
+    all_k   = np.empty(N * 12, dtype=np.int32)
+    all_int = np.empty(N * 8,  dtype=float)
+
     for ci in range(N):
-        all_pts[ci*8:ci*8+8] = corners + centers[ci]
-        all_i[ci*12:ci*12+12], all_j[ci*12:ci*12+12], all_k[ci*12:ci*12+12] = tri[:,0]+ci*8, tri[:,1]+ci*8, tri[:,2]+ci*8
-        val = float(fill_ratios[ci]) if fill_ratios is not None else ci/(N-1)
-        all_int[ci*8:ci*8+8] = val
+        pts      = corners + centers[ci]
+        base_pt  = ci * 8
+        base_tri = ci * 12
+        all_pts[base_pt:base_pt+8] = pts
+        all_i[base_tri:base_tri+12] = tri[:,0] + base_pt
+        all_j[base_tri:base_tri+12] = tri[:,1] + base_pt
+        all_k[base_tri:base_tri+12] = tri[:,2] + base_pt
+        val = float(fill_ratios[ci]) if fill_ratios is not None else ci / max(N-1, 1)
+        all_int[base_pt:base_pt+8] = val
+
     return all_pts, all_i, all_j, all_k, all_int
 
-# ───────────────────── Sidebar ─────────────────────
+# ───────────────────── Plotly traces ─────────────────────
+def make_mold_trace(mold_trimesh, opacity=0.1):
+    v, f = mold_trimesh.vertices, mold_trimesh.faces
+    return go.Mesh3d(x=v[:,0], y=v[:,1], z=v[:,2],
+                     i=f[:,0], j=f[:,1], k=f[:,2],
+                     opacity=opacity, color="lightgray",
+                     name="Mold", showlegend=True)
+
+def make_solid_fluid_trace(pts, i, j, k, intensity, opacity=0.9):
+    return go.Mesh3d(
+        x=pts[:,0], y=pts[:,1], z=pts[:,2],
+        i=i, j=j, k=k,
+        intensity=intensity,
+        colorscale="Jet",
+        cmin=0.0, cmax=1.0,
+        opacity=opacity,
+        name="Fluid (Solid Voxel)",
+        showscale=True,
+        colorbar=dict(title="Fill Order", thickness=15, len=0.6)
+    )
+
+# ───────────────────── Summary ─────────────────────
+def build_summary_text():
+    ep = st.session_state.get("executed_params")
+    if ep is None: return None
+    lines = [
+        "Simulation Status: Success",
+        f"Material: {ep.get('material','N/A')}",
+        f"Velocity: {ep.get('vel_mms',0)/1000:.4f} m/s   ({ep.get('vel_mms',0):.1f} mm/s)",
+        f"Viscosity: {ep.get('viscosity',0):.2e} m²/s",
+        f"Density: {ep.get('density',0):.0f} kg/m³",
+        f"Melt Temp: {ep.get('melt_temp',0):.1f} °C",
+        f"Injection Temp: {ep.get('temp',0):.1f} °C",
+        f"Pressure: {ep.get('press',0):.1f} MPa",
+        f"End Time (Max 180s): {ep.get('etime',0):.2f} s",
+        f"Gate Dia: {ep.get('gate_dia',0):.1f} mm",
+        f"Signal ID: {ep.get('signal_id','N/A')}",
+    ]
+    if os.path.exists("results.txt"):
+        with open("results.txt") as f:
+            raw = f.read()
+        for kw in ["Last Time Step","Time Steps","Finish Time"]:
+            m = re.search(rf"{kw}[:\s]+(.+)", raw)
+            if m: lines.append(f"{kw}: {m.group(1).strip()}")
+    return "\n".join(lines)
+
+# ───────────────────── Material DB ─────────────────────
+LOCAL_DB = {
+    "PA66+30GF": {"nu":4e-4,  "rho":1300.0, "Tmelt":285.0,"Tmold":85.0, "press_mpa":110.0,"vel_mms":80.0},
+    "MIM":       {"nu":5e-3,  "rho":5000.0, "Tmelt":185.0,"Tmold":40.0, "press_mpa":100.0,"vel_mms":30.0},
+    "17-4PH":    {"nu":4e-3,  "rho":7780.0, "Tmelt":185.0,"Tmold":40.0, "press_mpa":110.0,"vel_mms":25.0},
+    "316L":      {"nu":4e-3,  "rho":7900.0, "Tmelt":185.0,"Tmold":40.0, "press_mpa":110.0,"vel_mms":25.0},
+}
+def get_props(material):
+    name = material.upper().strip()
+    if name in LOCAL_DB:
+        return {**LOCAL_DB[name], "material": name, "source": "Database"}
+    return {"nu":1e-3,"rho":1000.0,"Tmelt":220.0,"Tmold":50.0,"press_mpa":70.0,"vel_mms":80.0,"material":material, "source":"Default"}
+
+def get_process(material):
+    p = get_props(material)
+    return {"temp":float(p["Tmelt"]),"press":float(p["press_mpa"]),"vel":float(p["vel_mms"])}
+
+# ═══════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ═══════════════════════════════════════════════════════════════
 with st.sidebar:
     st.header("📂 1. Geometry")
-    uploaded = st.file_uploader("Upload STL", type=["stl"])
+    uploaded = st.file_uploader("Upload STL (mm)", type=["stl"])
     if uploaded:
-        st.session_state["mesh"] = trimesh.load(uploaded, file_type="stl")
-        st.session_state["voxel_cache"] = None
+        try:
+            mesh_obj = trimesh.load(uploaded, file_type="stl")
+            st.session_state["mesh"] = mesh_obj
+            st.session_state["voxel_cache"] = None
+            st.success(f"✅ STL loaded — {len(mesh_obj.faces):,} faces")
+        except Exception as e:
+            st.error(f"STL load failed: {e}")
 
-    st.divider(); st.header("📍 2. Gate")
-    g_size = st.number_input("Gate Dia (mm)", 0.5, 10.0, 2.0, key="gsize")
-    vx = st.number_input("Gate X", value=float(st.session_state["gx"]), key="gx")
-    vy = st.number_input("Gate Y", value=float(st.session_state["gy"]), key="gy")
-    vz = st.number_input("Gate Z", value=float(st.session_state["gz"]), key="gz")
+    st.divider()
+    st.header("📍 2. Gate Configuration")
+    g_size = st.number_input("Gate Diameter (mm)", 0.5, 10.0, step=0.1, key="gsize")
+    vx = st.number_input("Gate X", value=float(st.session_state["gx"]), step=0.1, key="gx")
+    vy = st.number_input("Gate Y", value=float(st.session_state["gy"]), step=0.1, key="gy")
+    vz = st.number_input("Gate Z", value=float(st.session_state["gz"]), step=0.1, key="gz")
+
+    mesh_obj = st.session_state.get("mesh")
+    if mesh_obj:
+        snap, _, _ = trimesh.proximity.closest_point(mesh_obj, [[vx, vy, vz]])
+        gx, gy, gz = float(snap[0][0]), float(snap[0][1]), float(snap[0][2])
+    else:
+        gx, gy, gz = vx, vy, vz
+    st.session_state["gx_final"] = gx
+    st.session_state["gy_final"] = gy
+    st.session_state["gz_final"] = gz
+
+    st.divider()
+    st.header("🧪 3. Material")
+    mat_name = st.text_input("Material Name", value=st.session_state["mat_name"], key="mat_name_input")
+    st.session_state["mat_name"] = mat_name
+    if st.button("🤖 AI Material Properties", use_container_width=True, type="primary"):
+        st.session_state["props"] = get_props(mat_name)
+        st.session_state["props_confirmed"] = False
+
+    if st.session_state["props"]:
+        p = st.session_state["props"]
+        with st.expander("📋 Edit Properties", expanded=True):
+            p["nu"]    = st.number_input("Viscosity (m²/s)", value=float(p["nu"]), format="%.2e")
+            p["rho"]   = st.number_input("Density (kg/m³)",  value=float(p["rho"]))
+            p["Tmelt"] = st.number_input("Melt Temp (°C)",   value=float(p["Tmelt"]))
+            if st.button("✅ Confirm Properties", use_container_width=True):
+                st.session_state["props_confirmed"] = True
+                st.toast("Properties confirmed!", icon="✅")
+
+    st.divider()
+    st.header("⚙️ 4. Process")
     
-    if st.session_state["mesh"]:
-        snap, _, _ = trimesh.proximity.closest_point(st.session_state["mesh"], [[vx, vy, vz]])
-        gx, gy, gz = map(float, snap[0])
-    else: gx, gy, gz = vx, vy, vz
-    st.session_state.update({"gx_final": gx, "gy_final": gy, "gz_final": gz})
+    # --- 이론적 충진 시간 계산 ---
+    theo_time = 1.0
+    if mesh_obj:
+        vel_current = float(st.session_state["vel"])
+        theo_time = calc_theoretical_fill_time(mesh_obj, float(g_size), vel_current)
+        st.info(f"💡 100% 예상 충진 시간: 약 **{theo_time:.2f}초**")
 
-    st.divider(); st.header("🧪 3. Material")
-    mat_name = st.text_input("Name", value=st.session_state["mat_name"], key="mat_name_input")
-    if st.button("🤖 Set Material", type="primary"): st.session_state["props"] = {"nu":1e-3,"rho":1000,"Tmelt":220,"material":mat_name}
-    if st.session_state["props"]: 
-        if st.button("✅ Confirm Props"): st.session_state["props_confirmed"] = True
+    if st.button("🤖 Optimize Process", use_container_width=True):
+        opt = get_process(mat_name)
+        st.session_state.update({"temp": opt["temp"], "press": opt["press"], "vel": opt["vel"]})
+        # 최적화 시, 새로운 속도를 기반으로 충진 시간을 재계산 후 20% 여유를 두고 자동 입력 (최대 180초)
+        new_theo = calc_theoretical_fill_time(mesh_obj, float(g_size), opt["vel"])
+        safe_etime = min(new_theo * 1.2, 180.0)
+        st.session_state["etime"] = safe_etime
+        st.toast(f"Process optimized! (Auto End Time: {safe_etime:.1f}s)", icon="🤖")
 
-    st.divider(); st.header("⚙️ 4. Process")
-    if st.session_state["mesh"]:
-        t_time = calc_theoretical_fill_time(st.session_state["mesh"], g_size, st.session_state["vel"])
-        st.info(f"💡 Fill Time: ~{t_time:.2f}s")
-
-    temp = st.number_input("Temp", 50.0, 450.0, float(st.session_state["temp"]), key="temp")
-    vel = st.number_input("Velocity", 1.0, 600.0, float(st.session_state["vel"]), key="vel")
-    etime = st.number_input("Max Time (s)", 0.1, 180.0, float(st.session_state["etime"]), key="etime")
+    temp_c    = st.number_input("Temp (°C)",       50.0,  450.0, value=float(st.session_state["temp"]),  step=1.0, key="temp")
+    press_mpa = st.number_input("Pressure (MPa)",  10.0,  250.0, value=float(st.session_state["press"]), step=1.0, key="press")
+    vel_mms   = st.number_input("Velocity (mm/s)",  1.0,  600.0, value=float(st.session_state["vel"]),   step=1.0, key="vel")
     
-    # [요청반영] 기본값 10 설정 및 세션 상태 즉시 반영
-    num_frames = st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], value=10, key="num_frames")
+    # End Time 제한을 10초 -> 180초(3분)로 확장
+    etime     = st.number_input("End Time (s)", 
+                                min_value=0.1, max_value=180.0, 
+                                value=min(float(st.session_state["etime"]), 180.0), 
+                                step=0.1, key="etime",
+                                help="충진이 완료될 때까지의 시뮬레이션 허용 최대 시간 (최대 3분)")
 
-    if st.button("🚀 Run Cloud Sim", type="primary", use_container_width=True):
-        sig_id = str(uuid.uuid4())[:8]
-        res_mm = compute_voxel_res_mm(st.session_state["mesh"])
-        payload = {"signal_id":sig_id, "material":mat_name, "temp":temp, "vel":vel/1000, "etime":etime, "num_frames":num_frames, "gate_size":g_size}
-        # 서버 요청 (생략: 기존과 동일)
-        st.session_state.update({"sim_running":True, "last_signal_id":sig_id})
-        add_log(f"🚀 Launched | Frames: {num_frames} | Res: {res_mm:.2f}mm")
+    if st.button("✅ Confirm Process", use_container_width=True):
+        st.session_state["process_confirmed"] = True
+        st.toast("Process confirmed!", icon="✅")
 
-# ───────────────────── Main ─────────────────────
-col1, col2 = st.columns([2,1])
-with col1:
-    if st.session_state["mesh"]:
-        v, f = st.session_state["mesh"].vertices, st.session_state["mesh"].faces
-        fig = go.Figure(data=[go.Mesh3d(x=v[:,0],y=v[:,1],z=v[:,2],i=f[:,0],j=f[:,1],k=f[:,2],color="#AAAAAA",opacity=0.5)])
-        fig.add_trace(go.Scatter3d(x=[gx], y=[gy], z=[gz], mode="markers", marker=dict(size=10,color="red")))
-        st.plotly_chart(fig, use_container_width=True)
+    st.divider()
+    num_frames_sel = st.select_slider("Animation Frames", options=[5, 10, 15, 20, 30], value=st.session_state.get("num_frames", 15))
+    st.session_state["num_frames"] = num_frames_sel
 
-with col2:
-    st.header("📟 Logs")
-    for log in st.session_state["sim_logs"][-15:]: st.code(log)
-    if st.button("🔄 Sync Results"):
-        # GitHub 동기화 로직 실행 후 세션의 vtk_files 업데이트
-        st.session_state["vtk_files"] = sample_vtk_files("VTK", st.session_state["num_frames"])
-        st.rerun()
+    run_disabled = (st.session_state["sim_running"] or not st.session_state["props_confirmed"] or not st.session_state.get("process_confirmed"))
+    
+    if st.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True, disabled=run_disabled):
+        if not ZAPIER_URL:
+            st.error("ZAPIER_URL not configured")
+        else:
+            clear_old_results()
+            sig_id  = str(uuid.uuid4())[:8]
+            res_mm  = compute_voxel_res_mm(mesh_obj) if mesh_obj else 1.0
 
-# ───────────────────── Animation ─────────────────────
+            st.session_state["executed_params"] = {
+                "signal_id":   sig_id, "material": st.session_state["mat_name"],
+                "viscosity":   float(st.session_state["props"]["nu"]), "density": float(st.session_state["props"]["rho"]),
+                "melt_temp":   float(st.session_state["props"]["Tmelt"]), "temp": float(temp_c),
+                "press":       float(press_mpa), "vel_mms": float(vel_mms), "etime": float(etime),
+                "gate_x": gx, "gate_y": gy, "gate_z": gz, "gate_dia": float(g_size),
+                "num_frames":  num_frames_sel, "mesh_res_mm": res_mm,
+            }
+            st.session_state.update({"last_signal_id": sig_id, "sim_running": True, "sim_status": "running", "voxel_cache": None})
+            add_log(f"🚀 Launched | Max End Time: {etime}s")
+
+            payload = {
+                "signal_id": sig_id, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "material": st.session_state["executed_params"]["material"],
+                "viscosity": st.session_state["executed_params"]["viscosity"],
+                "density": st.session_state["executed_params"]["density"],
+                "temp": st.session_state["executed_params"]["temp"],
+                "press": st.session_state["executed_params"]["press"],
+                "vel": round(vel_mms / 1000, 6),
+                "etime": float(etime), # 업데이트된 최대 180초 값 서버로 전송
+                "num_frames": num_frames_sel,
+                "mesh_resolution": res_mm / 1000.0,
+                "gate_pos": {"x":round(gx,3),"y":round(gy,3),"z":round(gz,3)},
+                "gate_size": float(g_size),
+            }
+            try:
+                r = requests.post(ZAPIER_URL, json=payload, timeout=10)
+                if r.status_code == 200:
+                    st.toast(f"Signal sent! ID: {sig_id}", icon="🚀")
+                else:
+                    st.error(f"Failed: HTTP {r.status_code}")
+                    st.session_state["sim_running"] = False
+            except Exception as e:
+                st.error(f"Error: {e}"); st.session_state["sim_running"] = False
+
+# ═══════════════════════════════════════════════════════════════
+#  MAIN AREA
+# ═══════════════════════════════════════════════════════════════
+col_geo, col_log = st.columns([2, 1])
+with col_geo:
+    st.header("🎥 3D Geometry & Gate")
+    if mesh_obj:
+        v, f = mesh_obj.vertices, mesh_obj.faces
+        fig = go.Figure(data=[
+            go.Mesh3d(x=v[:,0],y=v[:,1],z=v[:,2], i=f[:,0],j=f[:,1],k=f[:,2], color="#AAAAAA", opacity=0.7),
+            go.Scatter3d(x=[st.session_state["gx_final"]], y=[st.session_state["gy_final"]], z=[st.session_state["gz_final"]],
+                         mode="markers", marker=dict(size=st.session_state["gsize"]*3, color="red"), name="Gate")
+        ])
+        fig.update_layout(margin=dict(l=0,r=0,b=0,t=0), scene=dict(aspectmode="data"), height=500)
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom":True})
+    else:
+        st.info("Upload STL file to see 3D model")
+
+with col_log:
+    st.header("📟 Simulation Logs")
+    lc = st.container(height=350)
+    with lc:
+        for log in st.session_state["sim_logs"][-25:]: st.code(log, language="bash")
+    if st.button("🗑 Clear Logs", use_container_width=True):
+        st.session_state["sim_logs"] = []; st.rerun()
+
+st.title("📊 Simulation Results")
+cr1, cr2 = st.columns([2, 1])
+with cr1: st.markdown("### Download & Sync")
+with cr2:
+    if st.button("🔄 Sync Results", use_container_width=True, type="primary"):
+        if sync_simulation_results(): st.rerun()
+
+summary_text = build_summary_text()
+if summary_text: st.text_area("📄 Simulation Summary", summary_text, height=230)
+
+# ═══════════════════════════════════════════════════════════════
+#  ★★★ 3D FILLING ANIMATION – SOLID VOXEL ENGINE ★★★
+# ═══════════════════════════════════════════════════════════════
 vtk_dir = "VTK"
-if os.path.exists(vtk_dir) and st.session_state["mesh"]:
-    st.divider(); st.subheader("🌊 Flow Animation")
-    
-    # [요청반영] 사이드바에서 선택한 프레임 수로 동적 샘플링
-    files = sample_vtk_files(vtk_dir, st.session_state["num_frames"])
-    if files:
-        cur = st.slider("Frame", 0, len(files)-1, value=st.session_state["current_frame"], key="slider_frame")
-        st.session_state["current_frame"] = cur
+if os.path.exists(vtk_dir) and mesh_obj is not None:
+    st.subheader("🌊 3D Filling Animation (Forced 100% Visual Flow)")
+
+    num_frames    = st.session_state.get("num_frames", 15)
+    sampled_files = sample_vtk_files(vtk_dir, num_frames)
+    total_steps   = len(sampled_files)
+
+    if total_steps > 0:
+        with st.expander("🔧 Visualization Settings", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                mold_opacity  = st.slider("Mold Opacity",  0.0, 0.5, 0.10, 0.01)
+                fluid_opacity = st.slider("Fluid Opacity", 0.3, 1.0, 0.90, 0.05)
+            with c2:
+                default_res = compute_voxel_res_mm(mesh_obj)
+                res_mm_ui = st.slider("Voxel Resolution (mm)", 0.3, 3.0, float(round(default_res, 1)), 0.1)
+                cache = st.session_state.get("voxel_cache")
+                if cache and abs(cache["res_mm"] - res_mm_ui) > 0.05:
+                    st.session_state["voxel_cache"] = None
+            with c3:
+                max_vox_render = st.select_slider("Max Voxels (render)", options=[2000, 4000, 6000, 8000, 12000], value=6000)
+
+        # ─── Animation Controls ───
+        cc1, cc2, cc3, cc4 = st.columns([1, 1, 3, 1])
+        with cc1:
+            if st.button("⏮ First", use_container_width=True): st.session_state.update({"current_frame":0, "animation_playing":False}); st.rerun()
+        with cc2:
+            if st.button("⏸ Pause", use_container_width=True): st.session_state["animation_playing"] = False; st.rerun()
+        with cc3:
+            if st.button("▶ Play", use_container_width=True, type="primary"): st.session_state["animation_playing"] = True; st.rerun()
+        with cc4:
+            if st.button("⏭ Last", use_container_width=True): st.session_state.update({"current_frame":total_steps-1,"animation_playing":False}); st.rerun()
+
+        current_frame = st.slider("Frame", 0, total_steps - 1, value=min(st.session_state.get("current_frame", 0), total_steps-1))
+        st.session_state["current_frame"] = current_frame
+
+        gate_mm = (st.session_state["gx_final"], st.session_state["gy_final"], st.session_state["gz_final"])
         
-        cache = get_or_build_voxel_cache(st.session_state["mesh"], (gx,gy,gz), compute_voxel_res_mm(st.session_state["mesh"]))
-        
-        v_ratio = (cur+1)/len(files)
-        n_show = int(v_ratio * cache["total"])
-        vtk_ratio = read_alpha_fill_ratio(files[cur])
-        
-        pts, fi, fj, fk, intensity = voxels_to_mesh3d(cache["fill_order"][:n_show], cache["origin"], cache["res_mm"], max_vox=10000)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Mesh3d(x=v[:,0],y=v[:,1],z=v[:,2],i=f[:,0],j=f[:,1],k=f[:,2],opacity=0.1,color="gray"))
-        if pts is not None:
-            fig.add_trace(go.Mesh3d(x=pts[:,0],y=pts[:,1],z=pts[:,2],i=fi,j=fj,k=fk,intensity=intensity,colorscale="Jet",opacity=0.8))
-            st.success(f"Frame {cur+1}/{len(files)} | Voxel Ratio: {v_ratio*100:.1f}% | Actual VTK: {vtk_ratio*100 if vtk_ratio else 0:.1f}%")
-        
-        fig.update_layout(scene=dict(aspectmode="data"), height=600, margin=dict(l=0,r=0,b=0,t=0))
-        st.plotly_chart(fig, use_container_width=True)
+        with st.spinner("⚙️ Calculating complete flow paths..."):
+            cache = get_or_build_voxel_cache(mesh_obj, gate_mm, res_mm_ui)
+
+        if cache and cache["total"] > 0:
+            fill_order = cache["fill_order"]
+            total_vox  = cache["total"]
+            origin     = cache["origin"]
+
+            # ─── [핵심 변경] 강제 100% 시각화 로직 ───
+            # VTK의 실제 충진율과 상관없이, 화면에서는 프레임에 따라 0% -> 100%까지 강제로 보여줍니다.
+            visual_ratio = (current_frame + 1) / total_steps
+            n_show = max(1, int(visual_ratio * total_vox))
+            
+            # 실제 VTK 파일에서 추출한 물리적 충진율 정보 확보 (사용자 참고용)
+            fpath = sampled_files[current_frame]
+            vtk_ratio = read_alpha_fill_ratio(fpath)
+            
+            if vtk_ratio is not None:
+                ratio_msg = f"Visual: {visual_ratio*100:.1f}% (Actual VTK: {vtk_ratio*100:.1f}%)"
+            else:
+                ratio_msg = f"Visual: {visual_ratio*100:.1f}%"
+
+            shown_voxels = fill_order[:n_show]
+            fill_vals    = np.linspace(0.0, 1.0, n_show)
+
+            pts, fi, fj, fk, intensity = voxels_to_mesh3d(shown_voxels, origin, res_mm_ui, fill_vals, max_vox=max_vox_render)
+
+            fig = go.Figure()
+            fig.add_trace(make_mold_trace(mesh_obj, opacity=mold_opacity))
+            fig.add_trace(go.Scatter3d(
+                x=[st.session_state["gx_final"]], y=[st.session_state["gy_final"]], z=[st.session_state["gz_final"]],
+                mode="markers", marker=dict(size=st.session_state["gsize"]*2, color="red", symbol="x", line=dict(width=2, color="white")), name="Gate"
+            ))
+
+            if pts is not None:
+                fig.add_trace(make_solid_fluid_trace(pts, fi, fj, fk, intensity, fluid_opacity))
+                if vtk_ratio is not None and vtk_ratio < 0.95 and current_frame == total_steps - 1:
+                    st.warning(f"⚠️ 실제 서버 결과(Actual VTK)는 {vtk_ratio*100:.1f}% 에서 멈춘 Short Shot 상태입니다. (End Time을 확인하세요) 화면은 강제로 100%를 시각화했습니다.")
+                else:
+                    st.success(f"Frame {current_frame+1}/{total_steps} | Voxels: {n_show:,}/{total_vox:,} | {ratio_msg}")
+
+            fig.update_layout(scene=dict(aspectmode="data", xaxis_title="X", yaxis_title="Y", zaxis_title="Z"), height=650, margin=dict(l=0,r=0,b=0,t=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+        if st.session_state.get("animation_playing", False):
+            time.sleep(0.3)
+            st.session_state["current_frame"] = (current_frame + 1) % total_steps
+            st.rerun()
+
+elif os.path.exists(vtk_dir) and mesh_obj is None:
+    st.warning("⚠️ Upload STL file to enable 3D solid voxel animation.")
