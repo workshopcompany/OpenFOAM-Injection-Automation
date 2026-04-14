@@ -902,13 +902,15 @@ if os.path.exists(vtk_dir):
                 </body>
                 </html>
                 """
+# ... (이전의 html_code와 components.html 코드가 있는 위치) ...
                 components.html(html_code, height=680, scrolling=False)
 
             except Exception as e:
                 st.error(f"Animation failed: {e}")
                 st.exception(e)
-                
+        
+        # ─── [중요] 이 else는 'if os.path.exists(vtk_dir):'와 수직 위치가 같아야 합니다 ───
         else:
             st.error("VTK directory not found. Please sync results first.")
-    else:
-        st.info("결과를 확인하려면 먼저 시뮬레이션 데이터를 동기화하세요.")
+
+# ─── 만약 전체 흐름을 감싸는 다른 if문이 있다면 그에 맞춰 들여쓰기를 조절하세요 ───
