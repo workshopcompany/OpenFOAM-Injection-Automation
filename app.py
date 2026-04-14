@@ -838,14 +838,14 @@ def _safe_json_fixed(data):
     return json.dumps(data, cls=_NpEncoder).replace('</', '<\\/')
 
 # ─────────────────────────────────────────────────────────────
-# 3. 3D Filling Animation (전체 기능 통합본)
+# 3. 3D Filling Animation (에러 해결 통합본)
 # ─────────────────────────────────────────────────────────────
 vtk_dir = "VTK"
 
 if os.path.exists(vtk_dir):
     st.subheader("🌊 3D Filling Animation (alpha.water)")
 
-    # 1. 파일 수집 및 정렬 (기존 로직 유지)
+    # [1] 파일 수집 및 정렬
     all_files = list(dict.fromkeys(
         glob.glob(f"{vtk_dir}/case_*.vtm") +
         glob.glob(f"{vtk_dir}/**/case_*.vtm", recursive=True) +
@@ -864,12 +864,12 @@ if os.path.exists(vtk_dir):
         total_steps = len(all_files)
         mold_mesh = st.session_state.get("mesh")
 
-        # ── [A] 슬라이더 단일 스텝 뷰 (좌표 보정 적용) ──
+        # ── [A] 슬라이더 단일 스텝 뷰 (중복 방지를 위해 unique key 추가) ──
         st.markdown("#### 🎚 Step-by-Step Viewer")
-        step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, 0, format="Step %d")
+        step_idx = st.slider("⏱ Time Step", 0, total_steps - 1, 0, format="Step %d", key="unique_step_slider")
         
         try:
-            # 보정된 함수 호출 (금형 데이터 기반 정렬)
+            # 좌표 보정이 적용된 함수 호출
             result, alpha_vals, n_fluid_cells, dbg = load_and_threshold_corrected(all_files[step_idx], mold_mesh)
             
             fig = go.Figure()
@@ -880,7 +880,7 @@ if os.path.exists(vtk_dir):
                 pts_tuple, fi, fj, fk = result
                 fig.add_trace(make_fluid_trace(pts_tuple, fi, fj, fk, alpha_vals))
                 
-                # 충전율 계산 (격자수 920 기준)
+                # 충전율 계산
                 total_mesh_cells = 920 
                 real_fill = (n_fluid_cells / total_mesh_cells) * 100
                 
@@ -888,56 +888,47 @@ if os.path.exists(vtk_dir):
                 c1.metric("Current Fill", f"{min(real_fill, 100.0):.1f} %")
                 c2.metric("Active Cells", f"{n_fluid_cells:,}")
                 c3.caption(f"🔍 {dbg}")
-            else:
-                st.warning("No valid fluid cells detected (inside mold bounds).")
 
             fig.update_layout(
-                scene=dict(aspectmode="data", xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)"),
+                scene=dict(aspectmode="data", xaxis_title="X", yaxis_title="Y", zaxis_title="Z"),
                 height=520, margin=dict(l=0, r=0, b=0, t=30)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="unique_plotly_chart")
         except Exception as e:
             st.error(f"Viewer Error: {e}")
 
-        # ── [B] JS-driven 애니메이션 (자동 재생 및 시점 유지) ──
+        # ── [B] JS 애니메이션 ──
         st.divider()
-        st.subheader("▶ Auto-Play Filling Animation")
-
-        if st.button("🎬 Build & Play Animation", key="btn_anim_final_play", use_container_width=True):
-            prog = st.progress(0, text="Preparing animation data...")
+        if st.button("🎬 Build & Play Animation", key="unique_anim_btn", use_container_width=True):
+            prog = st.progress(0, text="Preparing animation...")
             try:
-                # 금형 데이터 준비
                 mold_json = _trace_to_json(make_mold_trace(mold_mesh, opacity=0.08))
                 step_data = []
 
                 for i, fpath in enumerate(all_files):
-                    prog.progress((i + 1) / total_steps, text=f"Processing Step {i+1}...")
-                    # 좌표 보정 로직을 모든 프레임에 적용
+                    prog.progress((i + 1) / total_steps)
                     res, a_vals, n_cells, _ = load_and_threshold_corrected(fpath, mold_mesh)
                     
-                    fluid_json = None
-                    if res is not None:
+                    f_json = None
+                    if res:
                         f_pts, fi, fj, fk = res
                         ft = make_fluid_trace(f_pts, fi, fj, fk, a_vals, show_colorbar=True)
-                        fluid_json = _trace_to_json(ft)
+                        f_json = _trace_to_json(ft)
 
                     step_data.append({
-                        "fluid": fluid_json,
+                        "fluid": f_json,
                         "fill_pct": round((n_cells / 920) * 100, 1),
                     })
 
                 prog.empty()
 
-                # 안전하게 JSON 변환 (함수 사용)
                 step_data_js = _safe_json_fixed(step_data)
                 mold_json_js = _safe_json_fixed(mold_json)
                 layout_js = _safe_json_fixed({
-                    "scene": {"aspectmode": "data", "xaxis": {"title": "X"}, "yaxis": {"title": "Y"}, "zaxis": {"title": "Z"}},
-                    "height": 560, "margin": {"l":0,"r":0,"b":0,"t":40},
+                    "scene": {"aspectmode": "data"}, "height": 560, "margin": {"l":0,"r":0,"b":0,"t":40},
                     "paper_bgcolor": "rgba(0,0,0,0)", "plot_bgcolor": "rgba(0,0,0,0)", "font": {"color": "#eee"}
                 })
 
-                # HTML/JS 렌더링
                 html_code = f"""
                 <!DOCTYPE html>
                 <html>
@@ -952,34 +943,27 @@ if os.path.exists(vtk_dir):
                     <script>
                         const STEPS = {step_data_js}; const MOLD = {mold_json_js}; const LAYOUT = {layout_js};
                         let current = 0; let playing = false; let timer = null; let camera = null;
-
                         function goToStep(idx) {{
                             current = idx;
                             const layout = JSON.parse(JSON.stringify(LAYOUT));
                             if(camera) layout.scene.camera = camera;
-                            const traces = [];
-                            if(MOLD) traces.push(MOLD);
-                            if(STEPS[idx].fluid) traces.push(STEPS[idx].fluid);
-                            
+                            const traces = [MOLD, STEPS[idx].fluid].filter(Boolean);
                             Plotly.react('plot', traces, layout);
                             document.getElementById('stepLabel').textContent = `Step ${{idx+1}} / {total_steps} (${{STEPS[idx].fill_pct}}%)`;
                             document.getElementById('slider').value = idx;
                         }}
-
                         function togglePlay() {{
                             playing = !playing;
                             document.getElementById('btnPlay').textContent = playing ? "⏸ Pause" : "▶ Play";
                             if(playing) {{ if(current >= {total_steps-1}) current=0; run(); }}
                             else clearTimeout(timer);
                         }}
-
                         function run() {{
                             if(!playing) return;
                             goToStep(current);
                             if(current < {total_steps-1}) {{ current++; timer = setTimeout(run, 250); }}
                             else {{ playing = false; document.getElementById('btnPlay').textContent = "▶ Play"; }}
                         }}
-
                         window.onload = () => {{
                             Plotly.newPlot('plot', [MOLD, STEPS[0].fluid].filter(Boolean), LAYOUT);
                             document.getElementById('plot').on('plotly_relayout', (ed) => {{
@@ -994,4 +978,4 @@ if os.path.exists(vtk_dir):
             except Exception as e:
                 st.error(f"Animation execution failed: {e}")
 else:
-    st.error("VTK directory not found. Please sync results first.")
+    st.info("VTK directory not found. Please sync results first.")
