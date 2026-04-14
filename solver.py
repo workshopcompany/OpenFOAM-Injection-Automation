@@ -1,50 +1,46 @@
 import argparse
 import os
-import sys
 import json
 import numpy as np
 import trimesh
 import plotly.graph_objects as go
-import plotly.io as pio
 import heapq
 import time
-from datetime import datetime
 
 def parse_args():
-    p = argparse.ArgumentParser(description="MIM-Ops Voxel Flow Solver (Flow-Ratio Frame Logic)")
+    p = argparse.ArgumentParser(description="MIM-Ops Cloud Solver: Visual Flow Optimization")
     p.add_argument("--signal_id", type=str, default="manual")
     p.add_argument("--gate_x", type=float, default=0.0)
     p.add_argument("--gate_y", type=float, default=0.0)
     p.add_argument("--gate_z", type=float, default=0.0)
     p.add_argument("--gate_dia", type=float, default=2.0)
     p.add_argument("--vel_mms", type=float, default=25.0)
-    p.add_argument("--etime", type=float, default=10.0)
+    p.add_argument("--etime", type=float, default=10.0) # 최대 제한 시간
     p.add_argument("--num_frames", type=int, default=20)
+    p.add_argument("--mesh_res_mm", type=float, default=0.5)
+    p.add_argument("--stl_path", type=str, default="part.stl")
+    # 기타 재료 파라미터들 (결과 기록용)
     p.add_argument("--material", type=str, default="17-4PH")
     p.add_argument("--viscosity", type=float, default=4e-3)
     p.add_argument("--density", type=float, default=7780)
     p.add_argument("--melt_temp", type=float, default=185)
     p.add_argument("--temp", type=float, default=185)
     p.add_argument("--press", type=float, default=110)
-    p.add_argument("--mesh_res_mm", type=float, default=0.5)
-    p.add_argument("--stl_path", type=str, default="part.stl")
     return p.parse_args()
 
-def save_visual_frame(visited_indices, all_indices, coords, frame_idx, current_time, out_dir):
-    """현재까지 채워진 Voxel들을 이미지로 저장"""
-    if not visited_indices: return
-    
-    visited_list = list(visited_indices)
-    v_coords = coords[visited_list]
-    
+def save_visual_frame(coords, mask, frame_idx, current_phys_time, out_dir):
+    """현재 충진 단계의 복셀들을 렌더링하여 저장"""
+    filled_coords = coords[mask]
+    if len(filled_coords) == 0: return
+
     fig = go.Figure(data=[go.Scatter3d(
-        x=v_coords[:,0], y=v_coords[:,1], z=v_coords[:,2],
+        x=filled_coords[:,0], y=filled_coords[:,1], z=filled_coords[:,2],
         mode='markers',
         marker=dict(size=3, color='blue', opacity=0.8)
     )])
-    
+
     fig.update_layout(
-        title=f"Time: {current_time:.3f}s (Frame {frame_idx})",
+        title=f"Fill Progress: {int((frame_idx/20)*100)}% | Time: {current_phys_time:.3f}s",
         scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z'),
         margin=dict(l=0, r=0, b=0, t=40)
     )
@@ -55,85 +51,81 @@ def save_visual_frame(visited_indices, all_indices, coords, frame_idx, current_t
 def main():
     args = parse_args()
     start_wall_time = time.time()
-    
-    # 디렉토리 준비
     frames_dir = "frames"
     os.makedirs(frames_dir, exist_ok=True)
 
     # 1. STL 로드 및 복셀화
     mesh = trimesh.load(args.stl_path)
-    res_mm = args.mesh_res_mm
-    voxel_grid = mesh.voxelized(res_mm)
+    res = args.mesh_res_mm
+    voxel_grid = mesh.voxelized(res)
     all_coords = voxel_grid.points
     total_voxels = len(all_coords)
-    
-    # 2. 게이트에서 가장 가까운 복셀 찾기
-    gate_point = np.array([args.gate_x, args.gate_y, args.gate_z])
-    dists = np.linalg.norm(all_coords - gate_point, axis=1)
+
+    # 2. 물리적 충진 시간 계산 (숫자 결과용)
+    vol_mm3 = total_voxels * (res**3)
+    gate_area = np.pi * (args.gate_dia/2)**2
+    flow_rate = gate_area * args.vel_mms # mm3/s
+    theo_fill_time = vol_mm3 / flow_rate if flow_rate > 0 else 0.0
+
+    # 3. Dijkstra 기반 거리(가중치) 계산 (유동 흐름용)
+    gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z])
+    dists = np.linalg.norm(all_coords - gate_pos, axis=1)
     start_idx = np.argmin(dists)
-    
-    # 3. 인접 리스트 생성 (Flow Simulation 준비)
-    # 간단한 격자 인접 로직 (Dijkstra 기반 유동 해석)
-    pq = [(0.0, start_idx)] # (time, index)
-    visited = {}
-    
-    # 프레임 생성을 위한 인터벌 계산 (개수 기반)
-    # 시간과 관계없이 전체 복셀을 num_frames 등분함
-    frame_interval = max(1, total_voxels // args.num_frames)
-    frames_saved = 0
-    
-    # 실제 물리 유속 계산 (mm/s)
-    vel = args.vel_mms if args.vel_mms > 0 else 1.0
-    
-    print(f"Starting simulation: {total_voxels} voxels, target {args.num_frames} frames.")
 
-    # 4. 메인 솔버 루프
-    last_t = 0.0
-    while pq and len(visited) < total_voxels:
-        t, idx = heapq.heappop(pq)
+    # 거리 가중치 맵 생성
+    weights = np.full(total_voxels, np.inf)
+    weights[start_idx] = 0
+    pq = [(0, start_idx)]
+    
+    # 단순화를 위한 인접 노드 탐색 (KDTree 활용 추천하나 여기선 거리 기반)
+    # 실제로는 solver (1).py 등에 있던 인접 로직을 활용
+    while pq:
+        d, idx = heapq.heappop(pq)
+        if d > weights[idx]: continue
         
-        if idx in visited: continue
-        visited[idx] = t
-        last_t = t
+        # 주변 복셀 탐색 (거리 res*1.5 이내)
+        diff = np.linalg.norm(all_coords - all_coords[idx], axis=1)
+        neighbors = np.where((diff > 0) & (diff < res * 1.8))[0]
         
-        # [수정 포인트] 충진 개수가 도달할 때마다 프레임 저장
-        if len(visited) % frame_interval == 0 and frames_saved < args.num_frames:
-            save_visual_frame(visited.keys(), range(total_voxels), all_coords, frames_saved, t, frames_dir)
-            frames_saved += 1
-            print(f"Frame {frames_saved} saved at t={t:.4f}s ({len(visited)}/{total_voxels} voxels)")
+        for n_idx in neighbors:
+            new_d = d + diff[n_idx]
+            if new_d < weights[n_idx]:
+                weights[n_idx] = new_d
+                heapq.heappush(pq, (new_d, n_idx))
 
-        # 주변 복셀 탐색 (거리/속도로 시간 계산)
-        # 이 예시에서는 단순화를 위해 인접한 노드를 t + (거리/속도)로 추가
-        # (실제 solver 로직에 맞춰 인접 노드 계산 부분을 유지하세요)
-        # ... (생략된 기존 인접 노드 확장 로직) ...
-        # 임시 로직:
-        for i in range(len(all_coords)):
-            if i not in visited:
-                d_node = np.linalg.norm(all_coords[idx] - all_coords[i])
-                if d_node <= res_mm * 1.5: # 인접 노드 조건
-                    heapq.heappush(pq, (t + d_node/vel, i))
+    # 4. 애니메이션 생성 (핵심: 형상 등분)
+    max_weight = np.max(weights[weights != np.inf])
+    num_frames = args.num_frames
+    
+    for f in range(num_frames):
+        # 시각적 비율 (0.0 ~ 1.0)
+        ratio = (f + 1) / num_frames
+        # 이 프레임에 해당하는 물리 시간 매핑
+        current_time = ratio * theo_fill_time
+        # 가중치 컷오프
+        threshold = ratio * max_weight
+        mask = weights <= threshold
+        
+        save_visual_frame(all_coords, mask, f, current_time, frames_dir)
+        print(f"Frame {f+1}/{num_frames} generated. (Sim Time: {current_time:.4f}s)")
 
-    # 최종 결과 기록
+    # 5. 결과 파일 저장
     elapsed = time.time() - start_wall_time
-    vol_mm3 = total_voxels * (res_mm ** 3)
-    
-    summary = {
+    results = {
         "Signal ID": args.signal_id,
         "Total Voxels": total_voxels,
-        "Part Volume (mm3)": vol_mm3,
-        "Last Time Step": round(last_t, 4),
+        "Part Volume (mm3)": round(vol_mm3, 2),
+        "Theo Fill Time (s)": round(theo_fill_time, 4),
         "Solver Time (s)": round(elapsed, 2),
-        "Frames Generated": frames_saved
+        "Status": "Success"
     }
-    
+
     with open("results.json", "w") as f:
-        json.dump(summary, f, indent=4)
-        
+        json.dump(results, f, indent=4)
+    
     with open("results.txt", "w") as f:
-        for k, v in summary.items():
+        for k, v in results.items():
             f.write(f"{k}: {v}\n")
-            
-    print("Simulation Completed Successfully.")
 
 if __name__ == "__main__":
     main()
