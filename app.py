@@ -1,13 +1,3 @@
-"""
-MIM-Ops Pro v2.7
-=================
-변경사항 (v2.7):
-  [1] Voxel 해상도 2배 세밀화: min_dim / 5.0 → min_dim / 10.0 (상한 1.0mm, 하한 0.15mm)
-  [2] 충진 시뮬레이션 시간: 고정 30초 폐기 → 이론 충진 시간 자동 계산 후 20% 여유, 최대 3분(180초) 상한
-  [3] 게이트 위치 AI 제안: '🤖 AI Gate Suggest' 버튼 → DFT 기반 최적 위치 추천 + 수정 가능
-  [4] 재료 DB를 material_property.txt 파일 기반으로 전환: 앱 재시작 없이 파일 수정으로 업데이트 가능
-      AI 추천 버튼은 txt에서 가장 유사한 재료를 찾아 반환, 없으면 Claude API 호출 fallback
-"""
 
 import streamlit as st
 import os, time, uuid, requests, shutil
