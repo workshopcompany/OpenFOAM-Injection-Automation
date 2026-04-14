@@ -1,0 +1,136 @@
+# .github/workflows/run_sim.yml
+#
+# MIM-Ops Cloud Solver  ─  GitHub Actions Workflow
+# ==================================================
+# Triggered by Streamlit via /repos/{owner}/{repo}/dispatches
+# (event_type: "run-simulation")
+#
+# Artifacts uploaded:
+#   simulation-{signal_id}   ← frames/*.png + results.txt + results.json
+
+name: Run MIM Injection Simulation
+
+on:
+  repository_dispatch:
+    types: [run-simulation]
+
+  # Allow manual trigger from Actions tab (for testing)
+  workflow_dispatch:
+    inputs:
+      signal_id:
+        description: 'Signal ID (test run)'
+        default: 'manual-test'
+      stl_filename:
+        description: 'STL filename in repo'
+        default: 'part.stl'
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest          # 2-core CPU, 7 GB RAM – free tier
+    timeout-minutes: 60             # hard stop at 60 min
+
+    steps:
+      # ── 1. Checkout repo ──────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ──────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Install dependencies ───────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            numpy \
+            trimesh \
+            scipy \
+            plotly \
+            kaleido \
+            pandas
+
+      # ── 4. Prepare STL file ───────────────────────────────────
+      # The STL is either committed in the repo (default: part.stl)
+      # or passed as base64 in client_payload.stl_b64.
+      - name: Prepare STL file
+        env:
+          STL_B64: ${{ github.event.client_payload.stl_b64 }}
+          STL_FILENAME: ${{ github.event.client_payload.stl_filename || inputs.stl_filename || 'part.stl' }}
+        run: |
+          if [ -n "$STL_B64" ]; then
+            echo "Decoding base64 STL..."
+            echo "$STL_B64" | base64 -d > "$STL_FILENAME"
+            echo "STL_PATH=$STL_FILENAME" >> $GITHUB_ENV
+          elif [ -f "$STL_FILENAME" ]; then
+            echo "Using repo STL: $STL_FILENAME"
+            echo "STL_PATH=$STL_FILENAME" >> $GITHUB_ENV
+          else
+            echo "ERROR: No STL file found. Commit part.stl to repo root or pass stl_b64."
+            exit 1
+          fi
+
+      # ── 5. Run solver ─────────────────────────────────────────
+      - name: Run MIM Voxel Flow Solver
+        env:
+          SIGNAL_ID:    ${{ github.event.client_payload.signal_id   || inputs.signal_id || 'manual' }}
+          GATE_X:       ${{ github.event.client_payload.gate_x      || '0.0' }}
+          GATE_Y:       ${{ github.event.client_payload.gate_y      || '0.0' }}
+          GATE_Z:       ${{ github.event.client_payload.gate_z      || '0.0' }}
+          GATE_DIA:     ${{ github.event.client_payload.gate_dia    || '2.0' }}
+          VEL_MMS:      ${{ github.event.client_payload.vel_mms     || '25.0' }}
+          ETIME:        ${{ github.event.client_payload.etime       || '10.0' }}
+          NUM_FRAMES:   ${{ github.event.client_payload.num_frames  || '15' }}
+          MATERIAL:     ${{ github.event.client_payload.material    || '17-4PH' }}
+          VISCOSITY:    ${{ github.event.client_payload.viscosity   || '4e-3' }}
+          DENSITY:      ${{ github.event.client_payload.density     || '7780' }}
+          MELT_TEMP:    ${{ github.event.client_payload.melt_temp   || '185' }}
+          TEMP:         ${{ github.event.client_payload.temp        || '185' }}
+          PRESS:        ${{ github.event.client_payload.press       || '110' }}
+          MESH_RES_MM:  ${{ github.event.client_payload.mesh_res_mm || '0.5' }}
+        run: |
+          python solver.py \
+            --signal_id   "$SIGNAL_ID"   \
+            --gate_x      "$GATE_X"      \
+            --gate_y      "$GATE_Y"      \
+            --gate_z      "$GATE_Z"      \
+            --gate_dia    "$GATE_DIA"    \
+            --vel_mms     "$VEL_MMS"     \
+            --etime       "$ETIME"       \
+            --num_frames  "$NUM_FRAMES"  \
+            --material    "$MATERIAL"    \
+            --viscosity   "$VISCOSITY"   \
+            --density     "$DENSITY"     \
+            --melt_temp   "$MELT_TEMP"   \
+            --temp        "$TEMP"        \
+            --press       "$PRESS"       \
+            --mesh_res_mm "$MESH_RES_MM" \
+            --stl_path    "$STL_PATH"
+
+      # ── 6. Upload artifacts ───────────────────────────────────
+      - name: Upload simulation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}
+          path: |
+            frames/
+            results.txt
+            results.json
+          retention-days: 30
+          if-no-files-found: error
+
+      # ── 7. (Optional) commit result summary back to repo ──────
+      - name: Commit results summary
+        if: always()
+        run: |
+          git config --global user.name  "MIM-Ops-Bot"
+          git config --global user.email "mim-ops-bot@github.com"
+          mkdir -p simulation_history
+          SIGNAL="${{ github.event.client_payload.signal_id || 'manual' }}"
+          cp results.json "simulation_history/${SIGNAL}.json" 2>/dev/null || true
+          git add simulation_history/ || true
+          git diff --cached --quiet || git commit -m "sim result: ${SIGNAL}"
+          git push || true
