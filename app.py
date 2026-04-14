@@ -787,50 +787,55 @@ with col_log:
 # ─────────── Results & Sync ───────────
 st.title("📊 Simulation Results")
 
-# 디버깅 로그를 담을 공간 (접이식 메뉴로 깔끔하게 처리)
-with st.expander("🔍 Debugging Logs (이미지가 안 보일 때 확인)"):
-    result_dir = st.session_state.get("last_result_dir", "None")
-    result_frames = st.session_state.get("result_frames", [])
+# 디버깅 섹션: 문제가 생겼을 때 이 부분을 캡처해서 확인하세요.
+with st.expander("🔍 System Diagnostic Logs", expanded=True):
+    res_dir = st.session_state.get("last_result_dir", "temp_results")
+    frames_list = st.session_state.get("result_frames", [])
     
-    st.write(f"1. Last Result Directory: `{result_dir}`")
-    st.write(f"2. Session Frame Count: `{len(result_frames)}`")
+    st.write(f"📂 **Current Result Directory:** `{res_dir}`")
+    st.write(f"🖼️ **Frames in Session:** `{len(frames_list)}`")
     
-    if result_dir != "None":
-        frames_path = os.path.join(result_dir, "frames")
-        st.write(f"3. Searching Path: `{frames_path}`")
-        if os.path.exists(frames_path):
-            files = os.listdir(frames_path)
-            st.write(f"4. Files in Directory: `{files[:5]}... (Total {len(files)})`")
-        else:
-            st.error(f"4. Directory NOT FOUND: `{frames_path}`")
+    # 실제 경로 존재 여부 확인
+    frames_path = os.path.join(res_dir, "frames")
+    if os.path.exists(frames_path):
+        actual_files = os.listdir(frames_path)
+        st.write(f"📁 **Files found on Disk:** `{len(actual_files)} files`")
+        if len(actual_files) > 0:
+            st.code(f"Sample file: {actual_files[0]}")
+    else:
+        st.error(f"❌ **Path not found:** `{frames_path}` (Sync 버튼을 눌러야 생깁니다)")
 
 cr1, cr2 = st.columns([2, 1])
 with cr1:
-    st.markdown("### Download & Sync from GitHub Actions")
+    st.markdown("### Download & Sync from GitHub")
 with cr2:
     if st.button("🔄 Sync Results", width='stretch', type="primary"):
-        sync_simulation_results()
-        
-        # 동적 로드 및 정렬 로직
-        res_dir = st.session_state.get("last_result_dir", "temp_results")
-        image_files = glob.glob(os.path.join(res_dir, "frames", "frame_*.png"))
-        
-        if image_files:
-            # 숫자를 기준으로 정렬 (frame_0.png, frame_1.png...)
-            image_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-            st.session_state["result_frames"] = image_files
-            st.session_state["current_frame"] = 0
-            st.success(f"✅ {len(image_files)} 프레임 동기화 완료!")
-        else:
-            st.error("❌ 이미지 파일을 찾을 수 없습니다. solver.py의 출력을 확인하세요.")
+        with st.spinner("Downloading results from GitHub..."):
+            sync_simulation_results() # 이 함수 안에서 last_result_dir를 세션에 저장해야 함
+            
+            # 다시 경로 확인 및 로드
+            current_res_dir = st.session_state.get("last_result_dir", "temp_results")
+            # solver (5).py 규칙에 맞춰 frame_*.png 검색
+            pattern = os.path.join(current_res_dir, "frames", "frame_*.png")
+            image_files = glob.glob(pattern)
+            
+            if image_files:
+                # 파일명 숫자 기준 정렬
+                image_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+                st.session_state["result_frames"] = image_files
+                st.session_state["current_frame"] = 0
+                st.success(f"✅ {len(image_files)} frames loaded!")
+            else:
+                st.error(f"❌ No images found at {pattern}")
         st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
-result_frames = st.session_state.get("result_frames", [])
-
 if result_frames:
     st.subheader("🌊 3D Filling Animation")
-    total_steps = len(result_frames)
+    # 최신 Streamlit 규격: use_container_width=True 대신 width='stretch' 사용
+    curr = st.session_state.get("current_frame", 0)
+    st.image(result_frames[curr], caption=f"Step {curr+1}", width='stretch')
+    
 
     # 슬라이더 및 컨트롤 (생략 - 기존 코드 유지)
     curr_idx = st.session_state.get("current_frame", 0)
