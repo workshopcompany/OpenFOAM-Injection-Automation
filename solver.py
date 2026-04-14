@@ -91,18 +91,25 @@ jobs:
           echo "NUM_FRAMES=${nf:-15}"    >> $GITHUB_ENV
           echo "MESH_RES_MM=${res:-0.5}" >> $GITHUB_ENV
 
+# ── 5. Run solver ─────────────────────────────────────────
       - name: Run MIM Voxel Flow Solver
         env:
-          SIGNAL_ID:    ${{ github.event.client_payload.signal_id   || inputs.signal_id || 'manual' }}
-          VEL_MMS:      ${{ github.event.client_payload.vel_mms     || '25.0' }}
-          ETIME:        ${{ github.event.client_payload.etime       || '10.0' }}
-          MATERIAL:     ${{ github.event.client_payload.material    || '17-4PH' }}
-          VISCOSITY:    ${{ github.event.client_payload.viscosity   || '4e-3' }}
-          DENSITY:      ${{ github.event.client_payload.density     || '7780' }}
-          TEMP:         ${{ github.event.client_payload.temp        || '185' }}
-          PRESS:        ${{ github.event.client_payload.press       || '110' }}
-          # GATE_X / GATE_Y / GATE_Z / GATE_DIA / NUM_FRAMES / MESH_RES_MM
-          # are injected via $GITHUB_ENV by the "Parse packed payload fields" step above
+          # Streamlit의 'simulation_params' 내부에 있는 데이터를 직접 참조합니다.
+          SIGNAL_ID:    ${{ github.event.client_payload.simulation_params.signal_id || inputs.signal_id || 'manual' }}
+          GATE_X:       ${{ github.event.client_payload.simulation_params.gate_x || '0.0' }}
+          GATE_Y:       ${{ github.event.client_payload.simulation_params.gate_y || '0.0' }}
+          GATE_Z:       ${{ github.event.client_payload.simulation_params.gate_z || '0.0' }}
+          GATE_DIA:     ${{ github.event.client_payload.simulation_params.gate_dia || '2.0' }}
+          VEL_MMS:      ${{ github.event.client_payload.simulation_params.vel_mms || '25.0' }}
+          ETIME:        ${{ github.event.client_payload.simulation_params.etime || '10.0' }}
+          NUM_FRAMES:   ${{ github.event.client_payload.simulation_params.num_frames || '20' }}
+          MATERIAL:     ${{ github.event.client_payload.simulation_params.material || '17-4PH' }}
+          VISCOSITY:    ${{ github.event.client_payload.simulation_params.viscosity || '4e-3' }}
+          DENSITY:      ${{ github.event.client_payload.simulation_params.density || '7780' }}
+          TEMP:         ${{ github.event.client_payload.simulation_params.temp || '185' }}
+          PRESS:        ${{ github.event.client_payload.simulation_params.press || '110' }}
+          MESH_RES_MM:  ${{ github.event.client_payload.simulation_params.mesh_res_mm || '0.5' }}
+          STL_PATH:     ${{ env.STL_PATH }}
         run: |
           python solver.py \
             --signal_id   "$SIGNAL_ID"   \
