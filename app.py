@@ -341,9 +341,14 @@ def trigger_github_simulation(payload: dict) -> bool:
         "X-GitHub-Api-Version": "2022-11-28",
     }
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/dispatches"
+    # Strip internal-only keys (prefixed with _ or local display fields)
+    # to stay within GitHub's 10-property client_payload limit.
+    INTERNAL_KEYS = {"_gate_x", "_gate_y", "_gate_z", "_gate_dia",
+                     "_num_frames", "_mesh_res_mm", "melt_temp", "gate_dia"}
+    gh_payload = {k: v for k, v in payload.items() if k not in INTERNAL_KEYS}
     body = {
         "event_type": "run-simulation",
-        "client_payload": payload,
+        "client_payload": gh_payload,
     }
     try:
         r = requests.post(url, json=body, headers=headers, timeout=15)
@@ -638,21 +643,30 @@ with st.sidebar:
         sig_id = str(uuid.uuid4())[:8]
         res_mm = 0.5  # solver.py will compute actual resolution
 
+        # GitHub repository_dispatch client_payload is limited to 10 properties.
+        # gate_x/y/z + gate_dia → gate_pos "x,y,z,dia" string  (-3 keys)
+        # melt_temp removed; solver reuses temp                  (-1 key)
+        # num_frames + mesh_res_mm → sim_opts "n,r"             (-1 key)
+        # Total: 15 → 10
         ep = {
             "signal_id":   sig_id,
             "material":    st.session_state["mat_name"],
             "viscosity":   float(st.session_state["props"]["nu"]),
             "density":     float(st.session_state["props"]["rho"]),
-            "melt_temp":   float(st.session_state["props"]["Tmelt"]),
-            "temp":        float(temp_c),
+            "temp":        float(temp_c),          # solver uses as both inject & melt temp
             "press":       float(press_mpa),
             "vel_mms":     float(vel_mms),
             "etime":       float(etime),
-            "gate_x":      gx, "gate_y": gy, "gate_z": gz,
-            "gate_dia":    float(g_size),
-            "num_frames":  num_frames_sel,
-            "mesh_res_mm": res_mm,
+            # packed fields ─ parsed by run_sim.yml
+            "gate_pos":    f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",  # "x,y,z,dia"
+            "sim_opts":    f"{num_frames_sel},{res_mm:.3f}",                    # "num_frames,mesh_res_mm"
         }
+        # keep full detail locally for summary display (never sent to GitHub)
+        ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
+        ep["_gate_dia"] = float(g_size)
+        ep["_num_frames"] = num_frames_sel; ep["_mesh_res_mm"] = res_mm
+        ep["melt_temp"] = float(st.session_state["props"]["Tmelt"])
+        ep["gate_dia"]  = float(g_size)   # local summary display
         st.session_state["executed_params"] = ep
         st.session_state.update({
             "last_signal_id": sig_id,
