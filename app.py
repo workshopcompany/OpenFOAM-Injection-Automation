@@ -664,8 +664,7 @@ with st.sidebar:
             "vel_mms":     float(vel_mms),
             "etime":       float(etime),
             "gate_pos":    f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",
-            # sim_opts에 STL 정보까지 한 번에 넣음 (property 개수 10개 유지)
-            "sim_opts":    f"{num_frames_sel},{res_mm:.3f}|||{base64.b64encode(uploaded.getvalue()).decode('utf-8') if uploaded else ''}|||{uploaded.name if uploaded else 'part.stl'}",                # "num_frames,mesh_res_mm"
+            "sim_opts":    f"{num_frames_sel},{res_mm:.3f}",
         }
         # keep full detail locally for summary display (never sent to GitHub)
         ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
