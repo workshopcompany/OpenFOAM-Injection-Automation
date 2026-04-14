@@ -737,32 +737,36 @@ if os.path.exists(vtk_dir):
         except Exception as e:
             st.error(f"Visualization Error: {e}")
 
- # ── [B] JS-driven 애니메이션 (자동 재생 섹션) ─────────────────────────
+
+# ── [B] JS-driven 애니메이션 (통합 렌더링 섹션) ───────────────────────
         st.divider()
         st.subheader("▶ Auto-Play Filling Animation (All Steps)")
 
-        if st.button("🎬 Build & Play Animation", key="btn_play_anim", use_container_width=True):
-            prog = st.progress(0, text="Extracting fluid geometry from steps...")
+        if st.button("🎬 Build & Play Animation", key="btn_play_anim_fixed", use_container_width=True):
+            prog = st.progress(0, text="Preparing animation data...")
             try:
                 mold_trimesh = st.session_state.get("mesh")
-                # 금형 트레이스 생성
-                mold_t = make_mold_trace(mold_trimesh, opacity=0.05)
-                mold_json = _trace_to_json(mold_t) if mold_t else None
+                
+                # 1. 금형 트레이스 생성 (JSON 직렬화)
+                mold_json = None
+                if mold_trimesh is not None:
+                    mold_t = make_mold_trace(mold_trimesh, opacity=0.08)
+                    mold_json = _trace_to_json(mold_t)
 
+                # 2. 모든 스텝의 유체 데이터 추출 및 직렬화
                 step_data = []
-                total_mesh_cells = 920  # 실제 해석 격자수로 수정 가능
+                # 기존 디버그 정보에서 확인된 전체 격자 수 적용
+                total_mesh_cells = 920 
 
                 for i, fpath in enumerate(all_files):
-                    prog.progress((i + 1) / total_steps, text=f"Processing Step {i+1}/{total_steps}...")
+                    prog.progress((i + 1) / total_steps, text=f"Processing {i+1}/{total_steps}: {os.path.basename(fpath)}")
                     
-                    # 1. 4개의 반환값을 정확히 언패킹
+                    # 데이터 로드 및 삼각화 결과 언패킹
                     res, a_vals, n_cells, _ = load_and_threshold(fpath)
                     
                     fluid_json = None
                     if res is not None:
-                        # 2. res 내부의 (pts, i, j, k)를 다시 언패킹
                         f_pts, fi, fj, fk = res
-                        # 3. 중복 정의 문제를 피하기 위해 인자를 명시적으로 전달
                         ft = make_fluid_trace(
                             pts=f_pts, 
                             fi=fi, 
@@ -782,40 +786,129 @@ if os.path.exists(vtk_dir):
 
                 prog.empty()
 
-                # JavaScript로 전달할 데이터 변환
+                # 3. JavaScript 전달을 위한 JSON 변환
                 step_data_js  = _safe_json(step_data)
                 mold_json_js  = _safe_json(mold_json)
                 layout_js     = _safe_json({
-                    "scene": {"aspectmode": "data"}, 
-                    "height": 560, 
-                    "margin": {"l":0,"r":0,"b":0,"t":30}
+                    "scene": {
+                        "aspectmode": "data",
+                        "xaxis": {"title": "X", "color": "#888"},
+                        "yaxis": {"title": "Y", "color": "#888"},
+                        "zaxis": {"title": "Z", "color": "#888"}
+                    },
+                    "height": 560,
+                    "margin": {"l":0,"r":0,"b":0,"t":40},
+                    "paper_bgcolor": "rgba(0,0,0,0)",
+                    "plot_bgcolor": "rgba(0,0,0,0)",
+                    "font": {"color": "#eee"}
                 })
 
-                # 이후 HTML/JS 렌더링 코드가 이어짐...
+                # 4. 전체 HTML/JS 코드 (화이트아웃 방지 로직 포함)
                 html_code = f"""
                 <!DOCTYPE html>
                 <html>
-                <head><script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script></head>
-                <body style="margin:0; background:#0e1117; color:white;">
-                    <div id="controls" style="padding:10px; background:#1a1d27; display:flex; align-items:center; gap:10px;">
-                        <button id="btnPlay" style="padding:5px 15px;">▶ Play</button>
-                        <span id="stepLabel" style="font-size:12px;">Step 1 / {total_steps}</span>
+                <head>
+                    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+                    <style>
+                        body {{ margin:0; background:#0e1117; color:#eee; font-family: sans-serif; overflow:hidden; }}
+                        #controls {{ 
+                            padding:12px; background:#1a1d27; display:flex; align-items:center; gap:15px;
+                            border-bottom: 1px solid #333;
+                        }}
+                        button {{ 
+                            padding:6px 16px; background:#4a90e2; color:white; border:none; 
+                            border-radius:4px; cursor:pointer; font-weight:bold;
+                        }}
+                        button:hover {{ background:#357abd; }}
+                        input[type=range] {{ flex: 1; accent-color: #4a90e2; }}
+                        #stepLabel {{ font-size:13px; min-width:180px; font-family: monospace; }}
+                        #plot {{ width: 100vw; height: calc(100vh - 65px); }}
+                    </style>
+                </head>
+                <body>
+                    <div id="controls">
+                        <button id="btnPlay" onclick="togglePlay()">▶ Play</button>
+                        <span id="stepLabel">Initializing...</span>
+                        <input type="range" id="slider" min="0" max="{total_steps - 1}" value="0" oninput="goToStep(parseInt(this.value))">
                     </div>
                     <div id="plot"></div>
                     <script>
                         const STEPS = {step_data_js};
                         const MOLD = {mold_json_js};
                         const LAYOUT = {layout_js};
-                        // ... (이하 생략된 JS 로직은 동일) ...
-                        Plotly.newPlot('plot', [MOLD, STEPS[0].fluid].filter(Boolean), LAYOUT);
+                        const TOTAL = {total_steps};
+                        
+                        let currentIdx = 0;
+                        let isPlaying = false;
+                        let timer = null;
+                        let userCamera = null;
+
+                        function getTraces(idx) {{
+                            const traces = [];
+                            if (MOLD) traces.push(MOLD);
+                            if (STEPS[idx] && STEPS[idx].fluid) traces.push(STEPS[idx].fluid);
+                            return traces;
+                        }}
+
+                        function updateUI() {{
+                            const s = STEPS[currentIdx];
+                            document.getElementById('stepLabel').textContent = `Step ${{currentIdx + 1}} / ${{TOTAL}} (${{s.fill_pct}}%)`;
+                            document.getElementById('slider').value = currentIdx;
+                            document.getElementById('btnPlay').textContent = isPlaying ? "⏸ Pause" : "▶ Play";
+                        }}
+
+                        function goToStep(idx) {{
+                            currentIdx = idx;
+                            const currentLayout = JSON.parse(JSON.stringify(LAYOUT));
+                            if (userCamera) currentLayout.scene.camera = userCamera;
+                            
+                            Plotly.react('plot', getTraces(currentIdx), currentLayout);
+                            updateUI();
+                        }}
+
+                        function togglePlay() {{
+                            isPlaying = !isPlaying;
+                            if (isPlaying) {{
+                                if (currentIdx >= TOTAL - 1) currentIdx = 0;
+                                runAnimation();
+                            }} else {{
+                                clearTimeout(timer);
+                            }}
+                            updateUI();
+                        }}
+
+                        function runAnimation() {{
+                            if (!isPlaying) return;
+                            goToStep(currentIdx);
+                            if (currentIdx < TOTAL - 1) {{
+                                currentIdx++;
+                                timer = setTimeout(runAnimation, 250); // 재생 속도 조절
+                            }} else {{
+                                isPlaying = false;
+                                updateUI();
+                            }}
+                        }}
+
+                        // 초기 렌더링
+                        window.onload = function() {{
+                            Plotly.newPlot('plot', getTraces(0), LAYOUT, {{responsive: true}});
+                            
+                            document.getElementById('plot').on('plotly_relayout', function(ed) {{
+                                if (ed['scene.camera']) userCamera = ed['scene.camera'];
+                            }});
+                            updateUI();
+                        }};
                     </script>
                 </body>
                 </html>
                 """
-                # 실제 동작을 위해 생략 없이 전체 코드를 삽입하세요.
-                components.html(html_code, height=680)
+                components.html(html_code, height=680, scrolling=False)
 
             except Exception as e:
                 st.error(f"Animation failed: {e}")
-else:
-    st.error("VTK directory not found. Please sync results first.")
+                st.exception(e)
+                
+        else:
+            st.error("VTK directory not found. Please sync results first.")
+    else:
+        st.info("결과를 확인하려면 먼저 시뮬레이션 데이터를 동기화하세요.")
