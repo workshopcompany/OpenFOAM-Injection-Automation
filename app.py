@@ -23,8 +23,7 @@ import trimesh
 from collections import deque
 import heapq
 from scipy.ndimage import distance_transform_edt
-st.plotly_chart(fig, width="stretch")
-st.dataframe(df, width="stretch")
+
 
 st.set_page_config(page_title="MIM-Ops Pro", page_icon="🔬", layout="wide")
 st.title("🔬 MIM-Ops: AI-Powered Cloud Simulation")
