@@ -48,17 +48,15 @@ jobs:
 
       # ── 4. Prepare STL ────────────────────────────────────
       # Priority: base64 from client_payload → repo file
-      - name: Decode STL file
+      - name: Prepare STL file
         run: |
-          if [ -n "${{ github.event.client_payload.stl_b64 }}" ]; then
-            echo "${{ github.event.client_payload.stl_b64 }}" | base64 --decode > part.stl
-            echo "STL_PATH=part.stl" >> $GITHUB_ENV
-          elif [ -n "${{ github.event.inputs.stl_b64 }}" ]; then
-            echo "${{ github.event.inputs.stl_b64 }}" | base64 --decode > part.stl
-            echo "STL_PATH=part.stl" >> $GITHUB_ENV
-          else
-            echo "STL_PATH=part.stl" >> $GITHUB_ENV
+          # 페이로드에 데이터가 없으므로 레포지토리의 part.stl을 사용하거나
+          # 특정 경로의 파일을 part.stl로 복사합니다.
+          if [ ! -f "part.stl" ]; then
+            echo "Error: part.stl not found in repository."
+            exit 1
           fi
+          echo "STL_PATH=part.stl" >> $GITHUB_ENV
 
       # ── 5. Parse packed payload fields ────────────────────
       # gate_pos  = "x,y,z,dia"
