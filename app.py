@@ -870,36 +870,54 @@ if result_frames:
     st.subheader("🌊 3D Filling Animation")
     total_steps = len(result_frames)
     
-    # 프레임 인덱스 안전하게 가져오기
-    curr_idx = st.session_state.get("current_frame", 0)
-    if curr_idx >= total_steps: curr_idx = 0
+    # 세션에서 현재 프레임 가져오기
+    curr = st.session_state.get("current_frame", 0)
+    if curr >= total_steps:
+        curr = 0
 
-    # 이미지 출력 (최신 버전 규격 width='stretch')
-    img_path = result_frames[curr_idx]
+    # 컨트롤 버튼 레이아웃
+    cc1, cc2, cc3, cc4 = st.columns([1, 1, 3, 1])
+    with cc1:
+        if st.button("⏮ First", width='stretch'):
+            st.session_state.update({"current_frame": 0, "animation_playing": False})
+            st.rerun()
+    with cc2:
+        is_playing = st.session_state.get("animation_playing", False)
+        if st.button("⏸ Pause" if is_playing else "Stopped", width='stretch'):
+            st.session_state["animation_playing"] = False
+            st.rerun()
+    with cc3:
+        if st.button("▶ Play", width='stretch', type="primary"):
+            st.session_state["animation_playing"] = True
+            st.rerun()
+    with cc4:
+        if st.button("⏭ Last", width='stretch'):
+            st.session_state.update({"current_frame": total_steps - 1, "animation_playing": False})
+            st.rerun()
+
+    # 프레임 슬라이더
+    current_frame = st.slider("Frame Progress", 0, total_steps - 1, value=curr)
+    st.session_state["current_frame"] = current_frame
+
+    # 이미지 출력 (경로 확인 포함)
+    img_path = result_frames[current_frame]
     if os.path.exists(img_path):
-        st.image(img_path, caption=f"Frame {curr_idx + 1}/{total_steps}", width='stretch')
+        # 최신 Streamlit 규격에 맞게 width='stretch' 사용
+        st.image(img_path, caption=f"Frame {current_frame + 1}/{total_steps}", width='stretch')
     else:
-        st.error(f"파일을 찾을 수 없음: {img_path}")
+        st.error(f"Missing file: {img_path}")
 
-    # (재생 컨트롤 버튼 로직은 기존 것 유지 가능)
-else:
-    st.info("💡 결과를 보려면 상단의 'Sync Results' 버튼을 눌러주세요.")
+    # 자동 재생 로직
+    if st.session_state.get("animation_playing", False):
+        time.sleep(0.3)
+        st.session_state["current_frame"] = (current_frame + 1) % total_steps
+        st.rerun()
 
-    # 자동 재생 로직 (생략 - 기존 코드 유지)
+# 에러가 났던 else 부분: if result_frames와 줄을 맞춰야 합니다.
 else:
-    st.info("💡 'Sync Results' 버튼을 눌러 데이터를 가져오세요.")
-# ─────────── VTK-based animation fallback ───────────
-vtk_dir = "VTK"
-if os.path.exists(vtk_dir) and not result_frames and mesh_obj is not None:
-    st.subheader("🌊 3D VTK Animation (Legacy)")
-    sampled_files = sample_vtk_files(vtk_dir, st.session_state.get("num_frames", 15))
-    if sampled_files:
-        current_frame = st.slider("VTK Frame", 0, len(sampled_files) - 1,
-                                   value=st.session_state.get("current_frame", 0))
-        fpath    = sampled_files[current_frame]
-        vtk_ratio = read_alpha_fill_ratio(fpath)
-        if vtk_ratio is not None:
-            st.info(f"VTK fill ratio: {vtk_ratio*100:.1f}%")
+    st.info("💡 결과를 확인하려면 'Sync Results' 버튼을 눌러주세요.")
+    # 디버깅 정보 표시 (필요 시)
+    st.caption("현재 세션에 로드된 프레임이 0개입니다."))
 
 # ─────────── Material DB Management ───────────
 with st.expander("🗂️ Material DB Management (material_property.txt)", expanded=False):
