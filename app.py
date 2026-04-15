@@ -70,7 +70,7 @@ def add_log(msg):
         st.session_state["sim_logs"] = st.session_state["sim_logs"][-100:]
 
 def clear_old_results():
-    for path in ["VTK", "results.txt", "logs.zip", "frames"]:
+    for path in ["VTK", "results.txt", "logs.zip", "frames", "simulation-results", "temp_results"]:
         if os.path.isdir(path):
             shutil.rmtree(path)
         elif os.path.isfile(path):
@@ -443,28 +443,44 @@ def sync_simulation_results():
             )
             if file_resp.status_code == 200:
                 clear_old_results()
-                with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
-                    z.extractall(".")
 
-                # Load VTK files if present
-                vtk_dir = "VTK"
+                # ── 아티팩트를 'simulation-results/' 폴더로 추출 ──────────────
+                # 진단 섹션(target_dirs)과 일치하는 경로를 사용해 bytes/path 불일치 해소
+                extract_dir = "simulation-results"
+                os.makedirs(extract_dir, exist_ok=True)
+                with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
+                    z.extractall(extract_dir)
+
+                # ── 루트 레벨 파일 편의 복사 (results.txt 등) ─────────────────
+                for fname in ["results.txt", "results.json"]:
+                    src = os.path.join(extract_dir, fname)
+                    if os.path.exists(src):
+                        shutil.copy(src, fname)
+
+                # ── VTK 처리 ──────────────────────────────────────────────────
+                vtk_dir = os.path.join(extract_dir, "VTK")
+                if not os.path.exists(vtk_dir):
+                    vtk_dir = "VTK"  # 루트에 있을 경우 폴백
                 if os.path.exists(vtk_dir):
                     nf = st.session_state.get("num_frames", 15)
                     st.session_state["vtk_files"] = sample_vtk_files(vtk_dir, nf)
 
-                # Load PNG frame sequence if present (from solver.py)
-                # Store as bytes in memory so Streamlit always renders correctly
-                frames_dir = "frames"
-                if os.path.exists(frames_dir):
-                    pngs = sorted(glob.glob(os.path.join(frames_dir, "frame_*.png")))
-                    frame_bytes_list = []
-                    for fp in pngs:
-                        with open(fp, "rb") as fh:
-                            frame_bytes_list.append(fh.read())
-                    st.session_state["result_frames"] = frame_bytes_list
-                    add_log(f"Loaded {len(frame_bytes_list)} animation frames from GitHub.")
+                # ── PNG 프레임 경로 수집 ────────────────────────────────────────
+                # simulation-results/frames/ 우선, 없으면 simulation-results/ 전체 탐색
+                pngs = sorted(
+                    glob.glob(os.path.join(extract_dir, "frames", "frame_*.png")) or
+                    glob.glob(os.path.join(extract_dir, "**", "frame_*.png"), recursive=True),
+                    key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0])
+                    if re.findall(r'\d+', os.path.basename(x)) else 0
+                )
+                # 경로(str) 그대로 저장 — 진단 섹션, animation 섹션 모두 경로 기준으로 통일
+                st.session_state["result_frames"] = pngs
+                if pngs:
+                    add_log(f"Loaded {len(pngs)} animation frames from GitHub.")
+                else:
+                    add_log("⚠️ No frame_*.png found in artifact.")
 
-                # Parse results.txt for signal id
+                # ── Signal ID 파싱 ─────────────────────────────────────────────
                 if os.path.exists("results.txt"):
                     with open("results.txt") as f:
                         content = f.read()
@@ -475,7 +491,7 @@ def sync_simulation_results():
                 st.session_state["sim_running"] = False
                 st.session_state["sim_status"]  = "complete"
                 add_log("✅ Results synchronized from GitHub Artifacts.")
-                st.success(f"Results synced! Artifact: {target['name']}")
+                st.success(f"Results synced! Artifact: {target['name']} | Frames: {len(pngs)}")
                 return True
             else:
                 st.error(f"Failed to download artifact: HTTP {file_resp.status_code}")
@@ -799,21 +815,23 @@ import os, glob, re, time, zipfile
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 # ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    # 압축이 풀렸을 만한 모든 후보 폴더
+    # sync_simulation_results()가 추출하는 폴더와 동일한 경로 탐색
     target_dirs = ["simulation-results", "temp_results"]
     st.write(f"📂 **Checking Folders:** `{target_dirs}`")
     
     found_pngs = []
     for d in target_dirs:
         if os.path.exists(d):
-            # recursive=True로 폴더가 꼬여있어도 모든 PNG를 찾아냄
             found_pngs.extend(glob.glob(os.path.join(d, "**", "*.png"), recursive=True))
     
     if found_pngs:
-        # 파일명 숫자 기준으로 정렬
-        found_pngs.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+        found_pngs.sort(
+            key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0])
+            if re.findall(r'\d+', os.path.basename(x)) else 0
+        )
+        # 세션 상태와 동기화 (경로 리스트로 통일)
         st.session_state["result_frames"] = found_pngs
-        current_frames = found_pngs # 로컬 변수 업데이트
+        current_frames = found_pngs
         st.success(f"✅ {len(found_pngs)} frames detected on disk.")
     else:
         st.warning("⚠️ No images found. Please click 'Sync Results'.")
@@ -837,12 +855,21 @@ if current_frames: # 위에서 초기화했으므로 변수가 존재함
     curr_idx = st.session_state.get("current_frame", 0)
     if curr_idx >= total: curr_idx = 0
     
-    # 이미지 출력 (최신 규격 width='stretch')
-    st.image(current_frames[curr_idx], caption=f"Step {curr_idx+1}/{total}", width='stretch')
-    
-    # 슬라이더
-    new_idx = st.slider("Step Slider", 0, total - 1, value=curr_idx)
+    # 슬라이더를 이미지 위로 이동 (먼저 선택 후 표시)
+    new_idx = st.slider("Step Slider", 0, total - 1, value=curr_idx, key="frame_slider")
     st.session_state["current_frame"] = new_idx
+
+    # 경로(str) 또는 bytes 모두 처리
+    frame_data = current_frames[new_idx]
+    if isinstance(frame_data, str):
+        # 파일 경로인 경우 — sync_simulation_results() 결과
+        if os.path.exists(frame_data):
+            st.image(frame_data, caption=f"Step {new_idx+1}/{total}", use_container_width=True)
+        else:
+            st.warning(f"Frame file not found: {frame_data}")
+    else:
+        # bytes인 경우 (이전 버전 호환)
+        st.image(frame_data, caption=f"Step {new_idx+1}/{total}", use_container_width=True)
 else:
     st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
 
