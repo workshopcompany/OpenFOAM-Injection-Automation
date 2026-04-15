@@ -784,11 +784,13 @@ with col_log:
         st.rerun()
 
 # ─────────── Results & Sync ───────────
-# 1. [필수] 결과 섹션 시작 전 변수 초기화 (NameError 방지)
+# ─────────── 1. 데이터 로드 및 변수 초기화 ───────────
+# 세션에서 데이터를 안전하게 가져옵니다.
 result_frames = st.session_state.get("result_frames", [])
 current_res_dir = st.session_state.get("last_result_dir", "temp_results")
-# 2. 🔍 시스템 진단 로그 (문제 파악용)
+
 st.title("📊 Simulation Results")
+# 2. 🔍 시스템 진단 로그 (문제 파악용)
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
     st.write(f"📂 **Target Directory:** `{current_res_dir}`")
     st.write(f"🖼️ **Frames In Session:** `{len(result_frames)}`")
@@ -803,29 +805,32 @@ with st.expander("🔍 System Diagnostic Logs", expanded=True):
     else:
         st.error(f"⚠️ 폴더 없음: `{check_path}` (Sync를 먼저 진행하세요)")
 # 3. 🔄 Sync 버튼 로직
+# ─────────── 3. Sync & Animation 로직 ───────────
 cr1, cr2 = st.columns([2, 1])
 with cr1:
     st.markdown("### Download & Sync from GitHub")
 with cr2:
-    if st.button("🔄 Sync Results", width='stretch', type="primary"):
-        with st.spinner("GitHub에서 데이터를 가져오는 중..."):
-            sync_simulation_results() # 여기서 결과 폴더가 생성됨
+    # 중복 ID 방지를 위해 key="sync_button_unique" 추가
+    if st.button("🔄 Sync Results", width='stretch', type="primary", key="sync_button_unique"):
+        with st.spinner("GitHub에서 결과 데이터를 가져오는 중..."):
+            # 함수 실행 (이 안에서 아티팩트 다운로드 및 압축해제가 일어남)
+            sync_simulation_results()
             
-            # 동기화 직후 세션 상태 업데이트
+            # 다운로드 후 최신 경로로 갱신
             updated_dir = st.session_state.get("last_result_dir", "temp_results")
             
-            # [수정] 모든 하위 폴더에서 PNG를 찾도록 패턴 강화
+            # 모든 하위 폴더에서 frame_*.png 검색 (재귀적 탐색)
             img_pattern = os.path.join(updated_dir, "**", "frame_*.png")
-            new_frames = glob.glob(img_pattern, recursive=True)
+            found_frames = glob.glob(img_pattern, recursive=True)
             
-            if new_frames:
-                # 숫자 기준 정렬
-                new_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-                st.session_state["result_frames"] = new_frames
+            if found_frames:
+                # 파일명에서 숫자를 추출하여 정렬 (frame_1, frame_2...)
+                found_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+                st.session_state["result_frames"] = found_frames
                 st.session_state["current_frame"] = 0
-                st.success(f"✅ {len(new_frames)}개의 프레임을 찾았습니다!")
+                st.success(f"✅ {len(found_frames)}개의 프레임을 로드했습니다.")
             else:
-                st.error(f"❌ '{updated_dir}' 내부에서 이미지를 찾지 못했습니다.")
+                st.error(f"❌ 이미지를 찾지 못했습니다. 경로 확인: {updated_dir}")
         st.rerun()
 # ─────────── Results & Sync 섹션 ───────────
 st.title("📊 Simulation Results")
