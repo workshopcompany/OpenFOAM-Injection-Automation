@@ -656,74 +656,60 @@ with st.sidebar:
     st.divider()
 
     # ── Run button (사이드바 내부) ──
-# ── Run button (사이드바 내부) ──
+    # ── [교체 구간 시작] ──
     is_running = st.session_state.get("sim_running", False)
 
-    if st.button("🚀 Run Cloud Simulation",
-                 type="primary",
-                 use_container_width=True,
-                 disabled=is_running,
-                 key="run_sim_immediate_v2"):
+    if st.sidebar.button("🚀 Run Cloud Simulation",
+                         type="primary",
+                         use_container_width=True,
+                         disabled=is_running,
+                         key="run_sim_immediate_v2"):
 
-        # 1. 필수 데이터 확인
         if "stl_b64" not in st.session_state:
-            st.error("⚠️ 먼저 사이드바 상단에서 STL 파일을 업로드해 주세요.")
+            st.sidebar.error("⚠️ 먼저 STL 파일을 업로드해 주세요.")
         elif not st.session_state.get("props"):
-            st.error("⚠️ 재료(Material)를 먼저 로드하고 Confirm 해주세요.")
+            st.sidebar.error("⚠️ 재료를 Confirm 해주세요.")
         else:
-            # 2. 초기화 및 ID 생성
-            clear_old_results()
-            sig_id = str(uuid.uuid4())[:8]
-            res_mm = 0.5
+            # 1. GitHub에 파일 먼저 업로드 (용량 초과 방지)
+            with st.spinner("Uploading STL to GitHub..."):
+                # 업로드 시 저장해둔 원본 바이트 사용 (파일 덮어쓰기)
+                stl_bytes = base64.b64decode(st.session_state["stl_b64"])
+                upload_ok = upload_stl_to_github(stl_bytes)
 
-            # 3. 데이터 패킹 (10개 제한 철저 준수)
-            # gate_pos: x, y, z, dia (4개 통합)
-            # sim_opts: material, num_frames, res_mm (3개 통합)
-            # 나머지: signal_id, viscosity, density, temp, press, vel_mms, etime, stl_b64
-            
-            gate_str = f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}"
-            opts_str = f"{st.session_state['mat_name']},{num_frames_sel},{res_mm:.3f}"
-
-            ep = {
-                "signal_id": sig_id,
-                "viscosity": float(st.session_state["props"]["nu"]),
-                "density":   float(st.session_state["props"]["rho"]),
-                "temp":      float(temp_c),  # melt_temp 대용
-                "press":     float(press_mpa),
-                "vel_mms":   float(vel_mms),
-                "etime":     float(etime),
-                "gate_pos":  gate_str,       # 묶음 1
-                "sim_opts":  opts_str,       # 묶음 2
-            }
-            # [최종 확인] 총 키 개수: 10개 (성공)
-
-            # 로컬 UI 및 로그용 (GitHub 전송 시에는 제외됨)
-            ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
-            ep["_gate_dia"] = float(g_size)
-            ep["_num_frames"] = num_frames_sel; ep["_mesh_res_mm"] = res_mm
-            ep["melt_temp"] = float(st.session_state["props"]["Tmelt"])
-            
-            st.session_state["executed_params"] = ep
-            st.session_state.update({
-                "last_signal_id": sig_id,
-                "sim_running":    True,
-                "sim_status":     "running",
-            })
-            add_log(f"🚀 Dispatching to GitHub | Signal: {sig_id}")
-
-            # 4. GitHub 실행
-            ok = trigger_github_simulation(ep)
-            
-            if ok:
-                time.sleep(3)
-                run_url = get_latest_run_url()
-                if run_url:
-                    st.session_state["gh_run_url"] = run_url
-                st.toast(f"✅ Simulation dispatched! {sig_id}", icon="🚀")
-                st.rerun()
+            if not upload_ok:
+                st.sidebar.error("❌ STL 파일 업로드 실패 (GitHub API)")
             else:
-                st.session_state["sim_running"] = False
-                st.error("❌ GitHub Dispatch failed (HTTP 422 etc.)")
+                # 2. 업로드 성공 시에만 시뮬레이션 트리거
+                clear_old_results()
+                sig_id = str(uuid.uuid4())[:8]
+                res_mm = 0.5
+                
+                # 정확히 10개의 키만 전송 (stl_b64는 제외하여 용량 문제 해결)
+                ep = {
+                    "signal_id": sig_id,
+                    "viscosity": float(st.session_state["props"]["nu"]),
+                    "density":   float(st.session_state["props"]["rho"]),
+                    "temp":      float(st.session_state.get("temp", 230.0)),
+                    "press":     float(st.session_state.get("press", 70.0)),
+                    "vel_mms":   float(st.session_state.get("vel", 80.0)),
+                    "etime":     float(st.session_state.get("etime", 1.0)),
+                    "gate_pos":  f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",
+                    "sim_opts":  f"{st.session_state['mat_name']},{st.session_state.get('num_frames', 15)},{res_mm}",
+                    "stl_filename": "part.stl" # 이제 항상 이 이름으로 고정
+                }
+
+                st.session_state.update({
+                    "last_signal_id": sig_id,
+                    "sim_running":    True,
+                    "sim_status":     "running",
+                })
+
+                if trigger_github_simulation(ep):
+                    st.toast("🚀 Simulation Started!", icon="✅")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.sidebar.error("❌ GitHub Dispatch 실패")
 
 
 # ═══════════════════════════════════════════════════════════
