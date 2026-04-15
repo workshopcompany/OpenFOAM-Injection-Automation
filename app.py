@@ -916,8 +916,7 @@ if result_frames:
 # 에러가 났던 else 부분: if result_frames와 줄을 맞춰야 합니다.
 else:
     st.info("💡 결과를 확인하려면 'Sync Results' 버튼을 눌러주세요.")
-    # 디버깅 정보 표시 (필요 시)
-    st.caption("현재 세션에 로드된 프레임이 0개입니다."))
+    st.caption("현재 세션에 로드된 프레임이 0개입니다.")
 
 # ─────────── Material DB Management ───────────
 with st.expander("🗂️ Material DB Management (material_property.txt)", expanded=False):
