@@ -656,10 +656,7 @@ with st.sidebar:
     st.divider()
 
     # ── Run button (사이드바 내부) ──
-# ── [사이드바 하단부] Run button 섹션 ──
-    st.divider()
-    st.subheader("🚀 Execution")
-    
+# ── Run button (사이드바 내부) ──
     is_running = st.session_state.get("sim_running", False)
 
     if st.button("🚀 Run Cloud Simulation",
@@ -677,35 +674,35 @@ with st.sidebar:
             # 2. 초기화 및 ID 생성
             clear_old_results()
             sig_id = str(uuid.uuid4())[:8]
-            res_mm = 0.5  # 기본 해상도 설정
+            res_mm = 0.5
 
-            # 3. GitHub 전송용 데이터 구성 (10개 제한 전략)
-            # gate_pos = "x,y,z,dia" (4개 통합)
-            # sim_opts = "material,frames,res" (3개 통합)
-            # stl_b64 포함 총 10개 키 구성
+            # 3. 데이터 패킹 (10개 제한 철저 준수)
+            # gate_pos: x, y, z, dia (4개 통합)
+            # sim_opts: material, num_frames, res_mm (3개 통합)
+            # 나머지: signal_id, viscosity, density, temp, press, vel_mms, etime, stl_b64
             
-            gx, gy, gz = st.session_state.get('gx_final', 0.0), st.session_state.get('gy_final', 0.0), st.session_state.get('gz_final', 0.0)
-            g_size = float(st.session_state.get("gsize", 2.0))
-            num_frames_sel = st.session_state.get("num_frames", 15)
-            
+            gate_str = f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}"
+            opts_str = f"{st.session_state['mat_name']},{num_frames_sel},{res_mm:.3f}"
+
             ep = {
-                "signal_id":    sig_id,
-                "viscosity":    float(st.session_state["props"]["nu"]),
-                "density":      float(st.session_state["props"]["rho"]),
-                "temp":         float(st.session_state.get("temp", 230.0)),
-                "press":        float(st.session_state.get("press", 70.0)),
-                "vel_mms":      float(st.session_state.get("vel", 80.0)),
-                "etime":        float(st.session_state.get("etime", 1.0)),
-                "gate_pos":     f"{gx:.4f},{gy:.4f},{gz:.4f},{g_size:.4f}",
-                "sim_opts":     f"{st.session_state['mat_name']},{num_frames_sel},{res_mm:.3f}",
-                "stl_b64":      st.session_state["stl_b64"]
+                "signal_id": sig_id,
+                "viscosity": float(st.session_state["props"]["nu"]),
+                "density":   float(st.session_state["props"]["rho"]),
+                "temp":      float(temp_c),  # melt_temp 대용
+                "press":     float(press_mpa),
+                "vel_mms":   float(vel_mms),
+                "etime":     float(etime),
+                "gate_pos":  gate_str,       # 묶음 1
+                "sim_opts":  opts_str,       # 묶음 2
+                "stl_b64":   st.session_state["stl_b64"] # 파일 데이터
             }
+            # [최종 확인] 총 키 개수: 10개 (성공)
 
-            # 로컬 UI 표시 및 히스토리 저장용 추가 정보 (GitHub 전송 전 필터링됨)
+            # 로컬 UI 및 로그용 (GitHub 전송 시에는 제외됨)
             ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
-            ep["_gate_dia"] = g_size
+            ep["_gate_dia"] = float(g_size)
             ep["_num_frames"] = num_frames_sel; ep["_mesh_res_mm"] = res_mm
-            ep["_mat_name"] = st.session_state['mat_name']
+            ep["melt_temp"] = float(st.session_state["props"]["Tmelt"])
             
             st.session_state["executed_params"] = ep
             st.session_state.update({
@@ -713,42 +710,21 @@ with st.sidebar:
                 "sim_running":    True,
                 "sim_status":     "running",
             })
-            
-            add_log(f"🚀 Dispatching to GitHub | Signal: {sig_id} | Time: {ep['etime']:.1f}s")
+            add_log(f"🚀 Dispatching to GitHub | Signal: {sig_id}")
 
-            # Zapier 알림 (선택 사항)
-            if ZAPIER_URL:
-                try:
-                    payload_zapier = {
-                        "signal_id": sig_id,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "material":  ep.get("_mat_name"),
-                        "status":    "dispatched",
-                    }
-                    requests.post(ZAPIER_URL, json=payload_zapier, timeout=10)
-                except:
-                    pass
-
-            # 4. GitHub Action 실행 트리거
+            # 4. GitHub 실행
             ok = trigger_github_simulation(ep)
             
             if ok:
-                time.sleep(3) # 워크플로우 생성 대기
+                time.sleep(3)
                 run_url = get_latest_run_url()
                 if run_url:
                     st.session_state["gh_run_url"] = run_url
-                    add_log(f"Run URL: {run_url}")
-                st.toast(f"✅ Simulation dispatched! Signal: {sig_id}", icon="🚀")
-                st.info(
-                    f"⏳ Solver is running (~5-15 min).  \n"
-                    f"**Signal ID:** `{sig_id}`"
-                )
-                if run_url:
-                    st.markdown(f"🔗 [Monitor Progress]({run_url})")
+                st.toast(f"✅ Simulation dispatched! {sig_id}", icon="🚀")
                 st.rerun()
             else:
                 st.session_state["sim_running"] = False
-                st.error("❌ GitHub Dispatch failed. Check your token or network.")
+                st.error("❌ GitHub Dispatch failed (HTTP 422 etc.)")
 
 
 # ═══════════════════════════════════════════════════════════
