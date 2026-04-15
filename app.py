@@ -786,8 +786,7 @@ with col_log:
 # ─────────── Results & Sync ───────────
 
 # ─────────── [1] 초기화 (NameError 방지) ───────────
-if "result_frames" not in st.session_state:
-    st.session_state["result_frames"] = []
+# [1] NameError 방지를 위한 변수 초기화 (코드 상단)
 if "result_frames" not in st.session_state:
     st.session_state["result_frames"] = []
 
@@ -795,53 +794,29 @@ st.title("📊 Simulation Results")
 import os, glob, re, time, zipfile
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 # ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
-with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    base_dir = "simulation-results"
-    st.write(f"📂 **Base Directory:** `{base_dir}`")
+wwith st.expander("🔍 System Diagnostic Logs", expanded=True):
+    # 압축이 풀리는 기본 대상 폴더
+    target_path = "simulation-results"
+    st.write(f"📂 **Searching in:** `{target_path}`")
     
-    if os.path.exists(base_dir):
-        # 모든 파일 목록 가져오기 (확장자 상관없이)
+    if os.path.exists(target_path):
+        # 모든 하위 폴더를 뒤져서 PNG 파일을 찾음
         all_files = []
-        for root, dirs, files in os.walk(base_dir):
+        for root, dirs, files in os.walk(target_path):
             for file in files:
-                all_files.append(os.path.join(root, file))
+                if file.endswith(".png") and "frame_" in file:
+                    all_files.append(os.path.join(root, file))
         
-        st.write(f"📄 **Total Files Found:** `{len(all_files)}`개")
-        
-        # 파일 확장자 통계
-        ext_list = [os.path.splitext(f)[1] for f in all_files]
-        from collections import Counter
-        st.write(f"📊 **File Types:** `{dict(Counter(ext_list))}`")
-
-        # PNG 파일 필터링
-        png_frames = [f for f in all_files if f.endswith(".png") and "frame_" in f]
-        if png_frames:
-            png_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-            st.session_state["result_frames"] = png_frames
-            st.success(f"✅ {len(png_frames)}개의 이미지 프레임을 로드했습니다.")
+        if all_files:
+            # 파일명 숫자 기준으로 정렬 (frame_0, frame_1...)
+            all_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+            st.session_state["result_frames"] = all_files
+            st.success(f"✅ {len(all_files)} 프레임 로드 완료!")
         else:
-            st.error("⚠️ PNG 이미지가 없습니다. VTU/VPM 파일만 감지되었습니다.")
-            st.info("💡 Tip: solver.py 실행 시 'kaleido' 라이브러리가 설치되어 있어야 이미지가 생성됩니다.")
+            st.error("⚠️ PNG 파일이 없습니다. VTU/VPM 데이터만 존재합니다.")
+            st.info("💡 해결방법: solver.py 실행 환경에 'kaleido' 패키지를 추가해야 합니다.")
     else:
-        st.warning("⚠️ 폴더가 없습니다. Sync 버튼을 클릭해 주세요.")
-# ─────────── [3] Sync 버튼 (압축 해제 로직 포함) ───────────
-if st.button("🔄 Sync & Scan Results", width='stretch', type="primary", key="final_sync_check"):
-    with st.spinner("GitHub에서 결과물 압축 해제 중..."):
-        sync_simulation_results() # 압축 해제 함수 실행
-        st.rerun() # 다시 실행하여 위 Diagnostic Logs에서 파일 검색
-        
-        # [추가 조치] 방금 받은 폴더를 다시 한번 샅샅이 뒤져서 세션 업데이트
-        target = "simulation-results"
-        new_list = glob.glob(os.path.join(target, "**", "frame_*.png"), recursive=True)
-        
-        if new_list:
-            new_list.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-            st.session_state["result_frames"] = new_list
-            st.session_state["current_frame"] = 0
-            st.success(f"✅ {len(new_list)}개의 이미지를 로드했습니다!")
-        else:
-            st.error("❌ 압축을 풀었으나 내부에 frame_*.png 파일이 없습니다.")
-    st.rerun()
+        st.warning("⚠️ 폴더가 없습니다. Sync 버튼을 눌러주세요.")
 
 # 3. 🔄 Sync 버튼 로직
 # ─────────── 3. Sync & Animation 로직 ───────────
@@ -875,7 +850,7 @@ with cr2:
 
 
 if result_frames:
-    st.subheader("🌊 3D Filling Animation")
+    st.subheader("🌊 3D flow Animation")
     total = len(result_frames)
     curr = st.session_state.get("current_frame", 0)
     if curr >= total: curr = 0
