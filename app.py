@@ -653,92 +653,93 @@ with st.sidebar:
     )
     st.session_state["num_frames"] = num_frames_sel
 
-    # ── Run button ──
-# 현재 시뮬레이션이 이미 실행 중인지만 확인 (중복 실행 방지)
-is_running = st.session_state.get("sim_running", False)
+    st.divider()
 
-if st.button("🚀 Run Cloud Simulation (GitHub Actions)",
-             type="primary", 
-             use_container_width=True, 
-             disabled=is_running, 
-             key="run_sim_immediate_v2"):
-    
-    # 1. 필수 데이터(STL) 존재 여부 확인
-    if "stl_b64" not in st.session_state:
-        st.error("⚠️ 먼저 사이드바 상단에서 STL 파일을 업로드해 주세요.")
-    else:
-        # 2. 이전 로그 및 결과 초기화
-        clear_old_results()
-        sig_id = str(uuid.uuid4())[:8]
-        res_mm = 0.5  # solver.py will compute actual resolution
-        # 3. GitHub 전송 데이터(Payload) 구성
-        sig_id = str(uuid.uuid4())[:8]
+    # ── Run button (사이드바 내부) ──
+    is_running = st.session_state.get("sim_running", False)
 
+    if st.button("🚀 Run Cloud Simulation",
+                 type="primary",
+                 use_container_width=True,
+                 disabled=is_running,
+                 key="run_sim_immediate_v2"):
 
-        # GitHub repository_dispatch client_payload is limited to 10 properties.
-        # gate_x/y/z + gate_dia → gate_pos "x,y,z,dia" string  (-3 keys)
-        # melt_temp removed; solver reuses temp                  (-1 key)
-        # num_frames + mesh_res_mm → sim_opts "n,r"             (-1 key)
-        # Total: 15 → 10
-        ep = {
-            "signal_id":   sig_id,
-            "material":    st.session_state["mat_name"],
-            "viscosity":   float(st.session_state["props"]["nu"]),
-            "density":     float(st.session_state["props"]["rho"]),
-            "temp":        float(temp_c),
-            "press":       float(press_mpa),
-            "vel_mms":     float(vel_mms),
-            "etime":       float(etime),
-            "gate_pos":    f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",
-            "sim_opts":    f"{num_frames_sel},{res_mm:.3f}",
-        }
-        # keep full detail locally for summary display (never sent to GitHub)
-        ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
-        ep["_gate_dia"] = float(g_size)
-        ep["_num_frames"] = num_frames_sel; ep["_mesh_res_mm"] = res_mm
-        ep["melt_temp"] = float(st.session_state["props"]["Tmelt"])
-        ep["gate_dia"]  = float(g_size)   # local summary display
-        st.session_state["executed_params"] = ep
-        st.session_state.update({
-            "last_signal_id": sig_id,
-            "sim_running":    True,
-            "sim_status":     "running",
-        })
-        add_log(f"🚀 Dispatching to GitHub | Signal: {sig_id} | End Time: {etime:.1f}s")
-
-        # Also notify Zapier if configured (send minimal summary only to avoid JSON length error)
-        if ZAPIER_URL:
-            try:
-                payload_zapier = {
-                    "signal_id":  sig_id,
-                    "timestamp":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "material":   ep.get("material"),
-                    "vel_mms":    ep.get("vel_mms"),
-                    "etime":      ep.get("etime"),
-                    "temp":       ep.get("temp"),
-                    "press":      ep.get("press"),
-                    "gate_pos":   ep.get("gate_pos"),
-                    "status":     "dispatched",
-                }
-                requests.post(ZAPIER_URL, json=payload_zapier, timeout=10)
-            except Exception:
-                pass
-
-        ok = trigger_github_simulation(ep)
-        if ok:
-            time.sleep(3)  # give Actions a moment to register
-            run_url = get_latest_run_url()
-            if run_url:
-                st.session_state["gh_run_url"] = run_url
-                add_log(f"Run URL: {run_url}")
-            st.toast(f"✅ Simulation dispatched! Signal: {sig_id}", icon="🚀")
-            st.info(
-                "⏳ GitHub Actions is now running the solver (~5-15 min).  \n"
-                f"**Signal ID:** `{sig_id}`  \n"
-                + (f"**Monitor:** [{run_url}]({run_url})" if run_url else "")
-            )
+        # 1. 필수 데이터(STL) 존재 여부 확인
+        if "stl_b64" not in st.session_state:
+            st.error("⚠️ 먼저 사이드바 상단에서 STL 파일을 업로드해 주세요.")
+        elif not st.session_state.get("props"):
+            st.error("⚠️ 재료(Material)를 먼저 로드하고 Confirm 해주세요.")
         else:
-            st.session_state["sim_running"] = False
+            # 2. 이전 로그 및 결과 초기화
+            clear_old_results()
+            sig_id = str(uuid.uuid4())[:8]
+            res_mm = 0.5
+
+            # GitHub repository_dispatch client_payload (10 key limit)
+            # gate_x/y/z + gate_dia → gate_pos "x,y,z,dia"  (-3 keys)
+            # num_frames + mesh_res_mm → sim_opts "n,r"      (-1 key)
+            # stl_b64 전송 (별도 키)
+            ep = {
+                "signal_id":  sig_id,
+                "material":   st.session_state["mat_name"],
+                "viscosity":  float(st.session_state["props"]["nu"]),
+                "density":    float(st.session_state["props"]["rho"]),
+                "temp":       float(temp_c),
+                "press":      float(press_mpa),
+                "vel_mms":    float(vel_mms),
+                "etime":      float(etime),
+                "gate_pos":   f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",
+                "sim_opts":   f"{num_frames_sel},{res_mm:.3f}",
+                "stl_b64":    st.session_state["stl_b64"],
+                "stl_filename": st.session_state.get("last_uploaded_name", "part.stl"),
+            }
+            # 로컬 표시용 추가 정보 (GitHub에는 전송 안 됨)
+            ep["_gate_x"] = gx; ep["_gate_y"] = gy; ep["_gate_z"] = gz
+            ep["_gate_dia"] = float(g_size)
+            ep["_num_frames"] = num_frames_sel; ep["_mesh_res_mm"] = res_mm
+            ep["melt_temp"] = float(st.session_state["props"]["Tmelt"])
+            ep["gate_dia"]  = float(g_size)
+            st.session_state["executed_params"] = ep
+            st.session_state.update({
+                "last_signal_id": sig_id,
+                "sim_running":    True,
+                "sim_status":     "running",
+            })
+            add_log(f"🚀 Dispatching to GitHub | Signal: {sig_id} | End Time: {etime:.1f}s")
+
+            # Also notify Zapier if configured
+            if ZAPIER_URL:
+                try:
+                    payload_zapier = {
+                        "signal_id":  sig_id,
+                        "timestamp":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "material":   ep.get("material"),
+                        "vel_mms":    ep.get("vel_mms"),
+                        "etime":      ep.get("etime"),
+                        "temp":       ep.get("temp"),
+                        "press":      ep.get("press"),
+                        "gate_pos":   ep.get("gate_pos"),
+                        "status":     "dispatched",
+                    }
+                    requests.post(ZAPIER_URL, json=payload_zapier, timeout=10)
+                except Exception:
+                    pass
+
+            ok = trigger_github_simulation(ep)
+            if ok:
+                time.sleep(3)
+                run_url = get_latest_run_url()
+                if run_url:
+                    st.session_state["gh_run_url"] = run_url
+                    add_log(f"Run URL: {run_url}")
+                st.toast(f"✅ Simulation dispatched! Signal: {sig_id}", icon="🚀")
+                st.info(
+                    "⏳ GitHub Actions is now running the solver (~5-15 min).  \n"
+                    f"**Signal ID:** `{sig_id}`  \n"
+                    + (f"**Monitor:** [{run_url}]({run_url})" if run_url else "")
+                )
+            else:
+                st.session_state["sim_running"] = False
 
 
 # ═══════════════════════════════════════════════════════════
