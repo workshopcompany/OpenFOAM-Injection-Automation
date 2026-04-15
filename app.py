@@ -465,14 +465,25 @@ def sync_simulation_results():
 with st.sidebar:
     st.header("📂 1. Geometry")
     uploaded = st.file_uploader("Upload STL (mm)", type=["stl"])
+    
     if uploaded:
         try:
+            # [추가] 새로운 파일이 올라오면 기존 컨펌 상태 리셋
+            # 이렇게 해야 버튼이 안 먹히는 현상을 방지하고 새로 컨펌을 유도합니다.
+            if "last_uploaded_name" not in st.session_state or st.session_state["last_uploaded_name"] != uploaded.name:
+                st.session_state["props_confirmed"] = False
+                st.session_state["process_confirmed"] = False
+                st.session_state["last_uploaded_name"] = uploaded.name
+                add_log(f"New file detected: {uploaded.name}. Resetting confirmations.")
+
+            # 1. 3D 뷰어용 메쉬 로드
+            uploaded.seek(0) 
             mesh_obj = trimesh.load(uploaded, file_type="stl")
             st.session_state["mesh"] = mesh_obj
             st.session_state["gate_ai_suggested"] = False
-            st.success(f"✅ STL loaded — {len(mesh_obj.faces):,} faces")
-          # [중요] GitHub 전송을 위해 파일을 Base64로 미리 변환하여 세션에 저장
-            uploaded.seek(0) # 읽기 위해 다시 처음으로
+
+            # 2. GitHub 전송용 Base64 변환 (항상 하나의 데이터로 취급)
+            uploaded.seek(0) 
             stl_bytes = uploaded.read()
             st.session_state["stl_b64"] = base64.b64encode(stl_bytes).decode('utf-8')
             
