@@ -654,17 +654,26 @@ with st.sidebar:
     st.session_state["num_frames"] = num_frames_sel
 
     # ── Run button ──
-    is_running = st.session_state.get("sim_running", False)
-    
+# 현재 시뮬레이션이 이미 실행 중인지만 확인 (중복 실행 방지)
+is_running = st.session_state.get("sim_running", False)
 
-    if st.button("🚀 Run Cloud Simulation (GitHub Actions)",
+if st.button("🚀 Run Cloud Simulation (GitHub Actions)",
              type="primary", 
              use_container_width=True, 
-             disabled=is_running, # 실행 중일 때만 버튼 잠금
-             key="run_sim_immediate_v1"):
+             disabled=is_running, 
+             key="run_sim_immediate_v2"):
+    
+    # 1. 필수 데이터(STL) 존재 여부 확인
+    if "stl_b64" not in st.session_state:
+        st.error("⚠️ 먼저 사이드바 상단에서 STL 파일을 업로드해 주세요.")
+    else:
+        # 2. 이전 로그 및 결과 초기화
         clear_old_results()
         sig_id = str(uuid.uuid4())[:8]
         res_mm = 0.5  # solver.py will compute actual resolution
+        # 3. GitHub 전송 데이터(Payload) 구성
+        sig_id = str(uuid.uuid4())[:8]
+
 
         # GitHub repository_dispatch client_payload is limited to 10 properties.
         # gate_x/y/z + gate_dia → gate_pos "x,y,z,dia" string  (-3 keys)
