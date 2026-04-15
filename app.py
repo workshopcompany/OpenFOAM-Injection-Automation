@@ -784,140 +784,100 @@ with col_log:
         st.rerun()
 
 # ─────────── Results & Sync ───────────
-# ─────────── 1. 데이터 로드 및 변수 초기화 ───────────
-# 세션에서 데이터를 안전하게 가져옵니다.
-result_frames = st.session_state.get("result_frames", [])
-current_res_dir = st.session_state.get("last_result_dir", "temp_results")
+import os, glob, re, time
 
+# ─────────── [1] 초기화 (NameError 방지) ───────────
+if "result_frames" not in st.session_state:
+    st.session_state["result_frames"] = []
+if "current_frame" not in st.session_state:
+    st.session_state["current_frame"] = 0
+
+# ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 st.title("📊 Simulation Results")
-# 2. 🔍 시스템 진단 로그 (문제 파악용)
+# 진단 로그: 경로가 꼬여도 어디에 파일이 있는지 찾아내서 보여줍니다.
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    st.write(f"📂 **Target Directory:** `{current_res_dir}`")
-    st.write(f"🖼️ **Frames In Session:** `{len(result_frames)}`")
+    res_dir = st.session_state.get("last_result_dir", "temp_results")
+    st.write(f"📂 **Base Directory:** `{res_dir}`")
     
-    # 실제 물리적 경로에 파일이 있는지 직접 확인
-    check_path = os.path.join(current_res_dir, "frames")
-    if os.path.exists(check_path):
-        disk_files = os.listdir(check_path)
-        st.write(f"📁 **Physical Files on Disk:** `{len(disk_files)}`개 발견")
-        if disk_files:
-            st.code(f"Sample: {disk_files[0]}")
+    # [핵심] recursive=True를 사용하여 하위 폴더 어디든 frame_*.png가 있으면 찾아냅니다.
+    search_pattern = os.path.join(res_dir, "**", "frame_*.png")
+    all_found_images = glob.glob(search_pattern, recursive=True)
+    
+    st.write(f"📁 **Physical Images Found:** `{len(all_found_images)}`개")
+    if all_found_images:
+        st.success(f"✅ 실제 경로 확인됨: `{all_found_images[0]}`")
     else:
-        st.error(f"⚠️ 폴더 없음: `{check_path}` (Sync를 먼저 진행하세요)")
+        st.warning(f"⚠️ `{res_dir}` 폴더 내에 이미지 파일이 없습니다. Sync를 진행하세요.")
+    
+
 # 3. 🔄 Sync 버튼 로직
 # ─────────── 3. Sync & Animation 로직 ───────────
 cr1, cr2 = st.columns([2, 1])
 with cr1:
     st.markdown("### Download & Sync from GitHub")
 with cr2:
-    # 중복 ID 방지를 위해 key="sync_button_unique" 추가
-    if st.button("🔄 Sync Results", width='stretch', type="primary", key="sync_button_unique"):
-        with st.spinner("GitHub에서 결과 데이터를 가져오는 중..."):
-            # 함수 실행 (이 안에서 아티팩트 다운로드 및 압축해제가 일어남)
+    # 중복 ID 에러 방지를 위해 고유 key 설정
+    if st.button("🔄 Sync Results", width='stretch', type="primary", key="sync_final_fix"):
+        with st.spinner("Downloading results..."):
             sync_simulation_results()
             
-            # 다운로드 후 최신 경로로 갱신
-            updated_dir = st.session_state.get("last_result_dir", "temp_results")
-            
-            # 모든 하위 폴더에서 frame_*.png 검색 (재귀적 탐색)
-            img_pattern = os.path.join(updated_dir, "**", "frame_*.png")
-            found_frames = glob.glob(img_pattern, recursive=True)
-            
-            if found_frames:
-                # 파일명에서 숫자를 추출하여 정렬 (frame_1, frame_2...)
-                found_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-                st.session_state["result_frames"] = found_frames
-                st.session_state["current_frame"] = 0
-                st.success(f"✅ {len(found_frames)}개의 프레임을 로드했습니다.")
-            else:
-                st.error(f"❌ 이미지를 찾지 못했습니다. 경로 확인: {updated_dir}")
-        st.rerun()
-# ─────────── Results & Sync 섹션 ───────────
-st.title("📊 Simulation Results")
-
-# 디버깅 로그 섹션
-with st.expander("🔍 System Diagnostic Logs"):
-    res_dir = st.session_state.get("last_result_dir", "temp_results")
-    st.write(f"📂 **Directory:** `{res_dir}`")
-    st.write(f"🖼️ **Frames In Session:** `{len(result_frames)}`")
-
-cr1, cr2 = st.columns([2, 1])
-with cr1:
-    st.markdown("### Download & Sync from GitHub")
-with cr2:
-    if st.button("🔄 Sync Results", width='stretch', type="primary"):
-        with st.spinner("Downloading..."):
-            # 1. 결과 동기화 실행
-            sync_simulation_results() 
-            
-            # 2. 동기화된 폴더에서 이미지 파일 목록 갱신
-            # sync_simulation_results 내부에서 last_result_dir를 세션에 저장한다고 가정
+            # 다운로드 직후 다시 모든 하위 폴더 검색
             target_dir = st.session_state.get("last_result_dir", "temp_results")
+            new_pattern = os.path.join(target_dir, "**", "frame_*.png")
+            new_frames = glob.glob(new_pattern, recursive=True)
             
-            # [핵심] glob을 사용하여 파일 리스트 생성
-            pattern = os.path.join(target_dir, "frames", "frame_*.png")
-            image_files = glob.glob(pattern)
-            
-            if image_files:
-                # 파일명 숫자 순서대로 정렬
-                image_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-                st.session_state["result_frames"] = image_files
+            if new_frames:
+                # 파일명 숫자(0, 1, 2...) 기준으로 정렬
+                new_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+                st.session_state["result_frames"] = new_frames
                 st.session_state["current_frame"] = 0
-                st.success(f"✅ {len(image_files)} frames loaded!")
+                st.success(f"✅ {len(new_frames)} 프레임 동기화 성공!")
             else:
-                st.error(f"❌ No images found in {target_dir}/frames")
+                st.error("❌ 이미지를 찾을 수 없습니다. solver.py 로직을 확인하세요.")
         st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
 
 # 4. 🌊 애니메이션 출력 섹션
+result_frames = st.session_state.get("result_frames", [])
+
 if result_frames:
     st.subheader("🌊 3D Filling Animation")
-    total_steps = len(result_frames)
-    
-    # 세션에서 현재 프레임 가져오기
+    total = len(result_frames)
     curr = st.session_state.get("current_frame", 0)
-    if curr >= total_steps:
-        curr = 0
+    if curr >= total: curr = 0
 
-    # 컨트롤 버튼 레이아웃
-    cc1, cc2, cc3, cc4 = st.columns([1, 1, 3, 1])
-    with cc1:
-        if st.button("⏮ First", width='stretch'):
-            st.session_state.update({"current_frame": 0, "animation_playing": False})
-            st.rerun()
-    with cc2:
+    # 컨트롤 레이아웃
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        if st.button("⏮ First", key="btn_first_frame"): 
+            st.session_state["current_frame"] = 0; st.rerun()
+    with c2:
         is_playing = st.session_state.get("animation_playing", False)
-        if st.button("⏸ Pause" if is_playing else "Stopped", width='stretch'):
-            st.session_state["animation_playing"] = False
-            st.rerun()
-    with cc3:
-        if st.button("▶ Play", width='stretch', type="primary"):
-            st.session_state["animation_playing"] = True
-            st.rerun()
-    with cc4:
-        if st.button("⏭ Last", width='stretch'):
-            st.session_state.update({"current_frame": total_steps - 1, "animation_playing": False})
-            st.rerun()
+        if st.button("⏸ Pause" if is_playing else "▶ Play", key="btn_play_toggle"):
+            st.session_state["animation_playing"] = not is_playing; st.rerun()
+    with c3:
+        if st.button("⏭ Last", key="btn_last_frame"): 
+            st.session_state["current_frame"] = total - 1; st.rerun()
 
     # 프레임 슬라이더
-    current_frame = st.slider("Frame Progress", 0, total_steps - 1, value=curr)
-    st.session_state["current_frame"] = current_frame
-
-    # 이미지 출력 (경로 확인 포함)
-    img_path = result_frames[current_frame]
+    idx = st.slider("Flow Progress", 0, total - 1, value=curr)
+    st.session_state["current_frame"] = idx
+    
+    # 이미지 렌더링 (최신 규격 width='stretch')
+    img_path = result_frames[idx]
     if os.path.exists(img_path):
-        # 최신 Streamlit 규격에 맞게 width='stretch' 사용
-        st.image(img_path, caption=f"Frame {current_frame + 1}/{total_steps}", width='stretch')
+        st.image(img_path, caption=f"Step {idx+1} / {total}", width='stretch')
     else:
-        st.error(f"Missing file: {img_path}")
+        st.error(f"파일을 찾을 수 없습니다: {img_path}")
 
-    # 자동 재생 로직
+    # 자동 재생
     if st.session_state.get("animation_playing", False):
         time.sleep(0.3)
-        st.session_state["current_frame"] = (current_frame + 1) % total_steps
+        st.session_state["current_frame"] = (idx + 1) % total
         st.rerun()
-
+else:
+    st.info("💡 'Sync Results' 버튼을 눌러 시뮬레이션 애니메이션을 로드하세요.")
 # 에러가 났던 else 부분: if result_frames와 줄을 맞춰야 합니다.
 else:
     st.info("💡 결과를 확인하려면 'Sync Results' 버튼을 눌러주세요.")
