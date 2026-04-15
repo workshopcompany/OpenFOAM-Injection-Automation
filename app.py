@@ -784,31 +784,51 @@ with col_log:
         st.rerun()
 
 # ─────────── Results & Sync ───────────
-import os, glob, re, time
 
 # ─────────── [1] 초기화 (NameError 방지) ───────────
 if "result_frames" not in st.session_state:
     st.session_state["result_frames"] = []
 if "current_frame" not in st.session_state:
     st.session_state["current_frame"] = 0
-
+import os, glob, re, time, zipfile
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
-st.title("📊 Simulation Results")
-# 진단 로그: 경로가 꼬여도 어디에 파일이 있는지 찾아내서 보여줍니다.
+# ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    res_dir = st.session_state.get("last_result_dir", "simulation-results")
-    st.write(f"📂 **Base Directory:** `{res_dir}`")
+    # 기본 폴더 설정
+    base_dir = "simulation-results"
+    st.write(f"📂 **Base Directory:** `{base_dir}`")
     
-    # [핵심] recursive=True를 사용하여 하위 폴더 어디든 frame_*.png가 있으면 찾아냅니다.
-    search_pattern = os.path.join(res_dir, "**", "frame_*.png")
-    all_found_images = glob.glob(search_pattern, recursive=True)
-    
-    st.write(f"📁 **Physical Images Found:** `{len(all_found_images)}`개")
-    if all_found_images:
-        st.success(f"✅ 실제 경로 확인됨: `{all_found_images[0]}`")
+    if os.path.exists(base_dir):
+        # [핵심] 모든 하위 디렉토리를 포함해서 .png 파일을 검색 (recursive=True)
+        all_pngs = glob.glob(os.path.join(base_dir, "**", "*.png"), recursive=True)
+        st.write(f"🖼️ **Total PNGs Found:** `{len(all_pngs)}`개")
+        
+        if all_pngs:
+            # 발견된 경로 중 frame_ 숫자가 있는 것만 필터링 및 정렬
+            frame_files = [f for f in all_pngs if "frame_" in os.path.basename(f)]
+            frame_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+            st.session_state["result_frames"] = frame_files
+            st.success(f"✅ 파일을 성공적으로 인식했습니다! (첫 번째: {os.path.basename(frame_files[0])})")
     else:
-        st.warning(f"⚠️ `{res_dir}` 폴더 내에 이미지 파일이 없습니다. Sync를 진행하세요.")
-    
+        st.error("⚠️ 폴더가 존재하지 않습니다. Sync 버튼을 눌러 압축을 풀어주세요.")
+# ─────────── [3] Sync 버튼 (압축 해제 로직 포함) ───────────
+if st.button("🔄 Sync & Extract Results", width='stretch', type="primary", key="sync_zip_fix"):
+    with st.spinner("GitHub에서 압축 파일 다운로드 및 해제 중..."):
+        # 기존 함수 실행 (파일 다운로드)
+        sync_simulation_results() 
+        
+        # [추가 조치] 방금 받은 폴더를 다시 한번 샅샅이 뒤져서 세션 업데이트
+        target = "simulation-results"
+        new_list = glob.glob(os.path.join(target, "**", "frame_*.png"), recursive=True)
+        
+        if new_list:
+            new_list.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+            st.session_state["result_frames"] = new_list
+            st.session_state["current_frame"] = 0
+            st.success(f"✅ {len(new_list)}개의 이미지를 로드했습니다!")
+        else:
+            st.error("❌ 압축을 풀었으나 내부에 frame_*.png 파일이 없습니다.")
+    st.rerun()
 
 # 3. 🔄 Sync 버튼 로직
 # ─────────── 3. Sync & Animation 로직 ───────────
