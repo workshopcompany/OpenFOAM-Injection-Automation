@@ -471,6 +471,12 @@ with st.sidebar:
             st.session_state["mesh"] = mesh_obj
             st.session_state["gate_ai_suggested"] = False
             st.success(f"✅ STL loaded — {len(mesh_obj.faces):,} faces")
+          # [중요] GitHub 전송을 위해 파일을 Base64로 미리 변환하여 세션에 저장
+            uploaded.seek(0) # 읽기 위해 다시 처음으로
+            stl_bytes = uploaded.read()
+            st.session_state["stl_b64"] = base64.b64encode(stl_bytes).decode('utf-8')
+            
+            st.success(f"✅ STL loaded — {len(mesh_obj.faces):,} faces")
         except Exception as e:
             st.error(f"STL load failed: {e}")
 
