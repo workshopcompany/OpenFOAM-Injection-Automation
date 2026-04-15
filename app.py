@@ -784,10 +784,49 @@ with col_log:
         st.rerun()
 
 # ─────────── Results & Sync ───────────
-# ─────────── [중요] 변수 초기화 (파일 상단 혹은 결과 섹션 시작점) ───────────
-# NameError를 방지하기 위해 세션에서 안전하게 가져옵니다.
+# 1. [필수] 결과 섹션 시작 전 변수 초기화 (NameError 방지)
 result_frames = st.session_state.get("result_frames", [])
-
+current_res_dir = st.session_state.get("last_result_dir", "temp_results")
+# 2. 🔍 시스템 진단 로그 (문제 파악용)
+st.title("📊 Simulation Results")
+with st.expander("🔍 System Diagnostic Logs", expanded=True):
+    st.write(f"📂 **Target Directory:** `{current_res_dir}`")
+    st.write(f"🖼️ **Frames In Session:** `{len(result_frames)}`")
+    
+    # 실제 물리적 경로에 파일이 있는지 직접 확인
+    check_path = os.path.join(current_res_dir, "frames")
+    if os.path.exists(check_path):
+        disk_files = os.listdir(check_path)
+        st.write(f"📁 **Physical Files on Disk:** `{len(disk_files)}`개 발견")
+        if disk_files:
+            st.code(f"Sample: {disk_files[0]}")
+    else:
+        st.error(f"⚠️ 폴더 없음: `{check_path}` (Sync를 먼저 진행하세요)")
+# 3. 🔄 Sync 버튼 로직
+cr1, cr2 = st.columns([2, 1])
+with cr1:
+    st.markdown("### Download & Sync from GitHub")
+with cr2:
+    if st.button("🔄 Sync Results", width='stretch', type="primary"):
+        with st.spinner("GitHub에서 데이터를 가져오는 중..."):
+            sync_simulation_results() # 여기서 결과 폴더가 생성됨
+            
+            # 동기화 직후 세션 상태 업데이트
+            updated_dir = st.session_state.get("last_result_dir", "temp_results")
+            
+            # [수정] 모든 하위 폴더에서 PNG를 찾도록 패턴 강화
+            img_pattern = os.path.join(updated_dir, "**", "frame_*.png")
+            new_frames = glob.glob(img_pattern, recursive=True)
+            
+            if new_frames:
+                # 숫자 기준 정렬
+                new_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+                st.session_state["result_frames"] = new_frames
+                st.session_state["current_frame"] = 0
+                st.success(f"✅ {len(new_frames)}개의 프레임을 찾았습니다!")
+            else:
+                st.error(f"❌ '{updated_dir}' 내부에서 이미지를 찾지 못했습니다.")
+        st.rerun()
 # ─────────── Results & Sync 섹션 ───────────
 st.title("📊 Simulation Results")
 
@@ -825,24 +864,26 @@ with cr2:
         st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
+
+# 4. 🌊 애니메이션 출력 섹션
 if result_frames:
     st.subheader("🌊 3D Filling Animation")
-    # 최신 Streamlit 규격: use_container_width=True 대신 width='stretch' 사용
-    curr = st.session_state.get("current_frame", 0)
-    st.image(result_frames[curr], caption=f"Step {curr+1}", width='stretch')
+    total_steps = len(result_frames)
     
-
-    # 슬라이더 및 컨트롤 (생략 - 기존 코드 유지)
+    # 프레임 인덱스 안전하게 가져오기
     curr_idx = st.session_state.get("current_frame", 0)
     if curr_idx >= total_steps: curr_idx = 0
 
-    # 이미지 출력 및 오류 핸들링
+    # 이미지 출력 (최신 버전 규격 width='stretch')
     img_path = result_frames[curr_idx]
     if os.path.exists(img_path):
         st.image(img_path, caption=f"Frame {curr_idx + 1}/{total_steps}", width='stretch')
     else:
-        st.error(f"⚠️ 파일을 읽을 수 없습니다: {img_path}")
-        st.info("Sync Results 버튼을 다시 눌러 경로를 갱신해 보세요.")
+        st.error(f"파일을 찾을 수 없음: {img_path}")
+
+    # (재생 컨트롤 버튼 로직은 기존 것 유지 가능)
+else:
+    st.info("💡 결과를 보려면 상단의 'Sync Results' 버튼을 눌러주세요.")
 
     # 자동 재생 로직 (생략 - 기존 코드 유지)
 else:
