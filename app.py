@@ -335,18 +335,19 @@ def upload_stl_to_github(file_bytes, target_path="input/part.stl"):
         "Accept": "application/vnd.github.v3+json"
     }
 
-    # 기존 파일 SHA 확인
+    # 1. 기존 파일의 SHA 확인 (덮어쓰기 위해 필수)
     resp = requests.get(url, headers=headers)
     sha = resp.json().get("sha") if resp.status_code == 200 else None
 
-    # 업로드
+    # 2. 업로드 (Base64 인코딩)
     content_b64 = base64.b64encode(file_bytes).decode("utf-8")
     data = {
-        "message": f"Upload STL for simulation {datetime.now()}",
+        "message": f"Upload STL for simulation {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "content": content_b64,
-        "branch": "main"
+        "branch": "main" # 본인의 브랜치명 확인 (보통 main)
     }
-    if sha: data["sha"] = sha
+    if sha:
+        data["sha"] = sha 
 
     put_resp = requests.put(url, headers=headers, json=data)
     return put_resp.status_code in [200, 201]
