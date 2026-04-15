@@ -877,9 +877,7 @@ if result_frames:
         st.session_state["current_frame"] = (idx + 1) % total
         st.rerun()
 else:
-    st.info("💡 'Sync Results' 버튼을 눌러 시뮬레이션 애니메이션을 로드하세요.")
-# 에러가 났던 else 부분: if result_frames와 줄을 맞춰야 합니다.
-else:
+
     st.info("💡 결과를 확인하려면 'Sync Results' 버튼을 눌러주세요.")
     st.caption("현재 세션에 로드된 프레임이 0개입니다.")
 
