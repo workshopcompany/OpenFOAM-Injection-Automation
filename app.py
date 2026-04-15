@@ -794,7 +794,7 @@ st.title("📊 Simulation Results")
 import os, glob, re, time, zipfile
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 # ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
-wwith st.expander("🔍 System Diagnostic Logs", expanded=True):
+with st.expander("🔍 System Diagnostic Logs", expanded=True):
     # 압축이 풀리는 기본 대상 폴더
     target_path = "simulation-results"
     st.write(f"📂 **Searching in:** `{target_path}`")
