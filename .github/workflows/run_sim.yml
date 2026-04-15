@@ -41,57 +41,54 @@ jobs:
           cache: 'pip'
 
       # ── 3. Dependencies ───────────────────────────────────
+      # NOTE: kaleido 제거 — 헤드리스 환경에서 plotly PNG export 불안정
+      #       matplotlib + Agg 백엔드로 대체 (solver.py 참고)
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy trimesh scipy plotly kaleido rtree pandas
+          pip install numpy trimesh scipy matplotlib rtree pandas
 
       # ── 4. Prepare STL ────────────────────────────────────
       - name: Prepare STL from Repo
         run: |
           echo "🔍 Searching for STL file in 'input/part.stl'..."
-          
-          # 1. app.py가 업로드한 input 폴더 내부 파일을 체크
+
           if [ -f "input/part.stl" ]; then
             cp input/part.stl part.stl
             echo "✅ STL file found and copied from input/part.stl"
             echo "STL_PATH=part.stl" >> $GITHUB_ENV
-          
-          # 2. 예외 상황 대비 (루트에 있는 경우)
+
           elif [ -f "part.stl" ]; then
             echo "✅ STL file found in root"
             echo "STL_PATH=part.stl" >> $GITHUB_ENV
-            
+
           else
             echo "❌ Error: part.stl not found in repository."
-            # 현재 디렉토리 구조를 출력해서 디버깅에 도움을 줌
             ls -R
             exit 1
           fi
 
       # ── 5. Parse packed payload fields ────────────────────
       # gate_pos  = "x,y,z,dia"
-      # sim_opts  = "num_frames,res"
+      # sim_opts  = "material,num_frames,res"
       - name: Parse packed fields
         run: |
-          # gate_pos 분리: x, y, z, dia
           IFS=',' read -r GX GY GZ GDIA <<< "${{ github.event.client_payload.gate_pos }}"
-          echo "G_X=$GX" >> $GITHUB_ENV
-          echo "G_Y=$GY" >> $GITHUB_ENV
-          echo "G_Z=$GZ" >> $GITHUB_ENV
-          echo "G_DIA=$GDIA" >> $GITHUB_ENV
-          
-          # sim_opts 분리: material, frames, res
+          echo "G_X=${GX:-0.0}"     >> $GITHUB_ENV
+          echo "G_Y=${GY:-0.0}"     >> $GITHUB_ENV
+          echo "G_Z=${GZ:-0.0}"     >> $GITHUB_ENV
+          echo "G_DIA=${GDIA:-2.0}" >> $GITHUB_ENV
+
           IFS=',' read -r MAT FRAMES RES <<< "${{ github.event.client_payload.sim_opts }}"
-          echo "S_MAT=$MAT" >> $GITHUB_ENV
-          echo "S_FRAMES=$FRAMES" >> $GITHUB_ENV
-          echo "S_RES=$RES" >> $GITHUB_ENV
+          echo "S_MAT=${MAT:-17-4PH}"  >> $GITHUB_ENV
+          echo "S_FRAMES=${FRAMES:-15}" >> $GITHUB_ENV
+          echo "S_RES=${RES:-0.5}"     >> $GITHUB_ENV
 
       # ── 6. Run solver ─────────────────────────────────────
       - name: Run Solver
         run: |
           python solver.py \
-            --signal_id   "${{ github.event.client_payload.signal_id }}" \
+            --signal_id   "${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}" \
             --gate_x      "$G_X" \
             --gate_y      "$G_Y" \
             --gate_z      "$G_Z" \
@@ -99,13 +96,13 @@ jobs:
             --num_frames  "$S_FRAMES" \
             --mesh_res_mm "$S_RES" \
             --material    "$S_MAT" \
-            --temp        "${{ github.event.client_payload.temp }}" \
-            --melt_temp   "${{ github.event.client_payload.temp }}" \
-            --viscosity   "${{ github.event.client_payload.viscosity }}" \
-            --density     "${{ github.event.client_payload.density }}" \
-            --press       "${{ github.event.client_payload.press }}" \
-            --vel_mms     "${{ github.event.client_payload.vel_mms }}" \
-            --etime       "${{ github.event.client_payload.etime }}" \
+            --temp        "${{ github.event.client_payload.temp || '185' }}" \
+            --melt_temp   "${{ github.event.client_payload.temp || '185' }}" \
+            --viscosity   "${{ github.event.client_payload.viscosity || '4e-3' }}" \
+            --density     "${{ github.event.client_payload.density || '7780' }}" \
+            --press       "${{ github.event.client_payload.press || '110' }}" \
+            --vel_mms     "${{ github.event.client_payload.vel_mms || '25' }}" \
+            --etime       "${{ github.event.client_payload.etime || '10' }}" \
             --stl_path    "$STL_PATH"
 
       # ── 7. Upload artifacts ───────────────────────────────
@@ -114,13 +111,11 @@ jobs:
         with:
           name: simulation-${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}
           path: |
-            frames/          # 애니메이션용 이미지들
-            *.vtm            # VTK Multi-block 파일 (ParaView용)
-            *.vtp            # VTK PolyData 파일
+            frames/
             results.txt
             results.json
           retention-days: 30
-          if-no-files-found: warn # 파일이 없어도 에러로 중단되지 않게 설정
+          if-no-files-found: warn
 
       # ── 8. Commit result summary back to repo ─────────────
       - name: Commit results summary
@@ -129,7 +124,7 @@ jobs:
           git config --global user.name  "MIM-Ops-Bot"
           git config --global user.email "mim-ops-bot@github.com"
           mkdir -p simulation_history
-          SIGNAL="${{ github.event.client_payload.signal_id || 'manual' }}"
+          SIGNAL="${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}"
           cp results.json "simulation_history/${SIGNAL}.json" 2>/dev/null || true
           git add simulation_history/ || true
           git diff --cached --quiet || git commit -m "sim result: ${SIGNAL}"
