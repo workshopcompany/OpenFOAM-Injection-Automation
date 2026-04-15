@@ -796,7 +796,7 @@ if "current_frame" not in st.session_state:
 st.title("📊 Simulation Results")
 # 진단 로그: 경로가 꼬여도 어디에 파일이 있는지 찾아내서 보여줍니다.
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    res_dir = st.session_state.get("last_result_dir", "temp_results")
+    res_dir = st.session_state.get("last_result_dir", "simulation-results")
     st.write(f"📂 **Base Directory:** `{res_dir}`")
     
     # [핵심] recursive=True를 사용하여 하위 폴더 어디든 frame_*.png가 있으면 찾아냅니다.
@@ -822,7 +822,7 @@ with cr2:
             sync_simulation_results()
             
             # 다운로드 직후 다시 모든 하위 폴더 검색
-            target_dir = st.session_state.get("last_result_dir", "temp_results")
+            target_dir = st.session_state.get("last_result_dir", "simulation-results")
             new_pattern = os.path.join(target_dir, "**", "frame_*.png")
             new_frames = glob.glob(new_pattern, recursive=True)
             
