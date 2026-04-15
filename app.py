@@ -326,7 +326,7 @@ def suggest_gate_positions_ai(mesh_obj: trimesh.Trimesh) -> list:
     return suggestions
 
 # ═══════════════════════════════════════════════════════════
-
+# [1] 이 함수를 trigger_github_simulation 위에 추가하세요.
 def upload_stl_to_github(file_bytes, target_path="input/part.stl"):
     """GitHub Contents API를 사용하여 파일을 레포지토리에 덮어씁니다."""
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{target_path}"
@@ -335,19 +335,18 @@ def upload_stl_to_github(file_bytes, target_path="input/part.stl"):
         "Accept": "application/vnd.github.v3+json"
     }
 
-    # 1. 기존 파일의 SHA 확인 (덮어쓰기 위해 필수)
+    # 기존 파일 SHA 확인 (덮어쓰기를 위해 필수)
     resp = requests.get(url, headers=headers)
     sha = resp.json().get("sha") if resp.status_code == 200 else None
 
-    # 2. 업로드 (Base64 인코딩)
+    # 업로드용 데이터 구성
     content_b64 = base64.b64encode(file_bytes).decode("utf-8")
     data = {
         "message": f"Upload STL for simulation {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "content": content_b64,
-        "branch": "main" # 본인의 브랜치명 확인 (보통 main)
+        "branch": "main"  # 본인의 기본 브랜치가 main인지 확인하세요
     }
-    if sha:
-        data["sha"] = sha 
+    if sha: data["sha"] = sha 
 
     put_resp = requests.put(url, headers=headers, json=data)
     return put_resp.status_code in [200, 201]
