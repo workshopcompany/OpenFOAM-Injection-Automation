@@ -1,5 +1,5 @@
 """
-MIM-Ops Pro v3.0
+  MIM-Ops Pro v3.1
 =================
 v3.0 Architecture Change:
   [1] Heavy voxel/flow computation REMOVED from Streamlit
@@ -788,34 +788,47 @@ with col_log:
 # ─────────── [1] 초기화 (NameError 방지) ───────────
 if "result_frames" not in st.session_state:
     st.session_state["result_frames"] = []
-if "current_frame" not in st.session_state:
-    st.session_state["current_frame"] = 0
+if "result_frames" not in st.session_state:
+    st.session_state["result_frames"] = []
+
+st.title("📊 Simulation Results")
 import os, glob, re, time, zipfile
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 # ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    # 기본 폴더 설정
     base_dir = "simulation-results"
     st.write(f"📂 **Base Directory:** `{base_dir}`")
     
     if os.path.exists(base_dir):
-        # [핵심] 모든 하위 디렉토리를 포함해서 .png 파일을 검색 (recursive=True)
-        all_pngs = glob.glob(os.path.join(base_dir, "**", "*.png"), recursive=True)
-        st.write(f"🖼️ **Total PNGs Found:** `{len(all_pngs)}`개")
+        # 모든 파일 목록 가져오기 (확장자 상관없이)
+        all_files = []
+        for root, dirs, files in os.walk(base_dir):
+            for file in files:
+                all_files.append(os.path.join(root, file))
         
-        if all_pngs:
-            # 발견된 경로 중 frame_ 숫자가 있는 것만 필터링 및 정렬
-            frame_files = [f for f in all_pngs if "frame_" in os.path.basename(f)]
-            frame_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-            st.session_state["result_frames"] = frame_files
-            st.success(f"✅ 파일을 성공적으로 인식했습니다! (첫 번째: {os.path.basename(frame_files[0])})")
+        st.write(f"📄 **Total Files Found:** `{len(all_files)}`개")
+        
+        # 파일 확장자 통계
+        ext_list = [os.path.splitext(f)[1] for f in all_files]
+        from collections import Counter
+        st.write(f"📊 **File Types:** `{dict(Counter(ext_list))}`")
+
+        # PNG 파일 필터링
+        png_frames = [f for f in all_files if f.endswith(".png") and "frame_" in f]
+        if png_frames:
+            png_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+            st.session_state["result_frames"] = png_frames
+            st.success(f"✅ {len(png_frames)}개의 이미지 프레임을 로드했습니다.")
+        else:
+            st.error("⚠️ PNG 이미지가 없습니다. VTU/VPM 파일만 감지되었습니다.")
+            st.info("💡 Tip: solver.py 실행 시 'kaleido' 라이브러리가 설치되어 있어야 이미지가 생성됩니다.")
     else:
-        st.error("⚠️ 폴더가 존재하지 않습니다. Sync 버튼을 눌러 압축을 풀어주세요.")
+        st.warning("⚠️ 폴더가 없습니다. Sync 버튼을 클릭해 주세요.")
 # ─────────── [3] Sync 버튼 (압축 해제 로직 포함) ───────────
-if st.button("🔄 Sync & Extract Results", width='stretch', type="primary", key="sync_zip_fix"):
-    with st.spinner("GitHub에서 압축 파일 다운로드 및 해제 중..."):
-        # 기존 함수 실행 (파일 다운로드)
-        sync_simulation_results() 
+if st.button("🔄 Sync & Scan Results", width='stretch', type="primary", key="final_sync_check"):
+    with st.spinner("GitHub에서 결과물 압축 해제 중..."):
+        sync_simulation_results() # 압축 해제 함수 실행
+        st.rerun() # 다시 실행하여 위 Diagnostic Logs에서 파일 검색
         
         # [추가 조치] 방금 받은 폴더를 다시 한번 샅샅이 뒤져서 세션 업데이트
         target = "simulation-results"
@@ -859,7 +872,7 @@ with cr2:
 # ─────────── PNG Frame Animation ───────────
 
 # 4. 🌊 애니메이션 출력 섹션
-result_frames = st.session_state.get("result_frames", [])
+
 
 if result_frames:
     st.subheader("🌊 3D Filling Animation")
