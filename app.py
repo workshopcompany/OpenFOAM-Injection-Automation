@@ -654,14 +654,14 @@ with st.sidebar:
     st.session_state["num_frames"] = num_frames_sel
 
     # ── Run button ──
-    run_disabled = (
-        st.session_state["sim_running"]
-        or not st.session_state["props_confirmed"]
-        or not st.session_state.get("process_confirmed")
-    )
+    is_running = st.session_state.get("sim_running", False)
+    
 
     if st.button("🚀 Run Cloud Simulation (GitHub Actions)",
-                 type="primary", use_container_width=True, disabled=run_disabled):
+             type="primary", 
+             use_container_width=True, 
+             disabled=is_running, # 실행 중일 때만 버튼 잠금
+             key="run_sim_immediate_v1"):
         clear_old_results()
         sig_id = str(uuid.uuid4())[:8]
         res_mm = 0.5  # solver.py will compute actual resolution
