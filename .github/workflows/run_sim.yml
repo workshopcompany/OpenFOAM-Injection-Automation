@@ -48,82 +48,67 @@ jobs:
 
       # ── 4. Prepare STL ────────────────────────────────────
       # Priority: base64 from client_payload → repo file
-      - name: Prepare STL file
-        env:
-          STL_B64:      ${{ github.event.client_payload.stl_b64 }}
-          STL_FILENAME: ${{ github.event.client_payload.stl_filename || inputs.stl_filename || 'part.stl' }}
+      - name: Decode STL file
         run: |
-          if [ -n "$STL_B64" ]; then
-            echo "Decoding base64 STL → $STL_FILENAME ..."
-            echo "$STL_B64" | base64 -d > "$STL_FILENAME"
-            echo "✅ STL decoded: $STL_FILENAME ($(wc -c < "$STL_FILENAME") bytes)"
-            echo "STL_PATH=$STL_FILENAME" >> $GITHUB_ENV
-          elif [ -f "$STL_FILENAME" ]; then
-            echo "Using repo STL: $STL_FILENAME"
-            echo "STL_PATH=$STL_FILENAME" >> $GITHUB_ENV
+          if [ -n "${{ github.event.client_payload.stl_b64 }}" ]; then
+            echo "${{ github.event.client_payload.stl_b64 }}" | base64 --decode > part.stl
+            echo "STL_PATH=part.stl" >> $GITHUB_ENV
+          elif [ -n "${{ github.event.inputs.stl_b64 }}" ]; then
+            echo "${{ github.event.inputs.stl_b64 }}" | base64 --decode > part.stl
+            echo "STL_PATH=part.stl" >> $GITHUB_ENV
           else
-            echo "ERROR: No STL file found. Commit part.stl to repo root or pass stl_b64."
-            exit 1
+            echo "STL_PATH=part.stl" >> $GITHUB_ENV
           fi
 
       # ── 5. Parse packed payload fields ────────────────────
       # gate_pos  = "x,y,z,dia"
       # sim_opts  = "num_frames,res"
-      - name: Parse packed payload fields
-        env:
-          GATE_POS: ${{ github.event.client_payload.gate_pos || '0.0,0.0,0.0,2.0' }}
-          SIM_OPTS: ${{ github.event.client_payload.sim_opts || '15,0.5' }}
+      - name: Parse packed fields
         run: |
-          IFS=',' read -r gx gy gz dia <<< "$GATE_POS"
-          IFS=',' read -r nf res       <<< "$SIM_OPTS"
-          echo "GATE_X=${gx:-0.0}"       >> $GITHUB_ENV
-          echo "GATE_Y=${gy:-0.0}"       >> $GITHUB_ENV
-          echo "GATE_Z=${gz:-0.0}"       >> $GITHUB_ENV
-          echo "GATE_DIA=${dia:-2.0}"    >> $GITHUB_ENV
-          echo "NUM_FRAMES=${nf:-15}"    >> $GITHUB_ENV
-          echo "MESH_RES_MM=${res:-0.5}" >> $GITHUB_ENV
+          # gate_pos 분리: x, y, z, dia
+          IFS=',' read -r GX GY GZ GDIA <<< "${{ github.event.client_payload.gate_pos }}"
+          echo "G_X=$GX" >> $GITHUB_ENV
+          echo "G_Y=$GY" >> $GITHUB_ENV
+          echo "G_Z=$GZ" >> $GITHUB_ENV
+          echo "G_DIA=$GDIA" >> $GITHUB_ENV
+          
+          # sim_opts 분리: material, frames, res
+          IFS=',' read -r MAT FRAMES RES <<< "${{ github.event.client_payload.sim_opts }}"
+          echo "S_MAT=$MAT" >> $GITHUB_ENV
+          echo "S_FRAMES=$FRAMES" >> $GITHUB_ENV
+          echo "S_RES=$RES" >> $GITHUB_ENV
 
       # ── 6. Run solver ─────────────────────────────────────
-      - name: Run MIM Voxel Flow Solver
-        env:
-          SIGNAL_ID: ${{ github.event.client_payload.signal_id   || inputs.signal_id || 'manual' }}
-          VEL_MMS:   ${{ github.event.client_payload.vel_mms     || '25.0' }}
-          ETIME:     ${{ github.event.client_payload.etime       || '10.0' }}
-          MATERIAL:  ${{ github.event.client_payload.material    || '17-4PH' }}
-          VISCOSITY: ${{ github.event.client_payload.viscosity   || '4e-3' }}
-          DENSITY:   ${{ github.event.client_payload.density     || '7780' }}
-          TEMP:      ${{ github.event.client_payload.temp        || '185' }}
-          PRESS:     ${{ github.event.client_payload.press       || '110' }}
+      - name: Run Solver
         run: |
           python solver.py \
-            --signal_id   "$SIGNAL_ID"   \
-            --gate_x      "$GATE_X"      \
-            --gate_y      "$GATE_Y"      \
-            --gate_z      "$GATE_Z"      \
-            --gate_dia    "$GATE_DIA"    \
-            --vel_mms     "$VEL_MMS"     \
-            --etime       "$ETIME"       \
-            --num_frames  "$NUM_FRAMES"  \
-            --material    "$MATERIAL"    \
-            --viscosity   "$VISCOSITY"   \
-            --density     "$DENSITY"     \
-            --melt_temp   "$TEMP"        \
-            --temp        "$TEMP"        \
-            --press       "$PRESS"       \
-            --mesh_res_mm "$MESH_RES_MM" \
+            --signal_id   "${{ github.event.client_payload.signal_id }}" \
+            --gate_x      "$G_X" \
+            --gate_y      "$G_Y" \
+            --gate_z      "$G_Z" \
+            --gate_dia    "$G_DIA" \
+            --num_frames  "$S_FRAMES" \
+            --mesh_res_mm "$S_RES" \
+            --material    "$S_MAT" \
+            --temp        "${{ github.event.client_payload.temp }}" \
+            --melt_temp   "${{ github.event.client_payload.temp }}" \
+            --viscosity   "${{ github.event.client_payload.viscosity }}" \
+            --density     "${{ github.event.client_payload.density }}" \
+            --press       "${{ github.event.client_payload.press }}" \
+            --vel_mms     "${{ github.event.client_payload.vel_mms }}" \
+            --etime       "${{ github.event.client_payload.etime }}" \
             --stl_path    "$STL_PATH"
 
       # ── 7. Upload artifacts ───────────────────────────────
       - name: Upload simulation results
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}
+          name: simulation-${{ github.event.client_payload.signal_id || 'manual' }}
           path: |
             frames/
             results.txt
             results.json
           retention-days: 30
-          if-no-files-found: error
 
       # ── 8. Commit result summary back to repo ─────────────
       - name: Commit results summary
