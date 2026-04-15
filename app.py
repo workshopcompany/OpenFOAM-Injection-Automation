@@ -694,7 +694,6 @@ with st.sidebar:
                 "etime":     float(etime),
                 "gate_pos":  gate_str,       # 묶음 1
                 "sim_opts":  opts_str,       # 묶음 2
-                "stl_b64":   st.session_state["stl_b64"] # 파일 데이터
             }
             # [최종 확인] 총 키 개수: 10개 (성공)
 
