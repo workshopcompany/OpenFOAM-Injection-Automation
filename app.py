@@ -784,49 +784,44 @@ with col_log:
         st.rerun()
 
 # ─────────── Results & Sync ───────────
-# ─────────── Results & Sync ───────────
+# ─────────── [중요] 변수 초기화 (파일 상단 혹은 결과 섹션 시작점) ───────────
+# NameError를 방지하기 위해 세션에서 안전하게 가져옵니다.
+result_frames = st.session_state.get("result_frames", [])
+
+# ─────────── Results & Sync 섹션 ───────────
 st.title("📊 Simulation Results")
 
-# 디버깅 섹션: 문제가 생겼을 때 이 부분을 캡처해서 확인하세요.
-with st.expander("🔍 System Diagnostic Logs", expanded=True):
+# 디버깅 로그 섹션
+with st.expander("🔍 System Diagnostic Logs"):
     res_dir = st.session_state.get("last_result_dir", "temp_results")
-    frames_list = st.session_state.get("result_frames", [])
-    
-    st.write(f"📂 **Current Result Directory:** `{res_dir}`")
-    st.write(f"🖼️ **Frames in Session:** `{len(frames_list)}`")
-    
-    # 실제 경로 존재 여부 확인
-    frames_path = os.path.join(res_dir, "frames")
-    if os.path.exists(frames_path):
-        actual_files = os.listdir(frames_path)
-        st.write(f"📁 **Files found on Disk:** `{len(actual_files)} files`")
-        if len(actual_files) > 0:
-            st.code(f"Sample file: {actual_files[0]}")
-    else:
-        st.error(f"❌ **Path not found:** `{frames_path}` (Sync 버튼을 눌러야 생깁니다)")
+    st.write(f"📂 **Directory:** `{res_dir}`")
+    st.write(f"🖼️ **Frames In Session:** `{len(result_frames)}`")
 
 cr1, cr2 = st.columns([2, 1])
 with cr1:
     st.markdown("### Download & Sync from GitHub")
 with cr2:
     if st.button("🔄 Sync Results", width='stretch', type="primary"):
-        with st.spinner("Downloading results from GitHub..."):
-            sync_simulation_results() # 이 함수 안에서 last_result_dir를 세션에 저장해야 함
+        with st.spinner("Downloading..."):
+            # 1. 결과 동기화 실행
+            sync_simulation_results() 
             
-            # 다시 경로 확인 및 로드
-            current_res_dir = st.session_state.get("last_result_dir", "temp_results")
-            # solver (5).py 규칙에 맞춰 frame_*.png 검색
-            pattern = os.path.join(current_res_dir, "frames", "frame_*.png")
+            # 2. 동기화된 폴더에서 이미지 파일 목록 갱신
+            # sync_simulation_results 내부에서 last_result_dir를 세션에 저장한다고 가정
+            target_dir = st.session_state.get("last_result_dir", "temp_results")
+            
+            # [핵심] glob을 사용하여 파일 리스트 생성
+            pattern = os.path.join(target_dir, "frames", "frame_*.png")
             image_files = glob.glob(pattern)
             
             if image_files:
-                # 파일명 숫자 기준 정렬
+                # 파일명 숫자 순서대로 정렬
                 image_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
                 st.session_state["result_frames"] = image_files
                 st.session_state["current_frame"] = 0
                 st.success(f"✅ {len(image_files)} frames loaded!")
             else:
-                st.error(f"❌ No images found at {pattern}")
+                st.error(f"❌ No images found in {target_dir}/frames")
         st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
