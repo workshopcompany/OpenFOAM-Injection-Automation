@@ -34,6 +34,73 @@ PIPELINE_OK=true
 # ══════════════════════════════════════════
 echo "[Allrun] 설정 파일 생성 시작..."
 
+# ── blockMeshDict (필수! 없으면 blockMesh 즉시 실패) ──────
+# 단순 2D 직사각형 채널: x방향 사출 흐름
+# 크기: 0.1m × 0.01m × 0.001m (앞뒤 1cell, 2D 해석)
+cat > system/blockMeshDict << BMD_EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      blockMeshDict;
+}
+scale   1;
+
+vertices
+(
+    (0     0     0    )
+    (0.1   0     0    )
+    (0.1   0.01  0    )
+    (0     0.01  0    )
+    (0     0     0.001)
+    (0.1   0     0.001)
+    (0.1   0.01  0.001)
+    (0     0.01  0.001)
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) (50 10 1) simpleGrading (1 1 1)
+);
+
+edges ();
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ( (0 4 7 3) );
+    }
+    outlet
+    {
+        type patch;
+        faces ( (1 2 6 5) );
+    }
+    walls
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)
+            (3 7 6 2)
+        );
+    }
+    frontAndBack
+    {
+        type empty;
+        faces
+        (
+            (0 3 2 1)
+            (4 5 6 7)
+        );
+    }
+);
+BMD_EOF
+echo "[Allrun] ✅ blockMeshDict 생성"
+
 cat > system/controlDict << CTRL_EOF
 FoamFile
 {
@@ -67,7 +134,6 @@ CTRL_EOF
 echo "[Allrun] ✅ controlDict 생성"
 
 # ── transportProperties ───────────────────
-# rho는 차원 없이 숫자만 — interFoam은 phases 블록에서 차원 없이 읽음
 cat > constant/transportProperties << TP_EOF
 FoamFile
 {
@@ -369,10 +435,8 @@ fi
 echo "[Allrun] 📂 결과물 정리 시작..."
 
 if [ "$PIPELINE_OK" = true ]; then
-    # 1. VTK 생성 (웹 3D 표시용) — 실패해도 진행
     foamToVTK -ascii 2>&1 | tee logs/foamToVTK.log || true
 
-    # 2. results.txt 생성 (Streamlit에서 바로 표시)
     cat > ./results.txt << EOF
 Simulation Status: Success
 Material: ${MATERIAL}
@@ -387,12 +451,9 @@ Time Steps: ${TIMESTEPS}
 Finish Time: $(date)
 EOF
 
-    # 3. logs.zip 생성 (로그 다운로드용)
     zip -r logs.zip logs/*.log 2>/dev/null || true
-
     echo "[Allrun] ✅ 모든 파일 준비 완료 (results.txt, logs.zip, VTK/)"
 else
-    # 실패시에도 results.txt는 생성 (Streamlit에서 실패 원인 표시용)
     cat > ./results.txt << EOF
 Simulation Status: Failed
 Material: ${MATERIAL}
@@ -407,9 +468,7 @@ Time Steps: ${TIMESTEPS}
 Finish Time: $(date)
 EOF
 
-    # 실패 로그도 zip
     zip -r logs.zip logs/*.log 2>/dev/null || true
-
     echo "[Allrun] ⚠️ 시뮬레이션 실패 — results.txt(Failed), logs.zip 생성"
 fi
 
