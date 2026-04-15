@@ -74,7 +74,16 @@ jobs:
             echo "ERROR: No STL file found. Commit part.stl to repo root or pass stl_b64."
             exit 1
           fi
-
+          
+      - name: Decode STL file
+        run: |
+          if [ -n "${{ github.event.inputs.stl_b64 }}" ]; then
+            echo "${{ github.event.inputs.stl_b64 }}" | base64 --decode > part.stl
+            echo "✅ Successfully decoded STL to part.stl"
+          else
+            echo "❌ ERROR: No STL data received"
+            exit 1
+          fi
       # ── 5. Run solver ─────────────────────────────────────────
       # gate_pos  = "x,y,z,dia"      → GATE_X / GATE_Y / GATE_Z / GATE_DIA
       # sim_opts  = "num_frames,res"  → NUM_FRAMES / MESH_RES_MM
