@@ -112,12 +112,15 @@ jobs:
       - name: Upload simulation results
         uses: actions/upload-artifact@v4
         with:
-          name: simulation-${{ github.event.client_payload.signal_id || 'manual' }}
+          name: simulation-${{ github.event.client_payload.signal_id || inputs.signal_id || 'manual' }}
           path: |
-            frames/
+            frames/          # 애니메이션용 이미지들
+            *.vtm            # VTK Multi-block 파일 (ParaView용)
+            *.vtp            # VTK PolyData 파일
             results.txt
             results.json
           retention-days: 30
+          if-no-files-found: warn # 파일이 없어도 에러로 중단되지 않게 설정
 
       # ── 8. Commit result summary back to repo ─────────────
       - name: Commit results summary
