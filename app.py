@@ -786,108 +786,66 @@ with col_log:
 # ─────────── Results & Sync ───────────
 
 # ─────────── [1] 초기화 (NameError 방지) ───────────
-# [1] NameError 방지를 위한 변수 초기화 (코드 상단)
+# 세션에서 가져오되, 없으면 빈 리스트를 기본값으로 설정하여 NameError 방지
 if "result_frames" not in st.session_state:
     st.session_state["result_frames"] = []
 
+# 로컬 변수로도 한 번 더 선언 (가장 확실한 방법)
+current_frames = st.session_state["result_frames"]
+
 st.title("📊 Simulation Results")
+
 import os, glob, re, time, zipfile
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 # ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    # 압축이 풀리는 기본 대상 폴더
-    target_path = "simulation-results"
-    st.write(f"📂 **Searching in:** `{target_path}`")
+    # 압축이 풀렸을 만한 모든 후보 폴더
+    target_dirs = ["simulation-results", "temp_results"]
+    st.write(f"📂 **Checking Folders:** `{target_dirs}`")
     
-    if os.path.exists(target_path):
-        # 모든 하위 폴더를 뒤져서 PNG 파일을 찾음
-        all_files = []
-        for root, dirs, files in os.walk(target_path):
-            for file in files:
-                if file.endswith(".png") and "frame_" in file:
-                    all_files.append(os.path.join(root, file))
-        
-        if all_files:
-            # 파일명 숫자 기준으로 정렬 (frame_0, frame_1...)
-            all_files.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-            st.session_state["result_frames"] = all_files
-            st.success(f"✅ {len(all_files)} 프레임 로드 완료!")
-        else:
-            st.error("⚠️ PNG 파일이 없습니다. VTU/VPM 데이터만 존재합니다.")
-            st.info("💡 해결방법: solver.py 실행 환경에 'kaleido' 패키지를 추가해야 합니다.")
+    found_pngs = []
+    for d in target_dirs:
+        if os.path.exists(d):
+            # recursive=True로 폴더가 꼬여있어도 모든 PNG를 찾아냄
+            found_pngs.extend(glob.glob(os.path.join(d, "**", "*.png"), recursive=True))
+    
+    if found_pngs:
+        # 파일명 숫자 기준으로 정렬
+        found_pngs.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
+        st.session_state["result_frames"] = found_pngs
+        current_frames = found_pngs # 로컬 변수 업데이트
+        st.success(f"✅ {len(found_pngs)} frames detected on disk.")
     else:
-        st.warning("⚠️ 폴더가 없습니다. Sync 버튼을 눌러주세요.")
+        st.warning("⚠️ No images found. Please click 'Sync Results'.")
 
 # 3. 🔄 Sync 버튼 로직
 # ─────────── 3. Sync & Animation 로직 ───────────
-cr1, cr2 = st.columns([2, 1])
-with cr1:
-    st.markdown("### Download & Sync from GitHub")
-with cr2:
-    # 중복 ID 에러 방지를 위해 고유 key 설정
-    if st.button("🔄 Sync Results", width='stretch', type="primary", key="sync_final_fix"):
-        with st.spinner("Downloading results..."):
-            sync_simulation_results()
-            
-            # 다운로드 직후 다시 모든 하위 폴더 검색
-            target_dir = st.session_state.get("last_result_dir", "simulation-results")
-            new_pattern = os.path.join(target_dir, "**", "frame_*.png")
-            new_frames = glob.glob(new_pattern, recursive=True)
-            
-            if new_frames:
-                # 파일명 숫자(0, 1, 2...) 기준으로 정렬
-                new_frames.sort(key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0]))
-                st.session_state["result_frames"] = new_frames
-                st.session_state["current_frame"] = 0
-                st.success(f"✅ {len(new_frames)} 프레임 동기화 성공!")
-            else:
-                st.error("❌ 이미지를 찾을 수 없습니다. solver.py 로직을 확인하세요.")
-        st.rerun()
+if st.button("🔄 Sync Results", key="sync_final_btn_v5", type="primary"):
+    sync_simulation_results()
+    st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
 
 # 4. 🌊 애니메이션 출력 섹션
 
 
-if current_frames:
-    st.subheader("🌊 3D flow Animation")
-    total = len(result_frames)
-    curr = st.session_state.get("current_frame", 0)
-    if curr >= total: curr = 0
-
-    # 컨트롤 레이아웃
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c1:
-        if st.button("⏮ First", key="btn_first_frame"): 
-            st.session_state["current_frame"] = 0; st.rerun()
-    with c2:
-        is_playing = st.session_state.get("animation_playing", False)
-        if st.button("⏸ Pause" if is_playing else "▶ Play", key="btn_play_toggle"):
-            st.session_state["animation_playing"] = not is_playing; st.rerun()
-    with c3:
-        if st.button("⏭ Last", key="btn_last_frame"): 
-            st.session_state["current_frame"] = total - 1; st.rerun()
-
-    # 프레임 슬라이더
-    idx = st.slider("Flow Progress", 0, total - 1, value=curr)
-    st.session_state["current_frame"] = idx
+if current_frames: # 위에서 초기화했으므로 변수가 존재함
+    st.subheader("🌊 Flow Animation")
+    total = len(current_frames)
     
-    # 이미지 렌더링 (최신 규격 width='stretch')
-    img_path = result_frames[idx]
-    if os.path.exists(img_path):
-        st.image(img_path, caption=f"Step {idx+1} / {total}", width='stretch')
-    else:
-        st.error(f"파일을 찾을 수 없습니다: {img_path}")
-
-    # 자동 재생
-    if st.session_state.get("animation_playing", False):
-        time.sleep(0.3)
-        st.session_state["current_frame"] = (idx + 1) % total
-        st.rerun()
+    # 세션에서 현재 인덱스 가져오기
+    curr_idx = st.session_state.get("current_frame", 0)
+    if curr_idx >= total: curr_idx = 0
+    
+    # 이미지 출력 (최신 규격 width='stretch')
+    st.image(current_frames[curr_idx], caption=f"Step {curr_idx+1}/{total}", width='stretch')
+    
+    # 슬라이더
+    new_idx = st.slider("Step Slider", 0, total - 1, value=curr_idx)
+    st.session_state["current_frame"] = new_idx
 else:
+    st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
 
-    st.info("💡 결과를 확인하려면 'Sync Results' 버튼을 눌러주세요.")
-    st.caption("현재 세션에 로드된 프레임이 0개입니다.")
 
 # ─────────── Material DB Management ───────────
 with st.expander("🗂️ Material DB Management (material_property.txt)", expanded=False):
