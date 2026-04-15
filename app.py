@@ -849,7 +849,7 @@ with cr2:
 # 4. 🌊 애니메이션 출력 섹션
 
 
-if result_frames:
+if current_frames:
     st.subheader("🌊 3D flow Animation")
     total = len(result_frames)
     curr = st.session_state.get("current_frame", 0)
