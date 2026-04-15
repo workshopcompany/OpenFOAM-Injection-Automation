@@ -548,7 +548,7 @@ with st.sidebar:
 
     col_ai, col_db = st.columns(2)
     with col_ai:
-        if st.button("🤖 AI Material Search", use_container_width=True, type="primary"):
+        if st.button("🚀 Run Simulation", key="run_sim_unique_key"):
             found = get_props(mat_name_input)
             st.session_state["props"] = found
             st.session_state["props_confirmed"] = False
