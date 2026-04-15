@@ -3,9 +3,15 @@ import os
 import json
 import numpy as np
 import trimesh
-import plotly.graph_objects as go
 import heapq
 import time
+
+# ── matplotlib (헤드리스 환경 대응) ──────────────────────────
+import matplotlib
+matplotlib.use("Agg")  # GUI 없는 서버 환경 필수
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="MIM-Ops Cloud Solver: Visual Flow Optimization")
@@ -35,6 +41,7 @@ def compute_dijkstra_weights(all_coords, start_idx, res):
     Purely GEOMETRIC — no physical time involved.
     """
     from scipy.spatial import cKDTree
+
     total = len(all_coords)
     weights = np.full(total, np.inf)
     weights[start_idx] = 0.0
@@ -65,52 +72,67 @@ def compute_dijkstra_weights(all_coords, start_idx, res):
 
 def save_visual_frame(coords, norm_weights, threshold_ratio, frame_idx,
                       phys_time_label, fill_pct, out_dir):
+    """
+    matplotlib Agg 백엔드로 PNG 저장.
+    kaleido / plotly 불필요 — GitHub Actions 헤드리스 환경에서 안정적으로 동작.
+    """
     mask = norm_weights <= threshold_ratio
     filled_coords = coords[mask]
 
     if len(filled_coords) == 0:
         filled_coords = coords[:1]
-        color_vals = [0.0]
+        color_vals = np.array([0.0])
     else:
         color_vals = norm_weights[mask]
         max_c = max(threshold_ratio, 1e-6)
-        color_vals = np.clip(color_vals / max_c, 0, 1).tolist()
+        color_vals = np.clip(color_vals / max_c, 0.0, 1.0)
 
-    fig = go.Figure(data=[go.Scatter3d(
-        x=filled_coords[:, 0],
-        y=filled_coords[:, 1],
-        z=filled_coords[:, 2],
-        mode='markers',
-        marker=dict(
-            size=3,
-            color=color_vals,
-            colorscale='Blues',
-            reversescale=True,
-            opacity=0.85,
-            colorbar=dict(title="Flow Distance", thickness=10, tickfont=dict(color='white'))
-        )
-    )])
+    fig = plt.figure(figsize=(10, 7), facecolor="#111111")
+    ax = fig.add_subplot(111, projection="3d", facecolor="#111111")
 
-    fig.update_layout(
-        title=dict(
-            text=(f"MIM Fill: {fill_pct:.1f}%  |  "
-                  f"Physical Time: {phys_time_label}  |  "
-                  f"Frame {frame_idx + 1}"),
-            font=dict(color='white', size=14)
-        ),
-        scene=dict(
-            xaxis=dict(title='X (mm)', color='white'),
-            yaxis=dict(title='Y (mm)', color='white'),
-            zaxis=dict(title='Z (mm)', color='white'),
-            bgcolor='#111111',
-            aspectmode='data',
-        ),
-        margin=dict(l=0, r=0, b=0, t=50),
-        paper_bgcolor='#111111',
+    # 색상: Blues 역방향 (gate=짙은 파랑, front=연한 파랑)
+    scatter = ax.scatter(
+        filled_coords[:, 0],
+        filled_coords[:, 1],
+        filled_coords[:, 2],
+        c=1.0 - color_vals,       # 역방향
+        cmap="Blues",
+        s=4,
+        alpha=0.85,
+        depthshade=False,
     )
 
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, pad=0.05)
+    cbar.set_label("Flow Distance (gate→front)", color="white", fontsize=9)
+    cbar.ax.yaxis.set_tick_params(color="white")
+    plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
+
+    ax.set_xlabel("X (mm)", color="white", fontsize=9)
+    ax.set_ylabel("Y (mm)", color="white", fontsize=9)
+    ax.set_zlabel("Z (mm)", color="white", fontsize=9)
+    ax.tick_params(colors="white")
+    for pane in (ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane):
+        pane.fill = False
+        pane.set_edgecolor("#333333")
+
+    ax.set_title(
+        f"MIM Fill: {fill_pct:.1f}%  |  Physical Time: {phys_time_label}  |  Frame {frame_idx + 1}",
+        color="white", fontsize=12, pad=12,
+    )
+
+    # 축 비율 동일하게 (equal aspect)
+    all_ranges = coords.max(axis=0) - coords.min(axis=0)
+    all_mins   = coords.min(axis=0)
+    max_range  = all_ranges.max() / 2.0
+    mid        = all_mins + all_ranges / 2.0
+    ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+    ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+    ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+
     img_path = os.path.join(out_dir, f"frame_{frame_idx:03d}.png")
-    fig.write_image(img_path, width=900, height=650)
+    plt.savefig(img_path, dpi=100, bbox_inches="tight",
+                facecolor=fig.get_facecolor())
+    plt.close(fig)
     return img_path
 
 
@@ -135,7 +157,7 @@ def main():
     total_voxels = len(all_coords)
     print(f"[Solver] Voxels: {total_voxels} at res={res}mm")
 
-    # 2. Physical fill time — reference label ONLY (not used for animation pacing)
+    # 2. Physical fill time — reference label ONLY
     vol_mm3 = total_voxels * (res ** 3)
     gate_area = np.pi * (args.gate_dia / 2) ** 2
     flow_rate = gate_area * args.vel_mms if args.vel_mms > 0 else 1.0
@@ -152,10 +174,6 @@ def main():
     print("[Solver] Dijkstra complete.")
 
     # 4. Animation frames
-    # DESIGN:
-    #   visual_ratio = (f+1)/num_frames  — uniform geometric steps (0.0→1.0)
-    #   fill_pct     = visual_ratio * 100
-    #   phys_label   = visual_ratio * theo_fill_time  — annotation only
     num_frames = args.num_frames
     print(f"[Solver] Generating {num_frames} frames...")
 
@@ -206,7 +224,7 @@ def main():
         for k, v in results.items():
             fh.write(f"{k}: {v}\n")
 
-    print(f"[Solver] Done in {elapsed:.1f}s. Frames in {frames_dir}/")
+    print(f"[Solver] Done in {elapsed:.1f}s. {num_frames} frames saved to {frames_dir}/")
 
 
 if __name__ == "__main__":
