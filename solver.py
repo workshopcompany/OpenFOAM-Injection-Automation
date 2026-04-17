@@ -136,6 +136,63 @@ def save_visual_frame(coords, norm_weights, threshold_ratio, frame_idx,
     return img_path
 
 
+def _export_vtk(all_coords, norm_weights, res):
+    """
+    복셀 좌표 + Dijkstra 가중치를 VTK UnstructuredGrid로 저장.
+    각 복셀을 res×res×res 헥사헤드론으로 출력 → ParaView에서 바로 열림.
+    """
+    try:
+        import vtk
+        from vtk.util.numpy_support import numpy_to_vtk
+    except ImportError:
+        print("[Solver] vtk 패키지 없음 — VTK 출력 건너뜀 (pip install vtk)")
+        return
+
+    os.makedirs("VTK", exist_ok=True)
+    h = res / 2.0  # 복셀 반경
+
+    points_vtk = vtk.vtkPoints()
+    grid = vtk.vtkUnstructuredGrid()
+
+    n = len(all_coords)
+    pts = vtk.vtkPoints()
+    pts.SetNumberOfPoints(n * 8)
+
+    cell_arr = vtk.vtkCellArray()
+    offsets = [0]
+
+    for i, (cx, cy, cz) in enumerate(all_coords):
+        base = i * 8
+        # 헥사헤드론 8 꼭짓점 (VTK HEX 순서)
+        corners = [
+            (cx-h, cy-h, cz-h), (cx+h, cy-h, cz-h),
+            (cx+h, cy+h, cz-h), (cx-h, cy+h, cz-h),
+            (cx-h, cy-h, cz+h), (cx+h, cy-h, cz+h),
+            (cx+h, cy+h, cz+h), (cx-h, cy+h, cz+h),
+        ]
+        for j, (x, y, z) in enumerate(corners):
+            pts.SetPoint(base + j, x, y, z)
+
+        hex_cell = vtk.vtkHexahedron()
+        for j in range(8):
+            hex_cell.GetPointIds().SetId(j, base + j)
+        grid.InsertNextCell(hex_cell.GetCellType(), hex_cell.GetPointIds())
+
+    grid.SetPoints(pts)
+
+    # flow_distance 스칼라 (alpha 대응 — 0=gate, 1=최원단)
+    flow_arr = numpy_to_vtk(norm_weights, deep=True)
+    flow_arr.SetName("flow_distance")
+    grid.GetCellData().AddArray(flow_arr)
+    grid.GetCellData().SetActiveScalars("flow_distance")
+
+    writer = vtk.vtkXMLUnstructuredGridWriter()
+    writer.SetFileName("VTK/internal.vtu")
+    writer.SetInputData(grid)
+    writer.Write()
+    print(f"[Solver] ✅ VTK 저장 완료: VTK/internal.vtu ({n} cells)")
+
+
 def main():
     args = parse_args()
     start_wall_time = time.time()
@@ -153,9 +210,11 @@ def main():
         )
     res = args.mesh_res_mm
     voxel_grid = mesh.voxelized(res)
+    # fill() — 내부 볼륨까지 채움 (없으면 표면 shell만 복셀화됨)
+    voxel_grid = voxel_grid.fill()
     all_coords = voxel_grid.points
     total_voxels = len(all_coords)
-    print(f"[Solver] Voxels: {total_voxels} at res={res}mm")
+    print(f"[Solver] Voxels: {total_voxels} at res={res}mm (solid fill)")
 
     # 2. Physical fill time — reference label ONLY
     vol_mm3 = total_voxels * (res ** 3)
@@ -166,6 +225,20 @@ def main():
 
     # 3. Geometric Dijkstra — purely visual ordering
     gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z])
+
+    # 게이트가 (0,0,0) 기본값 그대로이거나 voxel 범위 밖이면
+    # → 파트 bounding box 최솟값 면의 centroid로 자동 보정
+    bb_min = all_coords.min(axis=0)
+    bb_max = all_coords.max(axis=0)
+    gate_in_range = np.all(gate_pos >= bb_min - res) and np.all(gate_pos <= bb_max + res)
+    if not gate_in_range or np.allclose(gate_pos, 0.0):
+        # X 최솟값 면의 중심을 기본 게이트로 설정
+        x_min_mask = all_coords[:, 0] < bb_min[0] + res * 2
+        gate_pos = all_coords[x_min_mask].mean(axis=0)
+        print(f"[Solver] ⚠ Gate (0,0,0) → auto-corrected to part face center: {gate_pos.round(2)}")
+    else:
+        print(f"[Solver] Gate pos: {gate_pos}")
+
     dists_to_gate = np.linalg.norm(all_coords - gate_pos, axis=1)
     start_idx = int(np.argmin(dists_to_gate))
     print(f"[Solver] Nearest gate voxel: idx={start_idx}")
@@ -205,6 +278,7 @@ def main():
         "Total Voxels":         total_voxels,
         "Part Volume (mm3)":    round(vol_mm3, 2),
         "Gate Dia (mm)":        args.gate_dia,
+        "Gate Pos (mm)":        [round(float(v), 3) for v in gate_pos],
         "Injection Vel (mm/s)": args.vel_mms,
         "Theo Fill Time (s)":   round(theo_fill_time, 4),
         "Num Frames":           num_frames,
@@ -223,6 +297,9 @@ def main():
     with open("results.txt", "w") as fh:
         for k, v in results.items():
             fh.write(f"{k}: {v}\n")
+
+    # ── VTK 출력 (ParaView / Streamlit pyvista 호환) ──────────────
+    _export_vtk(all_coords, norm_weights, res)
 
     print(f"[Solver] Done in {elapsed:.1f}s. {num_frames} frames saved to {frames_dir}/")
 
