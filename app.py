@@ -841,7 +841,6 @@ with st.expander("🔍 System Diagnostic Logs", expanded=True):
 if st.button("🔄 Sync Results", key="sync_final_btn_v5", type="primary"):
     sync_simulation_results()
     st.session_state["current_frame"] = 0
-    st.session_state["animation_playing"] = False
     st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
@@ -852,58 +851,74 @@ if current_frames:
     st.subheader("🌊 Flow Animation")
     total = len(current_frames)
 
-    # 세션에서 현재 인덱스 가져오기
     curr_idx = st.session_state.get("current_frame", 0)
     if curr_idx >= total:
         curr_idx = 0
 
-    # ── Step Slider ──
-    new_idx = st.slider("Step Slider", 0, total - 1, value=curr_idx, key="frame_slider")
-    if new_idx != curr_idx:
-        st.session_state["animation_playing"] = False
-    st.session_state["current_frame"] = new_idx
-
-    # ── Play / Pause / Stop 버튼 ──
+    # ── 컨트롤 버튼 ──
     btn_col1, btn_col2, btn_col3, btn_col_info = st.columns([1, 1, 1, 4])
-    with btn_col1:
-        if st.button("▶ Play", use_container_width=True, key="anim_play"):
-            st.session_state["animation_playing"] = True
-    with btn_col2:
-        if st.button("⏸ Pause", use_container_width=True, key="anim_pause"):
-            st.session_state["animation_playing"] = False
-    with btn_col3:
-        if st.button("⏹ Reset", use_container_width=True, key="anim_reset"):
-            st.session_state["animation_playing"] = False
-            st.session_state["current_frame"] = 0
-            st.rerun()
-    with btn_col_info:
-        fill_pct = (new_idx + 1) / total * 100
-        st.markdown(
-            f"<div style='padding:6px 0; color:#888; font-size:0.85rem;'>"
-            f"Frame {new_idx + 1} / {total} &nbsp;|&nbsp; Fill {fill_pct:.1f}%</div>",
-            unsafe_allow_html=True
-        )
+    play_clicked  = btn_col1.button("▶ Play",  use_container_width=True, key="anim_play")
+    pause_clicked = btn_col2.button("⏸ Pause", use_container_width=True, key="anim_pause")
+    reset_clicked = btn_col3.button("⏹ Reset", use_container_width=True, key="anim_reset")
 
-    # ── 이미지 표시 ──
-    frame_data = current_frames[new_idx]
-    if isinstance(frame_data, str):
-        if os.path.exists(frame_data):
-            st.image(frame_data, caption=f"Step {new_idx+1}/{total}", use_container_width=True)
+    if reset_clicked:
+        st.session_state["current_frame"] = 0
+        st.session_state["animation_playing"] = False
+        curr_idx = 0
+    if pause_clicked:
+        st.session_state["animation_playing"] = False
+    if play_clicked:
+        st.session_state["animation_playing"] = True
+
+    # ── Step Slider (수동 조작 시 재생 중단) ──
+    new_idx = st.slider("Step Slider", 0, total - 1,
+                        value=st.session_state.get("current_frame", 0),
+                        key="frame_slider")
+    if new_idx != st.session_state.get("current_frame", 0):
+        st.session_state["animation_playing"] = False
+        st.session_state["current_frame"] = new_idx
+        curr_idx = new_idx
+
+    # ── 프레임 정보 표시 ──
+    fill_pct = (curr_idx + 1) / total * 100
+    btn_col_info.markdown(
+        f"<div style='padding:6px 0; color:#888; font-size:0.85rem;'>"
+        f"Frame {curr_idx + 1} / {total} &nbsp;|&nbsp; Fill {fill_pct:.1f}%</div>",
+        unsafe_allow_html=True
+    )
+
+    # ── 이미지 플레이스홀더 (Play 루프에서 이 자리를 교체) ──
+    img_placeholder = st.empty()
+    status_placeholder = st.empty()
+
+    def _show_frame(idx):
+        fd = current_frames[idx]
+        cap = f"Step {idx+1}/{total}  |  Fill {(idx+1)/total*100:.1f}%"
+        if isinstance(fd, str):
+            if os.path.exists(fd):
+                img_placeholder.image(fd, caption=cap, use_container_width=True)
+            else:
+                img_placeholder.warning(f"Frame file not found: {fd}")
         else:
-            st.warning(f"Frame file not found: {frame_data}")
-    else:
-        st.image(frame_data, caption=f"Step {new_idx+1}/{total}", use_container_width=True)
+            img_placeholder.image(fd, caption=cap, use_container_width=True)
 
-    # ── 자동 재생 루프 (playing 상태일 때만) ──
+    # ── 재생 중이면 루프, 아니면 현재 프레임만 표시 ──
     if st.session_state.get("animation_playing", False):
-        next_idx = new_idx + 1
-        if next_idx >= total:
+        status_placeholder.info("⏵ 재생 중... (Pause 또는 Reset으로 멈춤)")
+        for i in range(curr_idx, total):
+            if not st.session_state.get("animation_playing", False):
+                break
+            _show_frame(i)
+            st.session_state["current_frame"] = i
+            time.sleep(0.3)
+        else:
+            # 끝까지 재생 완료
             st.session_state["animation_playing"] = False
             st.session_state["current_frame"] = 0
-        else:
-            st.session_state["current_frame"] = next_idx
-        time.sleep(0.15)
+        status_placeholder.empty()
         st.rerun()
+    else:
+        _show_frame(st.session_state.get("current_frame", 0))
 
 else:
     st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
