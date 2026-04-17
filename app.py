@@ -840,36 +840,71 @@ with st.expander("🔍 System Diagnostic Logs", expanded=True):
 # ─────────── 3. Sync & Animation 로직 ───────────
 if st.button("🔄 Sync Results", key="sync_final_btn_v5", type="primary"):
     sync_simulation_results()
+    st.session_state["current_frame"] = 0
+    st.session_state["animation_playing"] = False
     st.rerun()
 
 # ─────────── PNG Frame Animation ───────────
 
 # 4. 🌊 애니메이션 출력 섹션
 
-
-if current_frames: # 위에서 초기화했으므로 변수가 존재함
+if current_frames:
     st.subheader("🌊 Flow Animation")
     total = len(current_frames)
-    
+
     # 세션에서 현재 인덱스 가져오기
     curr_idx = st.session_state.get("current_frame", 0)
-    if curr_idx >= total: curr_idx = 0
-    
-    # 슬라이더를 이미지 위로 이동 (먼저 선택 후 표시)
+    if curr_idx >= total:
+        curr_idx = 0
+
+    # ── Step Slider ──
     new_idx = st.slider("Step Slider", 0, total - 1, value=curr_idx, key="frame_slider")
+    if new_idx != curr_idx:
+        st.session_state["animation_playing"] = False
     st.session_state["current_frame"] = new_idx
 
-    # 경로(str) 또는 bytes 모두 처리
+    # ── Play / Pause / Stop 버튼 ──
+    btn_col1, btn_col2, btn_col3, btn_col_info = st.columns([1, 1, 1, 4])
+    with btn_col1:
+        if st.button("▶ Play", use_container_width=True, key="anim_play"):
+            st.session_state["animation_playing"] = True
+    with btn_col2:
+        if st.button("⏸ Pause", use_container_width=True, key="anim_pause"):
+            st.session_state["animation_playing"] = False
+    with btn_col3:
+        if st.button("⏹ Reset", use_container_width=True, key="anim_reset"):
+            st.session_state["animation_playing"] = False
+            st.session_state["current_frame"] = 0
+            st.rerun()
+    with btn_col_info:
+        fill_pct = (new_idx + 1) / total * 100
+        st.markdown(
+            f"<div style='padding:6px 0; color:#888; font-size:0.85rem;'>"
+            f"Frame {new_idx + 1} / {total} &nbsp;|&nbsp; Fill {fill_pct:.1f}%</div>",
+            unsafe_allow_html=True
+        )
+
+    # ── 이미지 표시 ──
     frame_data = current_frames[new_idx]
     if isinstance(frame_data, str):
-        # 파일 경로인 경우 — sync_simulation_results() 결과
         if os.path.exists(frame_data):
             st.image(frame_data, caption=f"Step {new_idx+1}/{total}", use_container_width=True)
         else:
             st.warning(f"Frame file not found: {frame_data}")
     else:
-        # bytes인 경우 (이전 버전 호환)
         st.image(frame_data, caption=f"Step {new_idx+1}/{total}", use_container_width=True)
+
+    # ── 자동 재생 루프 (playing 상태일 때만) ──
+    if st.session_state.get("animation_playing", False):
+        next_idx = new_idx + 1
+        if next_idx >= total:
+            st.session_state["animation_playing"] = False
+            st.session_state["current_frame"] = 0
+        else:
+            st.session_state["current_frame"] = next_idx
+        time.sleep(0.15)
+        st.rerun()
+
 else:
     st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
 
