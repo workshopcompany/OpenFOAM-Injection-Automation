@@ -1,504 +1,80 @@
-#!/bin/bash
-# set -e 제거 — 에러 직접 핸들링, 로그 끝까지 출력 보장
+보내주신 파일들을 꼼꼼히 확인했습니다. 특히 `solver.py`와 OpenFOAM 설정 파일들을 보니, 단순히 표면 데이터만 다루는 것이 아니라 실제 격자(Voxel 또는 Cell) 기반의 해석을 수행하고 계셨군요!
 
-CASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$CASE_DIR"
+지적하신 3가지 문제점을 해결하기 위한 **구체적인 코드 수정 가이드**와 **솔리드 메쉬 적용 방안**을 제안해 드립니다.
 
-# ── 파라미터 ──────────────────────────────
-VELOCITY="${VELOCITY:-0.025}"
-VISCOSITY="${VISCOSITY:-4e-3}"
-DENSITY="${DENSITY:-7780}"
-END_TIME="${END_TIME:-0.5}"
-MELT_TEMP="${MELT_TEMP:-185}"
-MOLD_TEMP="${MOLD_TEMP:-40}"
-MATERIAL="${MATERIAL:-17-4PH}"
+---
 
-echo "========================================"
-echo "[Allrun] 재료=${MATERIAL}"
-echo "[Allrun] V=${VELOCITY} | nu=${VISCOSITY} | rho=${DENSITY}"
-echo "[Allrun] Tmelt=${MELT_TEMP} | Tmold=${MOLD_TEMP} | T=${END_TIME}"
-echo "========================================"
+### 1 & 2번 해결: STL 파일 유지 및 결과 데이터 자동 연결
+Streamlit의 `session_state`를 사용하여 파일을 기억하고, 시뮬레이션 종료 후 생성된 `results.json`을 즉시 불러와 CSV로 변환하는 로직입니다.
 
-mkdir -p logs results system constant 0
+**`app.py` 내 수정 제안:**
 
-# 이전 결과 정리
-rm -rf processor* postProcessing VTK simulation_results.zip logs.zip results.txt 2>/dev/null || true
-find . -maxdepth 1 -regextype posix-extended \
-  -regex '\./[0-9]+(\.[0-9]+)?' -not -name '0' \
-  -type d -exec rm -rf {} + 2>/dev/null || true
+```python
+import streamlit as st
+import os
+import json
+import pandas as pd
 
-PIPELINE_OK=true
+# [수정] 2번 문제 해결: STL 파일 상태 유지
+def handle_file_upload():
+    if "uploaded_stl_path" not in st.session_state:
+        st.session_state.uploaded_stl_path = None
 
-# ══════════════════════════════════════════
-# 설정 파일 생성
-# ══════════════════════════════════════════
-echo "[Allrun] 설정 파일 생성 시작..."
+    uploaded_file = st.sidebar.file_uploader("Upload STL", type=['stl'])
+    if uploaded_file:
+        # 파일을 로컬에 저장하여 경로 유지
+        temp_path = os.path.join("temp_data", uploaded_file.name)
+        os.makedirs("temp_data", exist_ok=True)
+        with open(temp_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.session_state.uploaded_stl_path = temp_path
+        st.sidebar.success(f"File loaded: {uploaded_file.name}")
 
-# ── blockMeshDict (필수! 없으면 blockMesh 즉시 실패) ──────
-# 단순 2D 직사각형 채널: x방향 사출 흐름
-# 크기: 0.1m × 0.01m × 0.001m (앞뒤 1cell, 2D 해석)
-cat > system/blockMeshDict << BMD_EOF
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "system";
-    object      blockMeshDict;
-}
-scale   1;
+# [수정] 1번 문제 해결: 시뮬레이션 결과(results.json)를 CSV로 자동 변환
+def process_simulation_results(signal_id):
+    # 실제 환경에서는 GitHub Artifact나 API를 통해 다운로드하는 로직이 필요합니다.
+    # 여기서는 solver.py가 생성한 results.json을 찾는다고 가정합니다.
+    result_path = "results.json" 
+    
+    if os.path.exists(result_path):
+        with open(result_path, 'r') as f:
+            data = json.load(f)
+        
+        # 결과를 DataFrame으로 변환 (예시: 메타데이터와 요약 정보)
+        df_summary = pd.DataFrame([data])
+        
+        # [중요] 만약 시뮬레이션 결과값(좌표별 압력/온도)이 별도의 txt나 json에 있다면 
+        # 해당 데이터를 로드하여 CSV용 DataFrame을 생성합니다.
+        # 예: df_points = pd.read_csv("results.txt", sep='\t')
+        
+        st.session_state.last_results = df_summary
+        return df_summary
+    else:
+        st.error("결과 파일(results.json)을 찾을 수 없습니다.")
+        return None
+```
 
-vertices
-(
-    (0     0     0    )
-    (0.1   0     0    )
-    (0.1   0.01  0    )
-    (0     0.01  0    )
-    (0     0     0.001)
-    (0.1   0     0.001)
-    (0.1   0.01  0.001)
-    (0     0.01  0.001)
-);
+---
 
-blocks
-(
-    hex (0 1 2 3 4 5 6 7) (50 10 1) simpleGrading (1 1 1)
-);
+### 3번 해결: Solid Mesh(솔리드 메쉬) 기반 시각화 및 정확도 향상
+현재 정확도가 떨어지는 이유는 **표면(STL) 데이터에만** 결과를 매핑하기 때문입니다. `solver.py`에서 계산하는 방식(Dijkstra 기반 유동장)이나 OpenFOAM의 `interFoam` 결과를 제대로 보여주려면 **체적 데이터(Volume Data)**를 시각화해야 합니다.
 
-edges ();
+**개선 방안:**
+1.  **데이터 소스 교체:** `solver.py`가 실행될 때 모든 복셀(Voxel) 좌표와 각 좌표에서의 유동 도달 시간(norm_weights)을 포함한 `full_results.csv`를 생성하도록 합니다.
+2.  **PyVista 활용:** Plotly는 수만 개의 점을 렌더링할 때 느려질 수 있습니다. `pyvista` 라이브러리를 사용하면 OpenFOAM의 VTK 파일이나 솔리드 메쉬를 훨씬 정교하게 보여줄 수 있습니다.
 
-boundary
-(
-    inlet
-    {
-        type patch;
-        faces ( (0 4 7 3) );
-    }
-    outlet
-    {
-        type patch;
-        faces ( (1 2 6 5) );
-    }
-    walls
-    {
-        type wall;
-        faces
-        (
-            (0 1 5 4)
-            (3 7 6 2)
-        );
-    }
-    frontAndBack
-    {
-        type empty;
-        faces
-        (
-            (0 3 2 1)
-            (4 5 6 7)
-        );
-    }
-);
-BMD_EOF
-echo "[Allrun] ✅ blockMeshDict 생성"
+**추천되는 데이터 구조:**
+`solver.py`를 수정하여 시각화용 데이터 프레임을 다음과 같이 출력하게 만드세요.
+* **Column:** `x`, `y`, `z`, `pressure`, `temperature`, `fill_time`
+* 이 데이터를 Streamlit에서 불러와 `go.Scatter3d`의 `marker` 색상으로 `fill_time`을 지정하면, 껍데기뿐만 아니라 내부 유동 흐름까지 점군(Point Cloud) 형태로 확인할 수 있습니다.
 
-cat > system/controlDict << CTRL_EOF
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "system";
-    object      controlDict;
-}
-application     interFoam;
-startFrom       startTime;
-startTime       0;
-stopAt          endTime;
-endTime         ${END_TIME};
-deltaT          0.0001;
-writeControl    adjustableRunTime;
-writeInterval   0.05;
-purgeWrite      0;
-writeFormat     ascii;
-writePrecision  6;
-writeCompression off;
-timeFormat      general;
-timePrecision   6;
-runTimeModifiable true;
-adjustTimeStep  yes;
-maxCo           0.5;
-maxAlphaCo      0.5;
-maxDeltaT       0.01;
-// ************************************************************************* //
-CTRL_EOF
-echo "[Allrun] ✅ controlDict 생성"
+---
 
-# ── transportProperties ───────────────────
-cat > constant/transportProperties << TP_EOF
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "constant";
-    object      transportProperties;
-}
-phases (water air);
-water
-{
-    transportModel  Newtonian;
-    nu              [0 2 -1 0 0 0 0] ${VISCOSITY};
-    rho             ${DENSITY};
-}
-air
-{
-    transportModel  Newtonian;
-    nu              [0 2 -1 0 0 0 0] 1.48e-5;
-    rho             1.2;
-}
-sigma           [1 0 -2 0 0 0 0] 0.4;
-// ************************************************************************* //
-TP_EOF
-echo "[Allrun] ✅ transportProperties 생성"
+### 다음 단계 제안
+가장 효과적인 개선을 위해 **"유동 흐름을 직접 수행했던 예전 파일"** 중에서 **실제 결과값이 담긴 `results.txt`**나 **`.vtk` 파일**을 하나 업로드해 주실 수 있나요? 
 
-cat > constant/turbulenceProperties << 'TURB_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "constant";
-    object      turbulenceProperties;
-}
-simulationType  laminar;
-// ************************************************************************* //
-TURB_EOF
-echo "[Allrun] ✅ turbulenceProperties 생성"
+그 파일을 바탕으로:
+1.  `results.json`과 `results.txt`를 하나로 합쳐서 **자동으로 CSV 리포트를 생성**하는 코드
+2.  STL 껍데기가 아닌 **내부 데이터가 보이는 3D 시각화 함수**
 
-cat > constant/g << 'G_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       uniformDimensionedVectorField;
-    location    "constant";
-    object      g;
-}
-dimensions      [0 1 -2 0 0 0 0];
-value           (0 -9.81 0);
-// ************************************************************************* //
-G_EOF
-echo "[Allrun] ✅ g 생성"
-
-cat > 0/p_rgh << 'P_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       volScalarField;
-    location    "0";
-    object      p_rgh;
-}
-dimensions      [1 -1 -2 0 0 0 0];
-internalField   uniform 0;
-boundaryField
-{
-    inlet        { type fixedFluxPressure; value uniform 0; }
-    outlet       { type fixedValue; value uniform 0; }
-    walls        { type fixedFluxPressure; value uniform 0; }
-    frontAndBack { type empty; }
-}
-// ************************************************************************* //
-P_EOF
-
-cat > 0/p << 'P2_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       volScalarField;
-    location    "0";
-    object      p;
-}
-dimensions      [1 -1 -2 0 0 0 0];
-internalField   uniform 0;
-boundaryField
-{
-    inlet        { type calculated; value uniform 0; }
-    outlet       { type calculated; value uniform 0; }
-    walls        { type calculated; value uniform 0; }
-    frontAndBack { type empty; }
-}
-// ************************************************************************* //
-P2_EOF
-
-cat > 0/alpha.water << 'A_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       volScalarField;
-    location    "0";
-    object      alpha.water;
-}
-dimensions      [0 0 0 0 0 0 0];
-internalField   uniform 0;
-boundaryField
-{
-    inlet        { type fixedValue; value uniform 1; }
-    outlet       { type zeroGradient; }
-    walls        { type zeroGradient; }
-    frontAndBack { type empty; }
-}
-// ************************************************************************* //
-A_EOF
-
-cat > 0/U << U_EOF
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       volVectorField;
-    location    "0";
-    object      U;
-}
-dimensions      [0 1 -1 0 0 0 0];
-internalField   uniform (0 0 0);
-boundaryField
-{
-    inlet        { type fixedValue; value uniform (${VELOCITY} 0 0); }
-    outlet       { type zeroGradient; }
-    walls        { type noSlip; }
-    frontAndBack { type empty; }
-}
-// ************************************************************************* //
-U_EOF
-echo "[Allrun] ✅ 0/ boundary files 생성"
-
-cat > system/fvSchemes << 'FS_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "system";
-    object      fvSchemes;
-}
-ddtSchemes      { default Euler; }
-gradSchemes     { default Gauss linear; }
-divSchemes
-{
-    default                                      none;
-    div(phi,alpha.water)                         Gauss vanLeer;
-    div(phi,alpha)                               Gauss vanLeer;
-    div(phirb,alpha.water)                       Gauss linear;
-    div(phirb,alpha)                             Gauss linear;
-    div(rhoPhi,U)                                Gauss linearUpwind grad(U);
-    div(((rho*nuEff)*dev2(T(grad(U)))))          Gauss linear;
-}
-laplacianSchemes { default Gauss linear corrected; }
-interpolationSchemes { default linear; }
-snGradSchemes    { default corrected; }
-fluxRequired     { default no; p_rgh; pcorr; alpha.water; }
-// ************************************************************************* //
-FS_EOF
-echo "[Allrun] ✅ fvSchemes 생성"
-
-cat > system/fvSolution << 'FSO_EOF'
-FoamFile
-{
-    version     2.0;
-    format      ascii;
-    class       dictionary;
-    location    "system";
-    object      fvSolution;
-}
-solvers
-{
-    "alpha.water.*"
-    {
-        cAlpha              1;
-        nAlphaCorr          2;
-        nAlphaSubCycles     1;
-        nLimiterIter        3;
-        MULESCorr           yes;
-        alphaApplyPrevCorr  yes;
-        solver              smoothSolver;
-        smoother            symGaussSeidel;
-        tolerance           1e-8;
-        relTol              0;
-    }
-    "pcorr.*"
-    {
-        solver          PCG;
-        preconditioner  DIC;
-        tolerance       1e-5;
-        relTol          0;
-    }
-    p_rgh
-    {
-        solver          GAMG;
-        smoother        DIC;
-        tolerance       1e-7;
-        relTol          0.05;
-    }
-    p_rghFinal
-    {
-        $p_rgh;
-        relTol          0;
-    }
-    U
-    {
-        solver          smoothSolver;
-        smoother        symGaussSeidel;
-        tolerance       1e-6;
-        relTol          0;
-        nSweeps         1;
-    }
-    UFinal
-    {
-        $U;
-        relTol          0;
-    }
-}
-PIMPLE
-{
-    momentumPredictor   no;
-    nOuterCorrectors    1;
-    nCorrectors         3;
-    nNonOrthogonalCorrectors 0;
-    pRefCell            0;
-    pRefValue           0;
-}
-relaxationFactors { equations { ".*" 1; } }
-// ************************************************************************* //
-FSO_EOF
-echo "[Allrun] ✅ fvSolution 생성"
-
-echo "[Allrun] 모든 설정 파일 생성 완료"
-echo "========================================"
-
-# ══════════════════════════════════════════
-# blockMesh
-# ══════════════════════════════════════════
-echo "[Allrun] blockMesh 실행..."
-blockMesh 2>&1 | tee logs/blockMesh.log
-BLOCKMESH_EXIT=${PIPESTATUS[0]}
-
-if [ "$BLOCKMESH_EXIT" -ne 0 ]; then
-    echo "[Allrun] ❌ blockMesh 실패 (exit=${BLOCKMESH_EXIT})"
-    echo "=== blockMesh 로그 마지막 30줄 ==="
-    tail -30 logs/blockMesh.log
-    PIPELINE_OK=false
-else
-    echo "[Allrun] ✅ blockMesh 완료"
-fi
-
-# ══════════════════════════════════════════
-# interFoam
-# ══════════════════════════════════════════
-if [ "$PIPELINE_OK" = true ]; then
-    echo "[Allrun] interFoam 실행..."
-    interFoam 2>&1 | tee logs/interFoam.log
-    INTERFOAM_EXIT=${PIPESTATUS[0]}
-
-    echo "========================================"
-    echo "=== interFoam 마지막 30줄 ==="
-    tail -30 logs/interFoam.log
-    echo "========================================"
-
-    if [ "$INTERFOAM_EXIT" -ne 0 ]; then
-        echo "[Allrun] ❌ interFoam 실패 (exit=${INTERFOAM_EXIT})"
-        PIPELINE_OK=false
-    else
-        echo "[Allrun] ✅ interFoam 완료"
-    fi
-else
-    echo "[Allrun] ⏭️ blockMesh 실패로 interFoam 건너뜀"
-fi
-
-# ══════════════════════════════════════════
-# 결과 검증
-# ══════════════════════════════════════════
-TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended \
-  -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
-LAST_TIME=""
-if [ "$TIMESTEPS" -gt 0 ]; then
-    LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended \
-      -regex '\./[0-9]+\.[0-9]+' -type d | \
-      sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
-fi
-
-# ══════════════════════════════════════════
-# 웹 시각화용 결과물 정리
-# ══════════════════════════════════════════
-echo "[Allrun] 📂 결과물 정리 시작..."
-
-if [ "$PIPELINE_OK" = true ]; then
-    foamToVTK -ascii 2>&1 | tee logs/foamToVTK.log || true
-
-    cat > ./results.txt << EOF
-Simulation Status: Success
-Material: ${MATERIAL}
-Velocity: ${VELOCITY} m/s
-Viscosity: ${VISCOSITY} m2/s
-Density: ${DENSITY} kg/m3
-Melt Temp: ${MELT_TEMP} C
-Mold Temp: ${MOLD_TEMP} C
-End Time: ${END_TIME} s
-Last Time Step: ${LAST_TIME}
-Time Steps: ${TIMESTEPS}
-Finish Time: $(date)
-EOF
-
-    zip -r logs.zip logs/*.log 2>/dev/null || true
-    echo "[Allrun] ✅ 모든 파일 준비 완료 (results.txt, logs.zip, VTK/)"
-else
-    cat > ./results.txt << EOF
-Simulation Status: Failed
-Material: ${MATERIAL}
-Velocity: ${VELOCITY} m/s
-Viscosity: ${VISCOSITY} m2/s
-Density: ${DENSITY} kg/m3
-Melt Temp: ${MELT_TEMP} C
-Mold Temp: ${MOLD_TEMP} C
-End Time: ${END_TIME} s
-Last Time Step: ${LAST_TIME}
-Time Steps: ${TIMESTEPS}
-Finish Time: $(date)
-EOF
-
-    zip -r logs.zip logs/*.log 2>/dev/null || true
-    echo "[Allrun] ⚠️ 시뮬레이션 실패 — results.txt(Failed), logs.zip 생성"
-fi
-
-# ══════════════════════════════════════════
-# 메타데이터 기록
-# ══════════════════════════════════════════
-cat > results/meta.txt << META_EOF
-MATERIAL=${MATERIAL}
-VELOCITY=${VELOCITY}
-VISCOSITY=${VISCOSITY}
-DENSITY=${DENSITY}
-MELT_TEMP=${MELT_TEMP}
-MOLD_TEMP=${MOLD_TEMP}
-END_TIME=${END_TIME}
-LAST_TIME=${LAST_TIME}
-TIMESTEPS=${TIMESTEPS}
-PIPELINE_OK=${PIPELINE_OK}
-META_EOF
-
-echo "========================================"
-if [ "$PIPELINE_OK" = true ] && [ "$TIMESTEPS" -gt 0 ]; then
-    echo "[Allrun] ✅ 시뮬레이션 및 후처리 최종 성공"
-    echo "[Allrun] 타임스텝: ${TIMESTEPS}개 | 마지막: ${LAST_TIME}"
-else
-    echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
-    echo "[Allrun] logs/ 폴더를 확인하세요:"
-    echo "  - logs/blockMesh.log"
-    echo "  - logs/interFoam.log"
-    echo "  - logs/solver_detailed.log"
-fi
-echo "========================================"
-
-exit 0
+이 두 가지를 바로 작성해 드릴 수 있습니다. 지금 가지고 계신 파일 중 결과 데이터가 포함된 것을 하나만 공유해 주세요!
