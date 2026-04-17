@@ -1,0 +1,523 @@
+#!/bin/bash
+# set -e 제거 — 에러 직접 핸들링, 로그 끝까지 출력 보장
+
+CASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$CASE_DIR"
+
+# ── 파라미터 ──────────────────────────────
+VELOCITY="${VELOCITY:-0.025}"
+VISCOSITY="${VISCOSITY:-4e-3}"
+DENSITY="${DENSITY:-7780}"
+END_TIME="${END_TIME:-0.5}"
+MELT_TEMP="${MELT_TEMP:-185}"
+MOLD_TEMP="${MOLD_TEMP:-40}"
+MATERIAL="${MATERIAL:-17-4PH}"
+
+echo "========================================"
+echo "[Allrun] 재료=${MATERIAL}"
+echo "[Allrun] V=${VELOCITY} | nu=${VISCOSITY} | rho=${DENSITY}"
+echo "[Allrun] Tmelt=${MELT_TEMP} | Tmold=${MOLD_TEMP} | T=${END_TIME}"
+echo "========================================"
+
+mkdir -p logs results system constant 0
+
+# 이전 결과 정리
+rm -rf processor* postProcessing VTK simulation_results.zip logs.zip results.txt 2>/dev/null || true
+find . -maxdepth 1 -regextype posix-extended \
+  -regex '\./[0-9]+(\.[0-9]+)?' -not -name '0' \
+  -type d -exec rm -rf {} + 2>/dev/null || true
+
+PIPELINE_OK=true
+
+# ══════════════════════════════════════════
+# 설정 파일 생성
+# ══════════════════════════════════════════
+echo "[Allrun] 설정 파일 생성 시작..."
+
+# ── blockMeshDict (필수! 없으면 blockMesh 즉시 실패) ──────
+# 단순 2D 직사각형 채널: x방향 사출 흐름
+# 크기: 0.1m × 0.01m × 0.001m (앞뒤 1cell, 2D 해석)
+cat > system/blockMeshDict << BMD_EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      blockMeshDict;
+}
+scale   1;
+
+vertices
+(
+    (0     0     0    )
+    (0.1   0     0    )
+    (0.1   0.01  0    )
+    (0     0.01  0    )
+    (0     0     0.001)
+    (0.1   0     0.001)
+    (0.1   0.01  0.001)
+    (0     0.01  0.001)
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) (50 10 1) simpleGrading (1 1 1)
+);
+
+edges ();
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ( (0 4 7 3) );
+    }
+    outlet
+    {
+        type patch;
+        faces ( (1 2 6 5) );
+    }
+    walls
+    {
+        type wall;
+        faces
+        (
+            (0 1 5 4)
+            (3 7 6 2)
+        );
+    }
+    frontAndBack
+    {
+        type empty;
+        faces
+        (
+            (0 3 2 1)
+            (4 5 6 7)
+        );
+    }
+);
+BMD_EOF
+echo "[Allrun] ✅ blockMeshDict 생성"
+
+cat > system/controlDict << CTRL_EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      controlDict;
+}
+application     interFoam;
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         ${END_TIME};
+deltaT          0.0001;
+writeControl    adjustableRunTime;
+writeInterval   0.05;
+purgeWrite      0;
+writeFormat     ascii;
+writePrecision  6;
+writeCompression off;
+timeFormat      general;
+timePrecision   6;
+runTimeModifiable true;
+adjustTimeStep  yes;
+maxCo           0.5;
+maxAlphaCo      0.5;
+maxDeltaT       0.01;
+// ************************************************************************* //
+CTRL_EOF
+echo "[Allrun] ✅ controlDict 생성"
+
+# ── transportProperties ───────────────────
+cat > constant/transportProperties << TP_EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      transportProperties;
+}
+phases (water air);
+water
+{
+    transportModel  Newtonian;
+    nu              [0 2 -1 0 0 0 0] ${VISCOSITY};
+    rho             ${DENSITY};
+}
+air
+{
+    transportModel  Newtonian;
+    nu              [0 2 -1 0 0 0 0] 1.48e-5;
+    rho             1.2;
+}
+sigma           [1 0 -2 0 0 0 0] 0.4;
+// ************************************************************************* //
+TP_EOF
+echo "[Allrun] ✅ transportProperties 생성"
+
+cat > constant/turbulenceProperties << 'TURB_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      turbulenceProperties;
+}
+simulationType  laminar;
+// ************************************************************************* //
+TURB_EOF
+echo "[Allrun] ✅ turbulenceProperties 생성"
+
+cat > constant/g << 'G_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       uniformDimensionedVectorField;
+    location    "constant";
+    object      g;
+}
+dimensions      [0 1 -2 0 0 0 0];
+value           (0 -9.81 0);
+// ************************************************************************* //
+G_EOF
+echo "[Allrun] ✅ g 생성"
+
+cat > 0/p_rgh << 'P_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      p_rgh;
+}
+dimensions      [1 -1 -2 0 0 0 0];
+internalField   uniform 0;
+boundaryField
+{
+    inlet        { type fixedFluxPressure; value uniform 0; }
+    outlet       { type fixedValue; value uniform 0; }
+    walls        { type fixedFluxPressure; value uniform 0; }
+    frontAndBack { type empty; }
+}
+// ************************************************************************* //
+P_EOF
+
+cat > 0/p << 'P2_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      p;
+}
+dimensions      [1 -1 -2 0 0 0 0];
+internalField   uniform 0;
+boundaryField
+{
+    inlet        { type calculated; value uniform 0; }
+    outlet       { type calculated; value uniform 0; }
+    walls        { type calculated; value uniform 0; }
+    frontAndBack { type empty; }
+}
+// ************************************************************************* //
+P2_EOF
+
+cat > 0/alpha.water << 'A_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    location    "0";
+    object      alpha.water;
+}
+dimensions      [0 0 0 0 0 0 0];
+internalField   uniform 0;
+boundaryField
+{
+    inlet        { type fixedValue; value uniform 1; }
+    outlet       { type zeroGradient; }
+    walls        { type zeroGradient; }
+    frontAndBack { type empty; }
+}
+// ************************************************************************* //
+A_EOF
+
+cat > 0/U << U_EOF
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    location    "0";
+    object      U;
+}
+dimensions      [0 1 -1 0 0 0 0];
+internalField   uniform (0 0 0);
+boundaryField
+{
+    inlet        { type fixedValue; value uniform (${VELOCITY} 0 0); }
+    outlet       { type zeroGradient; }
+    walls        { type noSlip; }
+    frontAndBack { type empty; }
+}
+// ************************************************************************* //
+U_EOF
+echo "[Allrun] ✅ 0/ boundary files 생성"
+
+cat > system/fvSchemes << 'FS_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSchemes;
+}
+ddtSchemes      { default Euler; }
+gradSchemes     { default Gauss linear; }
+divSchemes
+{
+    default                                      none;
+    div(phi,alpha.water)                         Gauss vanLeer;
+    div(phi,alpha)                               Gauss vanLeer;
+    div(phirb,alpha.water)                       Gauss linear;
+    div(phirb,alpha)                             Gauss linear;
+    div(rhoPhi,U)                                Gauss linearUpwind grad(U);
+    div(((rho*nuEff)*dev2(T(grad(U)))))          Gauss linear;
+}
+laplacianSchemes { default Gauss linear corrected; }
+interpolationSchemes { default linear; }
+snGradSchemes    { default corrected; }
+fluxRequired     { default no; p_rgh; pcorr; alpha.water; }
+// ************************************************************************* //
+FS_EOF
+echo "[Allrun] ✅ fvSchemes 생성"
+
+cat > system/fvSolution << 'FSO_EOF'
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      fvSolution;
+}
+solvers
+{
+    "alpha.water.*"
+    {
+        cAlpha              1;
+        nAlphaCorr          2;
+        nAlphaSubCycles     1;
+        nLimiterIter        3;
+        MULESCorr           yes;
+        alphaApplyPrevCorr  yes;
+        solver              smoothSolver;
+        smoother            symGaussSeidel;
+        tolerance           1e-8;
+        relTol              0;
+    }
+    "pcorr.*"
+    {
+        solver          PCG;
+        preconditioner  DIC;
+        tolerance       1e-5;
+        relTol          0;
+    }
+    p_rgh
+    {
+        solver          GAMG;
+        smoother        DIC;
+        tolerance       1e-7;
+        relTol          0.05;
+    }
+    p_rghFinal
+    {
+        $p_rgh;
+        relTol          0;
+    }
+    U
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-6;
+        relTol          0;
+        nSweeps         1;
+    }
+    UFinal
+    {
+        $U;
+        relTol          0;
+    }
+}
+PIMPLE
+{
+    momentumPredictor   no;
+    nOuterCorrectors    1;
+    nCorrectors         3;
+    nNonOrthogonalCorrectors 0;
+    pRefCell            0;
+    pRefValue           0;
+}
+relaxationFactors { equations { ".*" 1; } }
+// ************************************************************************* //
+FSO_EOF
+echo "[Allrun] ✅ fvSolution 생성"
+
+echo "[Allrun] 모든 설정 파일 생성 완료"
+echo "========================================"
+
+# ══════════════════════════════════════════
+# blockMesh
+# ══════════════════════════════════════════
+echo "[Allrun] blockMesh 실행..."
+blockMesh 2>&1 | tee logs/blockMesh.log
+BLOCKMESH_EXIT=${PIPESTATUS[0]}
+
+if [ "$BLOCKMESH_EXIT" -ne 0 ]; then
+    echo "[Allrun] ❌ blockMesh 실패 (exit=${BLOCKMESH_EXIT})"
+    echo "=== blockMesh 로그 마지막 30줄 ==="
+    tail -30 logs/blockMesh.log
+    PIPELINE_OK=false
+else
+    echo "[Allrun] ✅ blockMesh 완료"
+fi
+
+# ══════════════════════════════════════════
+# interFoam
+# ══════════════════════════════════════════
+if [ "$PIPELINE_OK" = true ]; then
+    echo "[Allrun] interFoam 실행..."
+    interFoam 2>&1 | tee logs/interFoam.log
+    INTERFOAM_EXIT=${PIPESTATUS[0]}
+
+    echo "========================================"
+    echo "=== interFoam 마지막 30줄 ==="
+    tail -30 logs/interFoam.log
+    echo "========================================"
+
+    if [ "$INTERFOAM_EXIT" -ne 0 ]; then
+        echo "[Allrun] ❌ interFoam 실패 (exit=${INTERFOAM_EXIT})"
+        PIPELINE_OK=false
+    else
+        echo "[Allrun] ✅ interFoam 완료"
+    fi
+else
+    echo "[Allrun] ⏭️ blockMesh 실패로 interFoam 건너뜀"
+fi
+
+# ══════════════════════════════════════════
+# 결과 검증
+# ══════════════════════════════════════════
+TIMESTEPS=$(find . -maxdepth 1 -regextype posix-extended \
+  -regex '\./[0-9]+\.[0-9]+' -type d 2>/dev/null | wc -l)
+LAST_TIME=""
+if [ "$TIMESTEPS" -gt 0 ]; then
+    LAST_TIME=$(find . -maxdepth 1 -regextype posix-extended \
+      -regex '\./[0-9]+\.[0-9]+' -type d | \
+      sort -t. -k1,1n -k2,2n | tail -1 | sed 's/\.\///')
+fi
+
+# ══════════════════════════════════════════
+# 웹 시각화용 결과물 정리
+# ══════════════════════════════════════════
+echo "[Allrun] 📂 결과물 정리 시작..."
+
+if [ "$PIPELINE_OK" = true ]; then
+    # ── foamToVTK: vtm / vtu / vtp 생성 ──────────────────
+    echo "[Allrun] 🛠️ foamToVTK 실행 중..."
+    foamToVTK -ascii 2>&1 | tee logs/foamToVTK.log
+    FOAMTOVTK_EXIT=${PIPESTATUS[0]}
+
+    if [ "$FOAMTOVTK_EXIT" -ne 0 ]; then
+        echo "[Allrun] ⚠️ foamToVTK 실패 (exit=${FOAMTOVTK_EXIT}) — VTK 폴더 없을 수 있음"
+    else
+        echo "[Allrun] ✅ foamToVTK 완료"
+        # 생성된 VTK 파일 목록 기록
+        ls -lhR VTK/ > logs/vtk_check.log 2>&1 || echo "(VTK 폴더 없음)" > logs/vtk_check.log
+        echo "[Allrun] VTK 파일 목록 → logs/vtk_check.log"
+    fi
+
+    cat > ./results.txt << EOF
+Simulation Status: Success
+Material: ${MATERIAL}
+Velocity: ${VELOCITY} m/s
+Viscosity: ${VISCOSITY} m2/s
+Density: ${DENSITY} kg/m3
+Melt Temp: ${MELT_TEMP} C
+Mold Temp: ${MOLD_TEMP} C
+End Time: ${END_TIME} s
+Last Time Step: ${LAST_TIME}
+Time Steps: ${TIMESTEPS}
+Finish Time: $(date)
+EOF
+
+    zip -r logs.zip logs/*.log 2>/dev/null || true
+    # VTK 폴더가 존재하면 별도 zip으로 묶기 (vtm + vtu + vtp 포함)
+    if [ -d "VTK" ]; then
+        zip -r simulation_results.zip VTK/ 2>/dev/null || true
+        echo "[Allrun] ✅ 모든 파일 준비 완료 (results.txt, logs.zip, VTK/, simulation_results.zip)"
+    else
+        echo "[Allrun] ⚠️ VTK 폴더 없음 — foamToVTK 로그 확인 필요"
+        echo "[Allrun] ✅ 기본 파일 준비 완료 (results.txt, logs.zip)"
+    fi
+else
+    cat > ./results.txt << EOF
+Simulation Status: Failed
+Material: ${MATERIAL}
+Velocity: ${VELOCITY} m/s
+Viscosity: ${VISCOSITY} m2/s
+Density: ${DENSITY} kg/m3
+Melt Temp: ${MELT_TEMP} C
+Mold Temp: ${MOLD_TEMP} C
+End Time: ${END_TIME} s
+Last Time Step: ${LAST_TIME}
+Time Steps: ${TIMESTEPS}
+Finish Time: $(date)
+EOF
+
+    zip -r logs.zip logs/*.log 2>/dev/null || true
+    echo "[Allrun] ⚠️ 시뮬레이션 실패 — results.txt(Failed), logs.zip 생성"
+fi
+
+# ══════════════════════════════════════════
+# 메타데이터 기록
+# ══════════════════════════════════════════
+cat > results/meta.txt << META_EOF
+MATERIAL=${MATERIAL}
+VELOCITY=${VELOCITY}
+VISCOSITY=${VISCOSITY}
+DENSITY=${DENSITY}
+MELT_TEMP=${MELT_TEMP}
+MOLD_TEMP=${MOLD_TEMP}
+END_TIME=${END_TIME}
+LAST_TIME=${LAST_TIME}
+TIMESTEPS=${TIMESTEPS}
+PIPELINE_OK=${PIPELINE_OK}
+META_EOF
+
+echo "========================================"
+if [ "$PIPELINE_OK" = true ] && [ "$TIMESTEPS" -gt 0 ]; then
+    echo "[Allrun] ✅ 시뮬레이션 및 후처리 최종 성공"
+    echo "[Allrun] 타임스텝: ${TIMESTEPS}개 | 마지막: ${LAST_TIME}"
+else
+    echo "[Allrun] ❌ 시뮬레이션 실패 또는 결과 없음"
+    echo "[Allrun] logs/ 폴더를 확인하세요:"
+    echo "  - logs/blockMesh.log"
+    echo "  - logs/interFoam.log"
+    echo "  - logs/solver_detailed.log"
+fi
+echo "========================================"
+
+exit 0
