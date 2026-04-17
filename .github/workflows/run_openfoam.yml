@@ -111,6 +111,7 @@ jobs:
           cp -f OpenFOAM/case/results.txt . 2>/dev/null || true
           cp -f OpenFOAM/case/logs.zip . 2>/dev/null || true
           cp -rf OpenFOAM/case/VTK . 2>/dev/null || true
+          cp -f OpenFOAM/case/simulation_results.zip . 2>/dev/null || true
 
       - name: Upload Simulation Artifacts
         if: always()
@@ -121,4 +122,5 @@ jobs:
             results.txt
             logs.zip
             VTK/
+            simulation_results.zip
           retention-days: 5
