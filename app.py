@@ -910,7 +910,7 @@ if current_frames:
                 break
             _show_frame(i)
             st.session_state["current_frame"] = i
-            time.sleep(0.3)
+            time.sleep(1.0)
         else:
             # 끝까지 재생 완료
             st.session_state["animation_playing"] = False
