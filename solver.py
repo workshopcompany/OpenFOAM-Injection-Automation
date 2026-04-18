@@ -16,7 +16,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 def parse_args():
     p = argparse.ArgumentParser(description="MIM-Ops Cloud Solver: Visual Flow Optimization")
     p.add_argument("--signal_id",   type=str,   default="manual")
-    p.add_argument("--gate_pos",    type=str,   default="")
+    p.add_argument("--gate_pos",    type=str,   default="")   # "x,y,z,dia"
     p.add_argument("--gate_x",      type=float, default=0.0)
     p.add_argument("--gate_y",      type=float, default=0.0)
     p.add_argument("--gate_z",      type=float, default=0.0)
@@ -26,8 +26,9 @@ def parse_args():
     p.add_argument("--num_frames",  type=int,   default=20)
     p.add_argument("--mesh_res_mm", type=float, default=0.5)
     p.add_argument("--stl_path",    type=str,   default="part.stl")
-    p.add_argument("--sim_opts",    type=str,   default="")
+    p.add_argument("--sim_opts",    type=str,   default="")   # "material,frames,res,screw_dia"
     p.add_argument("--material",    type=str,   default="17-4PH")
+    p.add_argument("--screw_dia",   type=float, default=28.0) # 스크류 직경 (mm)
     p.add_argument("--viscosity",   type=float, default=4e-3)
     p.add_argument("--density",     type=float, default=7780)
     p.add_argument("--melt_temp",   type=float, default=185)
@@ -35,33 +36,29 @@ def parse_args():
     p.add_argument("--press",       type=float, default=110)
     args = p.parse_args()
 
-    # [Fix 1] gate_pos 파싱: "x,y,z,dia" -> 개별 값으로 분리
+    # gate_pos 파싱: "x,y,z,dia"
     if args.gate_pos.strip():
         try:
             parts = [v.strip() for v in args.gate_pos.split(",")]
             if len(parts) >= 3:
-                args.gate_x   = float(parts[0])
-                args.gate_y   = float(parts[1])
-                args.gate_z   = float(parts[2])
+                args.gate_x, args.gate_y, args.gate_z = float(parts[0]), float(parts[1]), float(parts[2])
             if len(parts) >= 4:
                 args.gate_dia = float(parts[3])
-            print(f"[Solver] gate_pos parsed -> x={args.gate_x}, y={args.gate_y}, z={args.gate_z}, dia={args.gate_dia}")
+            print(f"[Solver] gate_pos -> x={args.gate_x}, y={args.gate_y}, z={args.gate_z}, dia={args.gate_dia}")
         except Exception as e:
-            print(f"[Solver] gate_pos parse error: {e} -- using defaults")
+            print(f"[Solver] gate_pos parse error: {e}")
 
-    # [Fix 2] sim_opts 파싱: "material,num_frames,mesh_res" -> 개별 값으로 분리
+    # sim_opts 파싱: "material,frames,res,screw_dia"
     if args.sim_opts.strip():
         try:
             parts = [v.strip() for v in args.sim_opts.split(",")]
-            if len(parts) >= 1 and parts[0]:
-                args.material    = parts[0]
-            if len(parts) >= 2 and parts[1]:
-                args.num_frames  = int(parts[1])
-            if len(parts) >= 3 and parts[2]:
-                args.mesh_res_mm = float(parts[2])
-            print(f"[Solver] sim_opts parsed -> material={args.material}, frames={args.num_frames}, res={args.mesh_res_mm}")
+            if len(parts) >= 1 and parts[0]: args.material    = parts[0]
+            if len(parts) >= 2 and parts[1]: args.num_frames  = int(parts[1])
+            if len(parts) >= 3 and parts[2]: args.mesh_res_mm = float(parts[2])
+            if len(parts) >= 4 and parts[3]: args.screw_dia   = float(parts[3])
+            print(f"[Solver] sim_opts -> material={args.material}, frames={args.num_frames}, res={args.mesh_res_mm}, screw={args.screw_dia}mm")
         except Exception as e:
-            print(f"[Solver] sim_opts parse error: {e} -- using defaults")
+            print(f"[Solver] sim_opts parse error: {e}")
 
     return args
 
@@ -248,12 +245,12 @@ def main():
     total_voxels = len(all_coords)
     print(f"[Solver] Voxels: {total_voxels} at res={res}mm (solid fill)")
 
-    # 2. Physical fill time — reference label ONLY
-    vol_mm3 = total_voxels * (res ** 3)
-    gate_area = np.pi * (args.gate_dia / 2) ** 2
-    flow_rate = gate_area * args.vel_mms if args.vel_mms > 0 else 1.0
-    theo_fill_time = vol_mm3 / flow_rate  # seconds
-    print(f"[Solver] Volume: {vol_mm3:.1f} mm³ | Theo fill time: {theo_fill_time:.4f}s")
+    # 2. Physical fill time (스크류 면적 기준 유량 보정)
+    vol_mm3      = total_voxels * (res ** 3)
+    screw_area   = np.pi * (args.screw_dia / 2) ** 2    # mm² — 스크류 단면적
+    flow_rate    = screw_area * args.vel_mms if args.vel_mms > 0 else 1.0  # mm³/s
+    theo_fill_time = vol_mm3 / flow_rate
+    print(f"[Solver] Volume: {vol_mm3:.1f} mm³ | Screw ø{args.screw_dia}mm | Flow: {flow_rate:.0f} mm³/s | Theo fill: {theo_fill_time:.3f}s")
 
     # 3. Geometric Dijkstra — purely visual ordering
     gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z])
@@ -263,14 +260,13 @@ def main():
     bb_min = all_coords.min(axis=0)
     bb_max = all_coords.max(axis=0)
     gate_in_range = np.all(gate_pos >= bb_min - res) and np.all(gate_pos <= bb_max + res)
-    # [Fix 5] np.allclose(gate_pos, 0.0) 조건 제거 — 원점 근처 유효 게이트(Bottom-Center 등)를
-    # X-Min으로 강제 덮어쓰던 버그 수정. 범위 이탈 시에만 fallback 적용.
+    # np.allclose 제거: 원점 근처의 유효 게이트(Bottom-Center 등)를 잘못 보정하던 버그 수정
     if not gate_in_range:
         z_min_mask = all_coords[:, 2] < bb_min[2] + res * 2
         gate_pos = all_coords[z_min_mask].mean(axis=0)
         print(f"[Solver] Gate out of range -> fallback to bottom-center: {gate_pos.round(2)}")
     else:
-        print(f"[Solver] Gate pos accepted: {gate_pos.round(3)}")
+        print(f"[Solver] Gate accepted: {gate_pos.round(3)}")
 
     dists_to_gate = np.linalg.norm(all_coords - gate_pos, axis=1)
     start_idx = int(np.argmin(dists_to_gate))
