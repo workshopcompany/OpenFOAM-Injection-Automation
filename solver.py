@@ -233,68 +233,6 @@ def _export_vtk(all_coords, norm_weights, res):
     print(f"[Solver] ✅ VTK 저장 완료: VTK/internal.vtu ({n} cells)")
 
 
-# ── [새로 추가됨] 앱 연동을 위한 통합 Solid Mesh VTU 저장 ──────────────
-def save_full_solid_mesh_vtu(filename, centers, fill_times, pressures):
-    """
-    MOLDIQ 앱 연동을 위해 Voxel 좌표와 계산 결과를 VTU 형식으로 바로 저장합니다.
-    (기존 코드 의존성 없음, 앱에서 읽을 수 있는 base64 appended 형식 사용)
-    """
-    import base64, zlib, struct
-    num_points = len(centers)
-    
-    pos_data = centers.astype(np.float32).tobytes()
-    time_data = fill_times.astype(np.float32).tobytes()
-    press_data = pressures.astype(np.float32).tobytes()
-
-    def encode_data(data):
-        compressor = zlib.compressobj()
-        compressed = compressor.compress(data) + compressor.flush()
-        header = struct.pack("<IIII", 1, len(data), len(data), len(compressed))
-        return base64.b64encode(header + compressed).decode('ascii')
-
-    enc_time = encode_data(time_data)
-    enc_press = encode_data(press_data)
-    enc_pos = encode_data(pos_data)
-
-    off_time = 0
-    off_press = len(enc_time)
-    off_pos = off_press + len(enc_press)
-
-    vtu_content = f"""<?xml version="1.0"?>
-<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
-  <UnstructuredGrid>
-    <Piece NumberOfPoints="{num_points}" NumberOfCells="{num_points}">
-      <PointData Scalars="fill_time">
-        <DataArray type="Float32" Name="fill_time" format="appended" offset="{off_time}" />
-        <DataArray type="Float32" Name="pressure" format="appended" offset="{off_press}" />
-      </PointData>
-      <Points>
-        <DataArray type="Float32" Name="Points" NumberOfComponents="3" format="appended" offset="{off_pos}" />
-      </Points>
-      <Cells>
-        <DataArray type="Int32" Name="connectivity" format="ascii">
-          {" ".join(map(str, range(num_points)))}
-        </DataArray>
-        <DataArray type="Int32" Name="offsets" format="ascii">
-          {" ".join(map(str, range(1, num_points + 1)))}
-        </DataArray>
-        <DataArray type="UInt8" Name="types" format="ascii">
-          {" ".join(["1"] * num_points)}
-        </DataArray>
-      </Cells>
-    </Piece>
-  </UnstructuredGrid>
-  <AppendedData encoding="base64">
-_{enc_time}{enc_press}{enc_pos}
-  </AppendedData>
-</VTKFile>"""
-    
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(vtu_content)
-    print(f"[Solver] ✅ Full solid mesh saved to: {filename}")
-# ──────────────────────────────────────────────────────────────────
-
-
 def main():
     args = parse_args()
     start_wall_time = time.time()
@@ -372,15 +310,18 @@ def main():
         )
         print(f"  Frame {f+1}/{num_frames} | Fill: {fill_pct:.1f}% | t={phys_label}")
 
-    # ── [새로 추가됨] 앱으로 보낼 통합 VTU 생성 호출 부분 ──────────────
+    # 5. Save results
+    elapsed = time.time() - start_wall_time
+
+    # --- 여기서부터 추가/수정 시작 ---
     phys_times = norm_weights * theo_fill_time
     pressures = args.press * (1.0 - norm_weights)
     vtu_filename = f"simulation-{args.signal_id}.vtu"
+    
+    # 위에서 만든 함수 실행
     save_full_solid_mesh_vtu(vtu_filename, all_coords, phys_times, pressures)
-    # ─────────────────────────────────────────────────────────
+    # --- 여기까지 추가/수정 끝 ---
 
-    # 5. Save results
-    elapsed = time.time() - start_wall_time
     results = {
         "Signal ID":            args.signal_id,
         "Material":             args.material,
@@ -394,7 +335,6 @@ def main():
         "Mesh Res (mm)":        res,
         "Solver Time (s)":      round(elapsed, 2),
         "Status":               "Success",
-        "Vtu File":             vtu_filename,  # <-- [새로 추가됨] JSON 메타데이터에 파일명 기록
         "Note": (
             "Frames are geometry-driven (Dijkstra). "
             "Physical time is a proportional label — decoupled from animation speed."
@@ -416,3 +356,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+def save_full_solid_mesh_vtu(filename, centers, fill_times, pressures):
+    import base64, zlib, struct
+    num_points = len(centers)
+    
+    def encode_data(data):
+        compressed = zlib.compress(data.astype(np.float32).tobytes())
+        header = struct.pack("<IIII", 1, len(data)*4, len(data)*4, len(compressed))
+        return base64.b64encode(header + compressed).decode('ascii')
+
+    enc_time = encode_data(fill_times)
+    enc_press = encode_data(pressures)
+    enc_pos = encode_data(centers.flatten())
+
+    vtu_content = f"""<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <UnstructuredGrid>
+    <Piece NumberOfPoints="{num_points}" NumberOfCells="{num_points}">
+      <PointData Scalars="fill_time">
+        <DataArray type="Float32" Name="fill_time" format="appended" offset="0" />
+        <DataArray type="Float32" Name="pressure" format="appended" offset="{len(enc_time)+4}" />
+      </PointData>
+      <Points><DataArray type="Float32" Name="Points" NumberOfComponents="3" format="appended" offset="{len(enc_time)+len(enc_press)+8}" /></Points>
+      <Cells>
+        <DataArray type="Int32" Name="connectivity" format="ascii">{" ".join(map(str, range(num_points)))}</DataArray>
+        <DataArray type="Int32" Name="offsets" format="ascii">{" ".join(map(str, range(1, num_points + 1)))}</DataArray>
+        <DataArray type="UInt8" Name="types" format="ascii">{" ".join(["1"] * num_points)}</DataArray>
+      </Cells>
+    </Piece>
+  </UnstructuredGrid>
+  <AppendedData encoding="base64">_{enc_time}{enc_press}{enc_pos}</AppendedData>
+</VTKFile>"""
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(vtu_content)
