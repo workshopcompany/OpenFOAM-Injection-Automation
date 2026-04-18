@@ -881,8 +881,11 @@ with col_log:
 
 # ─────────── Results & Sync ───────────
 
-# ─────────── [1] 초기화 (NameError 방지) ───────────
-# 세션에서 가져오되, 없으면 빈 리스트를 기본값으로 설정하여 NameError 방지
+# ─────────── [1] 애니메이션 상태 관리 변수 초기화 ───────────
+if "frame_idx" not in st.session_state:
+    st.session_state.frame_idx = 0
+if "playing" not in st.session_state:
+    st.session_state.playing = False
 if "result_frames" not in st.session_state:
     st.session_state["result_frames"] = []
 
@@ -891,19 +894,19 @@ current_frames = st.session_state["result_frames"]
 
 st.title("📊 Simulation Results")
 
-import os, glob, re, time, zipfile
+import os, glob, re, time, zipfile, json
 # ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
 # ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
     # sync_simulation_results()가 추출하는 폴더와 동일한 경로 탐색
     target_dirs = ["simulation-results", "temp_results"]
     st.write(f"📂 **Checking Folders:** `{target_dirs}`")
-    
+
     found_pngs = []
     for d in target_dirs:
         if os.path.exists(d):
             found_pngs.extend(glob.glob(os.path.join(d, "**", "*.png"), recursive=True))
-    
+
     if found_pngs:
         found_pngs.sort(
             key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0])
@@ -916,92 +919,161 @@ with st.expander("🔍 System Diagnostic Logs", expanded=True):
     else:
         st.warning("⚠️ No images found. Please click 'Sync Results'.")
 
-# 3. 🔄 Sync 버튼 로직
-# ─────────── 3. Sync & Animation 로직 ───────────
+# ─────────── 3. Sync 버튼 ───────────
 if st.button("🔄 Sync Results", key="sync_final_btn_v5", type="primary"):
     sync_simulation_results()
     st.session_state["current_frame"] = 0
+    st.session_state.frame_idx = 0
+    st.session_state.playing = False
     st.rerun()
 
-# ─────────── PNG Frame Animation ───────────
+# ─────────── 4. results.json 기반 3D 인터랙티브 플로우 애니메이션 ───────────
+if os.path.exists("results.json"):
+    with open("results.json", "r") as f:
+        res_data = json.load(f)
 
-# 4. 🌊 애니메이션 출력 섹션
+    coords = np.array(res_data.get("voxel_coords", []))
+    weights = np.array(res_data.get("flow_weights", []))
+    total_voxels = len(coords)
+    num_frames = res_data.get("Num Frames", 20)
 
-if current_frames:
-    st.subheader("🌊 Flow Animation")
-    total = len(current_frames)
+    st.divider()
+    st.subheader("🌊 Interactive Flow Animation")
 
-    curr_idx = st.session_state.get("current_frame", 0)
-    if curr_idx >= total:
-        curr_idx = 0
+    # 제어 버튼 배치
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
+    if c1.button("▶ Play"):
+        st.session_state.playing = True
+    if c2.button("⏸ Pause"):
+        st.session_state.playing = False
+    if c3.button("🔄 Reset"):
+        st.session_state.frame_idx = 0
+        st.session_state.playing = False
 
-    # ── 컨트롤 버튼 ──
-    btn_col1, btn_col2, btn_col3, btn_col_info = st.columns([1, 1, 1, 4])
-    play_clicked  = btn_col1.button("▶ Play",  use_container_width=True, key="anim_play")
-    pause_clicked = btn_col2.button("⏸ Pause", use_container_width=True, key="anim_pause")
-    reset_clicked = btn_col3.button("⏹ Reset", use_container_width=True, key="anim_reset")
+    # 프레임 탐색 슬라이더 (Pause 상태에서 수동 조절 가능)
+    current_frame = st.slider("Frame Scrubber", 0, num_frames - 1, st.session_state.frame_idx)
+    st.session_state.frame_idx = current_frame
 
-    if reset_clicked:
-        st.session_state["current_frame"] = 0
-        st.session_state["animation_playing"] = False
-        curr_idx = 0
-    if pause_clicked:
-        st.session_state["animation_playing"] = False
-    if play_clicked:
-        st.session_state["animation_playing"] = True
+    # 시각화 컨테이너
+    plot_spot = st.empty()
 
-    # ── Step Slider (수동 조작 시 재생 중단) ──
-    new_idx = st.slider("Step Slider", 0, total - 1,
-                        value=st.session_state.get("current_frame", 0),
-                        key="frame_slider")
-    if new_idx != st.session_state.get("current_frame", 0):
-        st.session_state["animation_playing"] = False
-        st.session_state["current_frame"] = new_idx
-        curr_idx = new_idx
+    def draw_3d_frame(idx):
+        threshold = (idx + 1) / num_frames
+        mask = weights <= threshold
+        f_coords = coords[mask]
+        f_weights = weights[mask]
+        # 3D 시각화 설정 (투명도 및 격자 구분 반영)
+        fig = go.Figure(data=[go.Scatter3d(
+            x=f_coords[:, 0], y=f_coords[:, 1], z=f_coords[:, 2],
+            mode='markers',
+            marker=dict(
+                size=4,                                              # 격자 크기
+                color=f_weights,
+                colorscale='Viridis',
+                opacity=0.7,                                         # 약간 투명하게 설정
+                line=dict(width=0.5, color='black'),                 # 격자 간 구분 및 음영 효과
+                showscale=True,
+                colorbar=dict(title="Flow Sequence", thickness=15)
+            )
+        )])
+        fig.update_layout(
+            margin=dict(l=0, r=0, b=0, t=0),
+            scene=dict(
+                xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)",
+                aspectmode='data'                                    # 비율 유지
+            ),
+            height=700
+        )
+        return fig
 
-    # ── 프레임 정보 표시 ──
-    fill_pct = (curr_idx + 1) / total * 100
-    btn_col_info.markdown(
-        f"<div style='padding:6px 0; color:#888; font-size:0.85rem;'>"
-        f"Frame {curr_idx + 1} / {total} &nbsp;|&nbsp; Fill {fill_pct:.1f}%</div>",
-        unsafe_allow_html=True
-    )
+    # 애니메이션 실행 루프
+    if st.session_state.playing:
+        while st.session_state.frame_idx < num_frames and st.session_state.playing:
+            fig = draw_3d_frame(st.session_state.frame_idx)
+            plot_spot.plotly_chart(fig, use_container_width=True, key=f"anim_{st.session_state.frame_idx}")
 
-    # ── 이미지 플레이스홀더 (Play 루프에서 이 자리를 교체) ──
-    img_placeholder = st.empty()
-    status_placeholder = st.empty()
+            st.session_state.frame_idx += 1
+            if st.session_state.frame_idx >= num_frames:
+                st.session_state.playing = False
 
-    def _show_frame(idx):
-        fd = current_frames[idx]
-        cap = f"Step {idx+1}/{total}  |  Fill {(idx+1)/total*100:.1f}%"
-        if isinstance(fd, str):
-            if os.path.exists(fd):
-                img_placeholder.image(fd, caption=cap, use_container_width=True)
-            else:
-                img_placeholder.warning(f"Frame file not found: {fd}")
-        else:
-            img_placeholder.image(fd, caption=cap, use_container_width=True)
-
-    # ── 재생 중이면 루프, 아니면 현재 프레임만 표시 ──
-    if st.session_state.get("animation_playing", False):
-        status_placeholder.info("⏵ 재생 중... (Pause 또는 Reset으로 멈춤)")
-        for i in range(curr_idx, total):
-            if not st.session_state.get("animation_playing", False):
-                break
-            _show_frame(i)
-            st.session_state["current_frame"] = i
-            time.sleep(1.0)
-        else:
-            # 끝까지 재생 완료
-            st.session_state["animation_playing"] = False
-            st.session_state["current_frame"] = 0
-        status_placeholder.empty()
-        st.rerun()
+            time.sleep(0.05)  # 재생 속도 조절
+            st.rerun()
     else:
-        _show_frame(st.session_state.get("current_frame", 0))
+        # 멈춰있을 때 현재 프레임 표시 (자유로운 회전/확대 가능)
+        fig = draw_3d_frame(st.session_state.frame_idx)
+        plot_spot.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
+    # results.json 없을 때 PNG 프레임 폴백 애니메이션
+    if current_frames:
+        st.subheader("🌊 Flow Animation")
+        total = len(current_frames)
+
+        curr_idx = st.session_state.get("current_frame", 0)
+        if curr_idx >= total:
+            curr_idx = 0
+
+        btn_col1, btn_col2, btn_col3, btn_col_info = st.columns([1, 1, 1, 4])
+        play_clicked  = btn_col1.button("▶ Play",  use_container_width=True, key="anim_play")
+        pause_clicked = btn_col2.button("⏸ Pause", use_container_width=True, key="anim_pause")
+        reset_clicked = btn_col3.button("⏹ Reset", use_container_width=True, key="anim_reset")
+
+        if reset_clicked:
+            st.session_state["current_frame"] = 0
+            st.session_state["animation_playing"] = False
+            curr_idx = 0
+        if pause_clicked:
+            st.session_state["animation_playing"] = False
+        if play_clicked:
+            st.session_state["animation_playing"] = True
+
+        new_idx = st.slider("Step Slider", 0, total - 1,
+                            value=st.session_state.get("current_frame", 0),
+                            key="frame_slider")
+        if new_idx != st.session_state.get("current_frame", 0):
+            st.session_state["animation_playing"] = False
+            st.session_state["current_frame"] = new_idx
+            curr_idx = new_idx
+
+        fill_pct = (curr_idx + 1) / total * 100
+        btn_col_info.markdown(
+            f"<div style='padding:6px 0; color:#888; font-size:0.85rem;'>"
+            f"Frame {curr_idx + 1} / {total} &nbsp;|&nbsp; Fill {fill_pct:.1f}%</div>",
+            unsafe_allow_html=True
+        )
+
+        img_placeholder = st.empty()
+        status_placeholder = st.empty()
+
+        def _show_frame(idx):
+            fd = current_frames[idx]
+            cap = f"Step {idx+1}/{total}  |  Fill {(idx+1)/total*100:.1f}%"
+            if isinstance(fd, str):
+                if os.path.exists(fd):
+                    img_placeholder.image(fd, caption=cap, use_container_width=True)
+                else:
+                    img_placeholder.warning(f"Frame file not found: {fd}")
+            else:
+                img_placeholder.image(fd, caption=cap, use_container_width=True)
+
+        if st.session_state.get("animation_playing", False):
+            status_placeholder.info("⏵ 재생 중... (Pause 또는 Reset으로 멈춤)")
+            for i in range(curr_idx, total):
+                if not st.session_state.get("animation_playing", False):
+                    break
+                _show_frame(i)
+                st.session_state["current_frame"] = i
+                time.sleep(1.0)
+            else:
+                st.session_state["animation_playing"] = False
+                st.session_state["current_frame"] = 0
+            status_placeholder.empty()
+            st.rerun()
+        else:
+            _show_frame(st.session_state.get("current_frame", 0))
+
+    else:
+        st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
 
 
 # ─────────── Material DB Management ───────────
