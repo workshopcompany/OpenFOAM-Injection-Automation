@@ -25,8 +25,8 @@ def parse_args():
     p.add_argument("--etime",       type=float, default=10.0)
     p.add_argument("--num_frames",  type=int,   default=20)
     
-    # [핵심 수정 포인트] float 대신 str로 받아서 "0.2,28.0" 에러 방지
-    p.add_argument("--mesh_res_mm", type=str,   default="0.2") 
+    # [핵심 수정 포인트] float 대신 str로 받아서 "0.5,28.0" 에러 방지
+    p.add_argument("--mesh_res_mm", type=str,   default="0.5") 
     
     p.add_argument("--stl_path",    type=str,   default="part.stl")
     p.add_argument("--sim_opts",    type=str,   default="")   # "material,frames,res,screw_dia"
@@ -39,11 +39,11 @@ def parse_args():
     p.add_argument("--press",       type=float, default=110)
     args = p.parse_args()
 
-    # [핵심 수정 포인트] YAML 파일 한계로 인해 "0.2,28.0" 으로 묶여서 들어오는 문자열을 분리
+    # [핵심 수정 포인트] YAML 파일 한계로 인해 "0.5,28.0" 으로 묶여서 들어오는 문자열을 분리
     if isinstance(args.mesh_res_mm, str):
         if "," in args.mesh_res_mm:
             parts = args.mesh_res_mm.split(",")
-            args.mesh_res_mm = float(parts[0].strip())   # 0.2
+            args.mesh_res_mm = float(parts[0].strip())   # 0.5
             args.screw_dia   = float(parts[1].strip())   # 28.0
         else:
             args.mesh_res_mm = float(args.mesh_res_mm)
@@ -142,7 +142,7 @@ def save_visual_frame(coords, norm_weights, threshold_ratio, frame_idx,
         depthshade=False,
     )
 
-    cbar = fig.colorbar(scatter, ax=ax, shrink=, pad=0.05)
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, pad=0.05)
     cbar.set_label("Flow Distance (gate→front)", color="white", fontsize=9)
     cbar.ax.yaxis.set_tick_params(color="white")
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
@@ -258,9 +258,30 @@ def main():
     voxel_grid = mesh.voxelized(res)
     # fill() — 내부 볼륨까지 채움 (없으면 표면 shell만 복셀화됨)
     voxel_grid = voxel_grid.fill()
-    all_coords = voxel_grid.points
+    
+    raw_coords = voxel_grid.points
+    print(f"[Solver] 기본 Voxels: {len(raw_coords)} at res={res}mm (solid fill)")
+
+    # ── [핵심 추가] STL 경계면 밖으로 삐져나온 격자 중심점 제거 (In-Out Check) ──
+    print("[Solver] ✂️ STL 경계 기반 정밀 필터링 진행 중...")
+    try:
+        # mesh.contains(points)는 포인트가 메쉬 내부에 있는지 판별(True/False 반환)
+        inside_mask = mesh.contains(raw_coords)
+        filtered_coords = raw_coords[inside_mask]
+        
+        # 안전장치: 너무 얇아서 데이터가 다 날아가는 경우를 대비해 최소 10% 유지 확인
+        if len(filtered_coords) > max(10, len(raw_coords) * 0.1):
+            all_coords = filtered_coords
+            print(f"[Solver] ✂️ 필터링 완료: 외곽 격자 제거됨 ({len(raw_coords)} -> {len(all_coords)})")
+        else:
+            print(f"[Solver] ⚠️ 필터링 후 데이터가 너무 적어 원본을 유지합니다.")
+            all_coords = raw_coords
+    except Exception as e:
+        print(f"[Solver] ⚠️ 경계 필터링 실패 (원본 유지): {e}")
+        all_coords = raw_coords
+    # ────────────────────────────────────────────────────────────
+
     total_voxels = len(all_coords)
-    print(f"[Solver] Voxels: {total_voxels} at res={res}mm (solid fill)")
 
     # 2. Physical fill time (스크류 면적 기준 유량 보정)
     vol_mm3      = total_voxels * (res ** 3)
