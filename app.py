@@ -712,9 +712,12 @@ if st.sidebar.button("🚀 Run Cloud Simulation", type="primary", use_container_
             with st.spinner("2/2: 시뮬레이션 트리거 중..."):
                 sig_id = str(uuid.uuid4())[:8]
                 # 페이로드에는 텍스트 데이터만 담아서 64KB 제한 우회
+                _gx = float(st.session_state.get("gx_final", st.session_state.get("gx", 0.0)))
+                _gy = float(st.session_state.get("gy_final", st.session_state.get("gy", 0.0)))
+                _gz = float(st.session_state.get("gz_final", st.session_state.get("gz", 0.0)))
                 ep = {
                     "signal_id": sig_id,
-                    "gate_pos":  f"{gx:.4f},{gy:.4f},{gz:.4f},{float(g_size):.4f}",
+                    "gate_pos":  f"{_gx:.4f},{_gy:.4f},{_gz:.4f},{float(g_size):.4f}",
                     "sim_opts":  f"{st.session_state['mat_name']},{num_frames_sel},0.5",
                     "viscosity": float(st.session_state["props"]["nu"]),
                     "density":   float(st.session_state["props"]["rho"]),
