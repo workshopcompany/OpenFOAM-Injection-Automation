@@ -25,8 +25,8 @@ def parse_args():
     p.add_argument("--etime",       type=float, default=10.0)
     p.add_argument("--num_frames",  type=int,   default=20)
     
-    # [핵심 수정 포인트] float 대신 str로 받아서 "0.5,28.0" 에러 방지
-    p.add_argument("--mesh_res_mm", type=str,   default="0.5") 
+    # [핵심 수정 포인트] float 대신 str로 받아서 "0.2,28.0" 에러 방지
+    p.add_argument("--mesh_res_mm", type=str,   default="0.2") 
     
     p.add_argument("--stl_path",    type=str,   default="part.stl")
     p.add_argument("--sim_opts",    type=str,   default="")   # "material,frames,res,screw_dia"
@@ -39,11 +39,11 @@ def parse_args():
     p.add_argument("--press",       type=float, default=110)
     args = p.parse_args()
 
-    # [핵심 수정 포인트] YAML 파일 한계로 인해 "0.5,28.0" 으로 묶여서 들어오는 문자열을 분리
+    # [핵심 수정 포인트] YAML 파일 한계로 인해 "0.2,28.0" 으로 묶여서 들어오는 문자열을 분리
     if isinstance(args.mesh_res_mm, str):
         if "," in args.mesh_res_mm:
             parts = args.mesh_res_mm.split(",")
-            args.mesh_res_mm = float(parts[0].strip())   # 0.5
+            args.mesh_res_mm = float(parts[0].strip())   # 0.2
             args.screw_dia   = float(parts[1].strip())   # 28.0
         else:
             args.mesh_res_mm = float(args.mesh_res_mm)
@@ -142,7 +142,7 @@ def save_visual_frame(coords, norm_weights, threshold_ratio, frame_idx,
         depthshade=False,
     )
 
-    cbar = fig.colorbar(scatter, ax=ax, shrink=0.5, pad=0.05)
+    cbar = fig.colorbar(scatter, ax=ax, shrink=, pad=0.05)
     cbar.set_label("Flow Distance (gate→front)", color="white", fontsize=9)
     cbar.ax.yaxis.set_tick_params(color="white")
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
