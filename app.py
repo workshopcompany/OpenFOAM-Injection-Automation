@@ -974,7 +974,7 @@ if os.path.exists("results.json"):
                 j=stl_mesh.faces[:, 1],
                 k=stl_mesh.faces[:, 2],
                 color='lightgrey',
-                opacity=0.15,                                        # 외곽 가이드로만 보이도록
+                opacity=0.30,                                        # 외곽 가이드로만 보이도록
                 name='Original STL',
                 showlegend=True,
                 hoverinfo='skip'
