@@ -24,7 +24,10 @@ def parse_args():
     p.add_argument("--vel_mms",     type=float, default=25.0)
     p.add_argument("--etime",       type=float, default=10.0)
     p.add_argument("--num_frames",  type=int,   default=20)
-    p.add_argument("--mesh_res_mm", type=float, default=0.5)
+    
+    # [핵심 수정 포인트] float 대신 str로 받아서 "0.5,28.0" 에러 방지
+    p.add_argument("--mesh_res_mm", type=str,   default="0.5") 
+    
     p.add_argument("--stl_path",    type=str,   default="part.stl")
     p.add_argument("--sim_opts",    type=str,   default="")   # "material,frames,res,screw_dia"
     p.add_argument("--material",    type=str,   default="17-4PH")
@@ -35,6 +38,15 @@ def parse_args():
     p.add_argument("--temp",        type=float, default=185)
     p.add_argument("--press",       type=float, default=110)
     args = p.parse_args()
+
+    # [핵심 수정 포인트] YAML 파일 한계로 인해 "0.5,28.0" 으로 묶여서 들어오는 문자열을 분리
+    if isinstance(args.mesh_res_mm, str):
+        if "," in args.mesh_res_mm:
+            parts = args.mesh_res_mm.split(",")
+            args.mesh_res_mm = float(parts[0].strip())   # 0.5
+            args.screw_dia   = float(parts[1].strip())   # 28.0
+        else:
+            args.mesh_res_mm = float(args.mesh_res_mm)
 
     # gate_pos 파싱: "x,y,z,dia"
     if args.gate_pos.strip():
@@ -54,8 +66,7 @@ def parse_args():
             parts = [v.strip() for v in args.sim_opts.split(",")]
             if len(parts) >= 1 and parts[0]: args.material    = parts[0]
             if len(parts) >= 2 and parts[1]: args.num_frames  = int(parts[1])
-            if len(parts) >= 3 and parts[2]: args.mesh_res_mm = float(parts[2])
-            if len(parts) >= 4 and parts[3]: args.screw_dia   = float(parts[3])
+            # mesh_res_mm 와 screw_dia 는 위에서 안전하게 처리했으므로 통과
             print(f"[Solver] sim_opts -> material={args.material}, frames={args.num_frames}, res={args.mesh_res_mm}, screw={args.screw_dia}mm")
         except Exception as e:
             print(f"[Solver] sim_opts parse error: {e}")
