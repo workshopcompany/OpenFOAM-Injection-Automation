@@ -962,26 +962,45 @@ if os.path.exists("results.json"):
         mask = weights <= threshold
         f_coords = coords[mask]
         f_weights = weights[mask]
-        # 3D 시각화 설정 (투명도 및 격자 구분 반영)
-        fig = go.Figure(data=[go.Scatter3d(
+        fig = go.Figure()
+        # 1. STL 원본 형상을 배경에 반투명하게 중첩
+        stl_mesh = st.session_state.get("mesh")
+        if stl_mesh is not None:
+            fig.add_trace(go.Mesh3d(
+                x=stl_mesh.vertices[:, 0],
+                y=stl_mesh.vertices[:, 1],
+                z=stl_mesh.vertices[:, 2],
+                i=stl_mesh.faces[:, 0],
+                j=stl_mesh.faces[:, 1],
+                k=stl_mesh.faces[:, 2],
+                color='lightgrey',
+                opacity=0.15,                                        # 외곽 가이드로만 보이도록
+                name='Original STL',
+                showlegend=True,
+                hoverinfo='skip'
+            ))
+        # 2. 유동 해석 격자(Voxel) 추가
+        fig.add_trace(go.Scatter3d(
             x=f_coords[:, 0], y=f_coords[:, 1], z=f_coords[:, 2],
             mode='markers',
             marker=dict(
                 size=4,                                              # 격자 크기
                 color=f_weights,
                 colorscale='Viridis',
-                opacity=0.7,                                         # 약간 투명하게 설정
+                opacity=0.8,                                         # STL 위에서 잘 보이도록 높임
                 line=dict(width=0.5, color='black'),                 # 격자 간 구분 및 음영 효과
                 showscale=True,
                 colorbar=dict(title="Flow Sequence", thickness=15)
-            )
-        )])
+            ),
+            name='Flow Result'
+        ))
         fig.update_layout(
             margin=dict(l=0, r=0, b=0, t=0),
             scene=dict(
                 xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)",
                 aspectmode='data'                                    # 비율 유지
             ),
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
             height=700
         )
         return fig
