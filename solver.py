@@ -182,7 +182,6 @@ def _export_vtk(all_coords, norm_weights, res):
     각 복셀을 res×res×res 헥사헤드론으로 출력 → ParaView에서 바로 열림.
     """
     try:
-        from vtk.util.numpy_support import numpy_to_vtk
     except ImportError:
         print("[Solver] vtk 패키지 없음 — VTK 출력 건너뜀 (pip install vtk)")
         return
