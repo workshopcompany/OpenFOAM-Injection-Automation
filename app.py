@@ -61,6 +61,9 @@ _init("num_frames", 15)
 _init("gate_ai_suggested", False)
 _init("gh_run_url", None)
 _init("result_frames", [])   # PNG frames downloaded from GitHub
+_init("machine_ton", 50)          # 사출기 톤수
+_init("screw_dia_mm", 28.0)       # 스크류 직경 (mm)
+_init("barrel_dia_mm", 28.0)      # 바렐 직경 (mm) — 보통 스크류와 동일
 
 # ───────────────────── Logging ─────────────────────
 def add_log(msg):
@@ -107,13 +110,43 @@ def read_alpha_fill_ratio(fpath):
         add_log(f"VTK read error: {e}")
     return None
 
-def calc_theoretical_fill_time(mesh_obj, gate_dia, vel_mms):
+# ── 사출기 톤수별 표준 스크류/바렐 스펙 DB ──────────────────────
+# 출처: 일반적인 MIM/플라스틱 사출기 표준 스펙 (Arburg, Engel, 동신 등)
+# 형식: ton → (screw_dia_mm, barrel_dia_mm, max_shot_cm3)
+MACHINE_SPECS = {
+     30: ( 22,  22,   30),
+     50: ( 28,  28,   60),
+     80: ( 32,  32,  100),
+    100: ( 36,  36,  150),
+    130: ( 40,  40,  210),
+    150: ( 42,  42,  250),
+    180: ( 45,  45,  320),
+    200: ( 48,  48,  380),
+}
+MACHINE_TONS = sorted(MACHINE_SPECS.keys())
+
+def get_machine_spec(ton: int) -> dict:
+    """톤수에 가장 가까운 표준 스펙 반환"""
+    closest = min(MACHINE_SPECS.keys(), key=lambda t: abs(t - ton))
+    sd, bd, ms = MACHINE_SPECS[closest]
+    return {"screw_dia_mm": float(sd), "barrel_dia_mm": float(bd), "max_shot_cm3": ms}
+
+def calc_theoretical_fill_time(mesh_obj, gate_dia, vel_mms,
+                                screw_dia_mm=28.0):
+    """
+    스크류 전진 속도(vel_mms) → 실제 게이트 통과 유량으로 보정한 충진시간 계산.
+
+    원리:
+      유량 보존 법칙: A_screw × v_screw = A_gate × v_gate
+      → flow_rate(mm³/s) = A_screw × v_screw
+      (게이트 단면적과 무관하게 스크류 기준 유량이 일정)
+    """
     try:
         vol_mm3 = abs(mesh_obj.volume)
-        if vol_mm3 <= 0 or gate_dia <= 0 or vel_mms <= 0:
+        if vol_mm3 <= 0 or gate_dia <= 0 or vel_mms <= 0 or screw_dia_mm <= 0:
             return 1.0
-        area_mm2 = np.pi * ((gate_dia / 2.0) ** 2)
-        flow_rate = area_mm2 * vel_mms
+        screw_area = np.pi * ((screw_dia_mm / 2.0) ** 2)   # mm²
+        flow_rate  = screw_area * vel_mms                   # mm³/s (실제 유량)
         return float(vol_mm3 / flow_rate)
     except Exception:
         return 1.0
@@ -654,21 +687,63 @@ with st.sidebar:
 
     # ── Process ──
     st.header("⚙️ 4. Process")
+
+    # ── 사출기 선택 ──
+    st.markdown("**🏭 사출기 설정**")
+    machine_ton = st.select_slider(
+        "사출기 톤수 (ton)",
+        options=MACHINE_TONS,
+        value=st.session_state.get("machine_ton", 50),
+        key="machine_ton"
+    )
+    # 톤수 변경 시 스펙 자동 업데이트
+    spec = get_machine_spec(machine_ton)
+    if st.session_state.get("_last_ton") != machine_ton:
+        st.session_state["screw_dia_mm"]  = spec["screw_dia_mm"]
+        st.session_state["barrel_dia_mm"] = spec["barrel_dia_mm"]
+        st.session_state["_last_ton"]     = machine_ton
+
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        screw_dia = st.number_input(
+            "스크류 직경 (mm)", 10.0, 150.0,
+            value=float(st.session_state.get("screw_dia_mm", spec["screw_dia_mm"])),
+            step=0.5, key="screw_dia_mm"
+        )
+    with mc2:
+        barrel_dia = st.number_input(
+            "바렐 직경 (mm)", 10.0, 150.0,
+            value=float(st.session_state.get("barrel_dia_mm", spec["barrel_dia_mm"])),
+            step=0.5, key="barrel_dia_mm"
+        )
+    st.caption(f"표준 스펙 ({machine_ton}ton): 스크류 ø{spec['screw_dia_mm']:.0f}mm | 최대 사출량 {spec['max_shot_cm3']}cm³")
+    st.divider()
+
     mesh_obj = st.session_state.get("mesh")
     theo_time = 1.0
     if mesh_obj:
         vel_current = float(st.session_state["vel"])
-        theo_time = calc_theoretical_fill_time(mesh_obj, float(g_size), vel_current)
+        theo_time = calc_theoretical_fill_time(
+            mesh_obj, float(g_size), vel_current,
+            screw_dia_mm=float(st.session_state.get("screw_dia_mm", 28.0))
+        )
         safe_etime_preview = min(theo_time * 1.5, 180.0)
+        vol_mm3 = abs(mesh_obj.volume)
+        screw_area = np.pi * ((float(st.session_state.get("screw_dia_mm", 28.0)) / 2.0) ** 2)
+        flow_rate_cm3s = screw_area * vel_current / 1000.0
         st.info(
-            f"💡 Est. Fill Time: ~**{theo_time:.2f}s**\n\n"
-            f"→ Recommended End Time (×1.5): **{safe_etime_preview:.2f}s**"
+            f"💡 Est. Fill Time: **{theo_time:.2f}s**\n\n"
+            f"→ Recommended End Time (×1.5): **{safe_etime_preview:.2f}s**\n\n"
+            f"부품 체적: {vol_mm3:.0f} mm³ | 유량: {flow_rate_cm3s:.1f} cm³/s"
         )
 
     if st.button("🤖 Optimize Process", use_container_width=True):
         opt = get_process(mat_name_input)
         st.session_state.update({"temp": opt["temp"], "press": opt["press"], "vel": opt["vel"]})
-        new_theo = calc_theoretical_fill_time(mesh_obj, float(g_size), opt["vel"]) if mesh_obj else 1.0
+        new_theo = calc_theoretical_fill_time(
+            mesh_obj, float(g_size), opt["vel"],
+            screw_dia_mm=float(st.session_state.get("screw_dia_mm", 28.0))
+        ) if mesh_obj else 1.0
         safe_etime = min(new_theo * 1.5, 180.0)
         st.session_state["etime"] = safe_etime
         st.toast(f"Optimized! End Time: {safe_etime:.1f}s", icon="🤖")
@@ -712,17 +787,15 @@ if st.sidebar.button("🚀 Run Cloud Simulation", type="primary", use_container_
             with st.spinner("2/2: 시뮬레이션 트리거 중..."):
                 sig_id = str(uuid.uuid4())[:8]
                 # 페이로드에는 텍스트 데이터만 담아서 64KB 제한 우회
-                # [Fix 3] session_state의 gx_final/gy_final/gz_final 사용
-                # (지역변수 gx/gy/gz는 with st.sidebar: 블록 안에서만 유효)
-                _gx = float(st.session_state.get("gx_final", 0.0))
-                _gy = float(st.session_state.get("gy_final", 0.0))
-                _gz = float(st.session_state.get("gz_final", 0.0))
-                # [Fix 4] num_frames_sel도 블록 밖이므로 session_state에서 읽기
-                _nf = int(st.session_state.get("num_frames", 15))
+                _gx    = float(st.session_state.get("gx_final", 0.0))
+                _gy    = float(st.session_state.get("gy_final", 0.0))
+                _gz    = float(st.session_state.get("gz_final", 0.0))
+                _nf    = int(st.session_state.get("num_frames", 15))
+                _screw = float(st.session_state.get("screw_dia_mm", 28.0))
                 ep = {
                     "signal_id": sig_id,
                     "gate_pos":  f"{_gx:.4f},{_gy:.4f},{_gz:.4f},{float(g_size):.4f}",
-                    "sim_opts":  f"{st.session_state['mat_name']},{_nf},0.5",
+                    "sim_opts":  f"{st.session_state['mat_name']},{_nf},0.5,{_screw}",
                     "viscosity": float(st.session_state["props"]["nu"]),
                     "density":   float(st.session_state["props"]["rho"]),
                     "temp":      float(temp_c),
