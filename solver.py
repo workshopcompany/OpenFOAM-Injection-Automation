@@ -176,59 +176,7 @@ def save_visual_frame(coords, norm_weights, threshold_ratio, frame_idx,
     return img_path
 
 
-def _export_vtk(all_coords, norm_weights, res):
-    """
-    복셀 좌표 + Dijkstra 가중치를 VTK UnstructuredGrid로 저장.
-    각 복셀을 res×res×res 헥사헤드론으로 출력 → ParaView에서 바로 열림.
-    """
-    try:
-    except ImportError:
-        print("[Solver] vtk 패키지 없음 — VTK 출력 건너뜀 (pip install vtk)")
-        return
 
-    os.makedirs("VTK", exist_ok=True)
-    h = res / 2.0  # 복셀 반경
-
-    points_vtk = vtk.vtkPoints()
-    grid = vtk.vtkUnstructuredGrid()
-
-    n = len(all_coords)
-    pts = vtk.vtkPoints()
-    pts.SetNumberOfPoints(n * 8)
-
-    cell_arr = vtk.vtkCellArray()
-    offsets = [0]
-
-    for i, (cx, cy, cz) in enumerate(all_coords):
-        base = i * 8
-        # 헥사헤드론 8 꼭짓점 (VTK HEX 순서)
-        corners = [
-            (cx-h, cy-h, cz-h), (cx+h, cy-h, cz-h),
-            (cx+h, cy+h, cz-h), (cx-h, cy+h, cz-h),
-            (cx-h, cy-h, cz+h), (cx+h, cy-h, cz+h),
-            (cx+h, cy+h, cz+h), (cx-h, cy+h, cz+h),
-        ]
-        for j, (x, y, z) in enumerate(corners):
-            pts.SetPoint(base + j, x, y, z)
-
-        hex_cell = vtk.vtkHexahedron()
-        for j in range(8):
-            hex_cell.GetPointIds().SetId(j, base + j)
-        grid.InsertNextCell(hex_cell.GetCellType(), hex_cell.GetPointIds())
-
-    grid.SetPoints(pts)
-
-    # flow_distance 스칼라 (alpha 대응 — 0=gate, 1=최원단)
-    flow_arr = numpy_to_vtk(norm_weights, deep=True)
-    flow_arr.SetName("flow_distance")
-    grid.GetCellData().AddArray(flow_arr)
-    grid.GetCellData().SetActiveScalars("flow_distance")
-
-    writer = vtk.vtkXMLUnstructuredGridWriter()
-    writer.SetFileName("VTK/internal.vtu")
-    writer.SetInputData(grid)
-    writer.Write()
-    print(f"[Solver] ✅ VTK 저장 완료: VTK/internal.vtu ({n} cells)")
 
 
 def main():
