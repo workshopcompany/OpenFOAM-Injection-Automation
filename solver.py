@@ -310,7 +310,44 @@ def main():
 
     # 5. Save results
     elapsed = time.time() - start_wall_time
+# --- 여기서부터 붙여넣기 ---
+    import base64, zlib, struct
+    phys_times = norm_weights * theo_fill_time
+    pressures = args.press * (1.0 - norm_weights)
+    vtu_filename = f"simulation-{args.signal_id}.vtu"
+    
+    num_points = len(all_coords)
+    def encode_vtu_data(data):
+        # vtk 라이브러리 없이 표준 라이브러리로만 압축/인코딩
+        compressed = zlib.compress(data.astype(np.float32).tobytes())
+        header = struct.pack("<IIII", 1, len(data)*4, len(data)*4, len(compressed))
+        return base64.b64encode(header + compressed).decode('ascii')
 
+    enc_time = encode_vtu_data(phys_times)
+    enc_press = encode_vtu_data(pressures)
+    enc_pos = encode_vtu_data(all_coords.flatten())
+
+    vtu_body = f"""<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" header_type="UInt32" compressor="vtkZLibDataCompressor">
+  <UnstructuredGrid>
+    <Piece NumberOfPoints="{num_points}" NumberOfCells="{num_points}">
+      <PointData Scalars="fill_time">
+        <DataArray type="Float32" Name="fill_time" format="appended" offset="0" />
+        <DataArray type="Float32" Name="pressure" format="appended" offset="{len(enc_time)+4}" />
+      </PointData>
+      <Points><DataArray type="Float32" Name="Points" NumberOfComponents="3" format="appended" offset="{len(enc_time)+len(enc_press)+8}" /></Points>
+      <Cells>
+        <DataArray type="Int32" Name="connectivity" format="ascii">{" ".join(map(str, range(num_points)))}</DataArray>
+        <DataArray type="Int32" Name="offsets" format="ascii">{" ".join(map(str, range(1, num_points + 1)))}</DataArray>
+        <DataArray type="UInt8" Name="types" format="ascii">{" ".join(["1"] * num_points)}</DataArray>
+      </Cells>
+    </Piece>
+  </UnstructuredGrid>
+  <AppendedData encoding="base64">_{enc_time}{enc_press}{enc_pos}</AppendedData>
+</VTKFile>"""
+
+    with open(vtu_filename, "w", encoding="utf-8") as f:
+        f.write(vtu_body)
     # --- 여기서부터 추가/수정 시작 ---
     phys_times = norm_weights * theo_fill_time
     pressures = args.press * (1.0 - norm_weights)
