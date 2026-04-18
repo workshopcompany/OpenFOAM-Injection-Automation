@@ -226,18 +226,20 @@ def main():
     # 3. Geometric Dijkstra — purely visual ordering
     gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z])
 
-    # 게이트가 (0,0,0) 기본값 그대로이거나 voxel 범위 밖이면
-    # → 파트 bounding box 최솟값 면의 centroid로 자동 보정
+    # 게이트가 voxel 범위 완전히 밖일 때만 자동 보정
+    # ※ np.allclose(gate_pos, 0.0) 조건 제거:
+    #   파트 중심이 원점 근처인 경우 Bottom-Center 등 유효한 게이트 좌표가
+    #   (0,0,0)에 가까울 수 있으므로, 범위 이탈 여부만으로 판단
     bb_min = all_coords.min(axis=0)
     bb_max = all_coords.max(axis=0)
     gate_in_range = np.all(gate_pos >= bb_min - res) and np.all(gate_pos <= bb_max + res)
-    if not gate_in_range or np.allclose(gate_pos, 0.0):
-        # X 최솟값 면의 중심을 기본 게이트로 설정
-        x_min_mask = all_coords[:, 0] < bb_min[0] + res * 2
-        gate_pos = all_coords[x_min_mask].mean(axis=0)
-        print(f"[Solver] ⚠ Gate (0,0,0) → auto-corrected to part face center: {gate_pos.round(2)}")
+    if not gate_in_range:
+        # 범위 밖일 때만 → Z 최솟값 면(Bottom-Center)의 centroid로 보정
+        z_min_mask = all_coords[:, 2] < bb_min[2] + res * 2
+        gate_pos = all_coords[z_min_mask].mean(axis=0)
+        print(f"[Solver] ⚠ Gate out of range → auto-corrected to bottom-center: {gate_pos.round(2)}")
     else:
-        print(f"[Solver] Gate pos: {gate_pos}")
+        print(f"[Solver] ✅ Gate pos accepted: {gate_pos}")
 
     dists_to_gate = np.linalg.norm(all_coords - gate_pos, axis=1)
     start_idx = int(np.argmin(dists_to_gate))
