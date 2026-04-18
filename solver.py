@@ -16,6 +16,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 def parse_args():
     p = argparse.ArgumentParser(description="MIM-Ops Cloud Solver: Visual Flow Optimization")
     p.add_argument("--signal_id",   type=str,   default="manual")
+    p.add_argument("--gate_pos",    type=str,   default="")
     p.add_argument("--gate_x",      type=float, default=0.0)
     p.add_argument("--gate_y",      type=float, default=0.0)
     p.add_argument("--gate_z",      type=float, default=0.0)
@@ -25,13 +26,44 @@ def parse_args():
     p.add_argument("--num_frames",  type=int,   default=20)
     p.add_argument("--mesh_res_mm", type=float, default=0.5)
     p.add_argument("--stl_path",    type=str,   default="part.stl")
+    p.add_argument("--sim_opts",    type=str,   default="")
     p.add_argument("--material",    type=str,   default="17-4PH")
     p.add_argument("--viscosity",   type=float, default=4e-3)
     p.add_argument("--density",     type=float, default=7780)
     p.add_argument("--melt_temp",   type=float, default=185)
     p.add_argument("--temp",        type=float, default=185)
     p.add_argument("--press",       type=float, default=110)
-    return p.parse_args()
+    args = p.parse_args()
+
+    # [Fix 1] gate_pos 파싱: "x,y,z,dia" -> 개별 값으로 분리
+    if args.gate_pos.strip():
+        try:
+            parts = [v.strip() for v in args.gate_pos.split(",")]
+            if len(parts) >= 3:
+                args.gate_x   = float(parts[0])
+                args.gate_y   = float(parts[1])
+                args.gate_z   = float(parts[2])
+            if len(parts) >= 4:
+                args.gate_dia = float(parts[3])
+            print(f"[Solver] gate_pos parsed -> x={args.gate_x}, y={args.gate_y}, z={args.gate_z}, dia={args.gate_dia}")
+        except Exception as e:
+            print(f"[Solver] gate_pos parse error: {e} -- using defaults")
+
+    # [Fix 2] sim_opts 파싱: "material,num_frames,mesh_res" -> 개별 값으로 분리
+    if args.sim_opts.strip():
+        try:
+            parts = [v.strip() for v in args.sim_opts.split(",")]
+            if len(parts) >= 1 and parts[0]:
+                args.material    = parts[0]
+            if len(parts) >= 2 and parts[1]:
+                args.num_frames  = int(parts[1])
+            if len(parts) >= 3 and parts[2]:
+                args.mesh_res_mm = float(parts[2])
+            print(f"[Solver] sim_opts parsed -> material={args.material}, frames={args.num_frames}, res={args.mesh_res_mm}")
+        except Exception as e:
+            print(f"[Solver] sim_opts parse error: {e} -- using defaults")
+
+    return args
 
 
 def compute_dijkstra_weights(all_coords, start_idx, res):
@@ -226,20 +258,19 @@ def main():
     # 3. Geometric Dijkstra — purely visual ordering
     gate_pos = np.array([args.gate_x, args.gate_y, args.gate_z])
 
-    # 게이트가 voxel 범위 완전히 밖일 때만 자동 보정
-    # ※ np.allclose(gate_pos, 0.0) 조건 제거:
-    #   파트 중심이 원점 근처인 경우 Bottom-Center 등 유효한 게이트 좌표가
-    #   (0,0,0)에 가까울 수 있으므로, 범위 이탈 여부만으로 판단
+    # 게이트가 (0,0,0) 기본값 그대로이거나 voxel 범위 밖이면
+    # → 파트 bounding box 최솟값 면의 centroid로 자동 보정
     bb_min = all_coords.min(axis=0)
     bb_max = all_coords.max(axis=0)
     gate_in_range = np.all(gate_pos >= bb_min - res) and np.all(gate_pos <= bb_max + res)
+    # [Fix 5] np.allclose(gate_pos, 0.0) 조건 제거 — 원점 근처 유효 게이트(Bottom-Center 등)를
+    # X-Min으로 강제 덮어쓰던 버그 수정. 범위 이탈 시에만 fallback 적용.
     if not gate_in_range:
-        # 범위 밖일 때만 → Z 최솟값 면(Bottom-Center)의 centroid로 보정
         z_min_mask = all_coords[:, 2] < bb_min[2] + res * 2
         gate_pos = all_coords[z_min_mask].mean(axis=0)
-        print(f"[Solver] ⚠ Gate out of range → auto-corrected to bottom-center: {gate_pos.round(2)}")
+        print(f"[Solver] Gate out of range -> fallback to bottom-center: {gate_pos.round(2)}")
     else:
-        print(f"[Solver] ✅ Gate pos accepted: {gate_pos}")
+        print(f"[Solver] Gate pos accepted: {gate_pos.round(3)}")
 
     dists_to_gate = np.linalg.norm(all_coords - gate_pos, axis=1)
     start_idx = int(np.argmin(dists_to_gate))
