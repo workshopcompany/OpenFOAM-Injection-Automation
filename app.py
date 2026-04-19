@@ -61,9 +61,9 @@ _init("num_frames", 15)
 _init("gate_ai_suggested", False)
 _init("gh_run_url", None)
 _init("result_frames", [])   # PNG frames downloaded from GitHub
-_init("machine_ton", 50)          # 사출기 톤수
-_init("screw_dia_mm", 28.0)       # 스크류 직경 (mm)
-_init("barrel_dia_mm", 28.0)      # 바렐 직경 (mm) — 보통 스크류와 동일
+_init("machine_ton", 50)          # Injection machine tonnage
+_init("screw_dia_mm", 28.0)       # Screw diameter (mm)
+_init("barrel_dia_mm", 28.0)      # Barrel diameter (mm) — typically same as screw
 
 # ───────────────────── Logging ─────────────────────
 def add_log(msg):
@@ -110,9 +110,9 @@ def read_alpha_fill_ratio(fpath):
         add_log(f"VTK read error: {e}")
     return None
 
-# ── 사출기 톤수별 표준 스크류/바렐 스펙 DB ──────────────────────
-# 출처: 일반적인 MIM/플라스틱 사출기 표준 스펙 (Arburg, Engel, 동신 등)
-# 형식: ton → (screw_dia_mm, barrel_dia_mm, max_shot_cm3)
+# ── Standard screw/barrel spec DB by machine tonnage ──────────────────────
+# Source: General MIM/plastic injection machine standard specs (Arburg, Engel, Dongshin, etc.)
+# Format: ton → (screw_dia_mm, barrel_dia_mm, max_shot_cm3)
 MACHINE_SPECS = {
      30: ( 22,  22,   30),
      50: ( 28,  28,   60),
@@ -126,7 +126,7 @@ MACHINE_SPECS = {
 MACHINE_TONS = sorted(MACHINE_SPECS.keys())
 
 def get_machine_spec(ton: int) -> dict:
-    """톤수에 가장 가까운 표준 스펙 반환"""
+    """Returns the closest standard spec for the given tonnage"""
     closest = min(MACHINE_SPECS.keys(), key=lambda t: abs(t - ton))
     sd, bd, ms = MACHINE_SPECS[closest]
     return {"screw_dia_mm": float(sd), "barrel_dia_mm": float(bd), "max_shot_cm3": ms}
@@ -134,19 +134,19 @@ def get_machine_spec(ton: int) -> dict:
 def calc_theoretical_fill_time(mesh_obj, gate_dia, vel_mms,
                                 screw_dia_mm=28.0):
     """
-    스크류 전진 속도(vel_mms) → 실제 게이트 통과 유량으로 보정한 충진시간 계산.
+    Calculates fill time corrected by actual gate flow rate from screw advance speed (vel_mms).
 
-    원리:
-      유량 보존 법칙: A_screw × v_screw = A_gate × v_gate
+    Principle:
+      Conservation of flow: A_screw × v_screw = A_gate × v_gate
       → flow_rate(mm³/s) = A_screw × v_screw
-      (게이트 단면적과 무관하게 스크류 기준 유량이 일정)
+      (flow rate based on screw is constant regardless of gate cross-section)
     """
     try:
         vol_mm3 = abs(mesh_obj.volume)
         if vol_mm3 <= 0 or gate_dia <= 0 or vel_mms <= 0 or screw_dia_mm <= 0:
             return 1.0
         screw_area = np.pi * ((screw_dia_mm / 2.0) ** 2)   # mm²
-        flow_rate  = screw_area * vel_mms                   # mm³/s (실제 유량)
+        flow_rate  = screw_area * vel_mms                   # mm³/s (actual flow rate)
         return float(vol_mm3 / flow_rate)
     except Exception:
         return 1.0
@@ -359,25 +359,25 @@ def suggest_gate_positions_ai(mesh_obj: trimesh.Trimesh) -> list:
     return suggestions
 
 # ═══════════════════════════════════════════════════════════
-# [1] 이 함수를 trigger_github_simulation 위에 추가하세요.
+# [1] Add this function above trigger_github_simulation.
 def upload_stl_to_github(file_bytes, target_path="input/part.stl"):
-    """GitHub Contents API를 사용하여 파일을 레포지토리에 덮어씁니다."""
+    """Overwrites a file in the repository using the GitHub Contents API."""
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{target_path}"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
 
-    # 기존 파일 SHA 확인 (덮어쓰기를 위해 필수)
+    # Retrieve existing file SHA (required for overwrite)
     resp = requests.get(url, headers=headers)
     sha = resp.json().get("sha") if resp.status_code == 200 else None
 
-    # 업로드용 데이터 구성
+    # Build upload data
     content_b64 = base64.b64encode(file_bytes).decode("utf-8")
     data = {
         "message": f"Upload STL for simulation {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "content": content_b64,
-        "branch": "main"  # 본인의 기본 브랜치가 main인지 확인하세요
+        "branch": "main"  # Make sure your default branch is 'main'
     }
     if sha: data["sha"] = sha 
 
@@ -477,43 +477,43 @@ def sync_simulation_results():
             if file_resp.status_code == 200:
                 clear_old_results()
 
-                # ── 아티팩트를 'simulation-results/' 폴더로 추출 ──────────────
-                # 진단 섹션(target_dirs)과 일치하는 경로를 사용해 bytes/path 불일치 해소
+                # ── Extract artifact into 'simulation-results/' folder ──────────────
+                # Use the same path as target_dirs in the diagnostic section to resolve bytes/path mismatch
                 extract_dir = "simulation-results"
                 os.makedirs(extract_dir, exist_ok=True)
                 with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
                     z.extractall(extract_dir)
 
-                # ── 루트 레벨 파일 편의 복사 (results.txt 등) ─────────────────
+                # ── Convenience copy of root-level files (results.txt, etc.) ─────────────────
                 for fname in ["results.txt", "results.json"]:
                     src = os.path.join(extract_dir, fname)
                     if os.path.exists(src):
                         shutil.copy(src, fname)
 
-                # ── VTK 처리 ──────────────────────────────────────────────────
+                # ── VTK processing ──────────────────────────────────────────────────
                 vtk_dir = os.path.join(extract_dir, "VTK")
                 if not os.path.exists(vtk_dir):
-                    vtk_dir = "VTK"  # 루트에 있을 경우 폴백
+                    vtk_dir = "VTK"  # Fallback if located at root
                 if os.path.exists(vtk_dir):
                     nf = st.session_state.get("num_frames", 15)
                     st.session_state["vtk_files"] = sample_vtk_files(vtk_dir, nf)
 
-                # ── PNG 프레임 경로 수집 ────────────────────────────────────────
-                # simulation-results/frames/ 우선, 없으면 simulation-results/ 전체 탐색
+                # ── Collect PNG frame paths ────────────────────────────────────────
+                # Prefer simulation-results/frames/, otherwise search all of simulation-results/
                 pngs = sorted(
                     glob.glob(os.path.join(extract_dir, "frames", "frame_*.png")) or
                     glob.glob(os.path.join(extract_dir, "**", "frame_*.png"), recursive=True),
                     key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0])
                     if re.findall(r'\d+', os.path.basename(x)) else 0
                 )
-                # 경로(str) 그대로 저장 — 진단 섹션, animation 섹션 모두 경로 기준으로 통일
+                # Store as paths (str) — unified across diagnostic and animation sections
                 st.session_state["result_frames"] = pngs
                 if pngs:
                     add_log(f"Loaded {len(pngs)} animation frames from GitHub.")
                 else:
                     add_log("⚠️ No frame_*.png found in artifact.")
 
-                # ── Signal ID 파싱 ─────────────────────────────────────────────
+                # ── Parse Signal ID ─────────────────────────────────────────────
                 if os.path.exists("results.txt"):
                     with open("results.txt") as f:
                         content = f.read()
@@ -542,21 +542,21 @@ with st.sidebar:
     
     if uploaded:
         try:
-            # [추가] 새로운 파일이 올라오면 기존 컨펌 상태 리셋
-            # 이렇게 해야 버튼이 안 먹히는 현상을 방지하고 새로 컨펌을 유도합니다.
+            # Reset confirmation state when a new file is uploaded
+            # This prevents the button from not responding and forces re-confirmation.
             if "last_uploaded_name" not in st.session_state or st.session_state["last_uploaded_name"] != uploaded.name:
                 st.session_state["props_confirmed"] = False
                 st.session_state["process_confirmed"] = False
                 st.session_state["last_uploaded_name"] = uploaded.name
                 add_log(f"New file detected: {uploaded.name}. Resetting confirmations.")
 
-            # 1. 3D 뷰어용 메쉬 로드
+            # 1. Load mesh for 3D viewer
             uploaded.seek(0) 
             mesh_obj = trimesh.load(uploaded, file_type="stl")
             st.session_state["mesh"] = mesh_obj
             st.session_state["gate_ai_suggested"] = False
 
-            # 2. GitHub 전송용 Base64 변환 (항상 하나의 데이터로 취급)
+            # 2. Convert to Base64 for GitHub upload (always treated as a single data object)
             uploaded.seek(0) 
             stl_bytes = uploaded.read()
             st.session_state["stl_b64"] = base64.b64encode(stl_bytes).decode('utf-8')
@@ -688,15 +688,15 @@ with st.sidebar:
     # ── Process ──
     st.header("⚙️ 4. Process")
 
-    # ── 사출기 선택 ──
-    st.markdown("**🏭 사출기 설정**")
+    # ── Machine Selection ──
+    st.markdown("**🏭 Injection Machine Settings**")
     machine_ton = st.select_slider(
-        "사출기 톤수 (ton)",
+        "Machine Tonnage (ton)",
         options=MACHINE_TONS,
         value=st.session_state.get("machine_ton", 50),
         key="machine_ton"
     )
-    # 톤수 변경 시 스펙 자동 업데이트
+    # Auto-update specs when tonnage changes
     spec = get_machine_spec(machine_ton)
     if st.session_state.get("_last_ton") != machine_ton:
         st.session_state["screw_dia_mm"]  = spec["screw_dia_mm"]
@@ -706,17 +706,17 @@ with st.sidebar:
     mc1, mc2 = st.columns(2)
     with mc1:
         screw_dia = st.number_input(
-            "스크류 직경 (mm)", 10.0, 150.0,
+            "Screw Diameter (mm)", 10.0, 150.0,
             value=float(st.session_state.get("screw_dia_mm", spec["screw_dia_mm"])),
             step=0.5, key="screw_dia_mm"
         )
     with mc2:
         barrel_dia = st.number_input(
-            "바렐 직경 (mm)", 10.0, 150.0,
+            "Barrel Diameter (mm)", 10.0, 150.0,
             value=float(st.session_state.get("barrel_dia_mm", spec["barrel_dia_mm"])),
             step=0.5, key="barrel_dia_mm"
         )
-    st.caption(f"표준 스펙 ({machine_ton}ton): 스크류 ø{spec['screw_dia_mm']:.0f}mm | 최대 사출량 {spec['max_shot_cm3']}cm³")
+    st.caption(f"Standard Spec ({machine_ton}ton): Screw ø{spec['screw_dia_mm']:.0f}mm | Max Shot {spec['max_shot_cm3']}cm³")
     st.divider()
 
     mesh_obj = st.session_state.get("mesh")
@@ -734,7 +734,7 @@ with st.sidebar:
         st.info(
             f"💡 Est. Fill Time: **{theo_time:.2f}s**\n\n"
             f"→ Recommended End Time (×1.5): **{safe_etime_preview:.2f}s**\n\n"
-            f"부품 체적: {vol_mm3:.0f} mm³ | 유량: {flow_rate_cm3s:.1f} cm³/s"
+            f"Part Volume: {vol_mm3:.0f} mm³ | Flow Rate: {flow_rate_cm3s:.1f} cm³/s"
         )
 
     if st.button("🤖 Optimize Process", use_container_width=True):
@@ -771,22 +771,22 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Run button (사이드바 내부) ──
-# [2] Run 버튼 로직을 아래 내용으로 교체하세요.
+    # ── Run button (inside sidebar) ──
+# [2] Replace the Run button logic with the content below.
 if st.sidebar.button("🚀 Run Cloud Simulation", type="primary", use_container_width=True):
     if "stl_b64" not in st.session_state:
-        st.error("⚠️ STL 파일을 먼저 업로드해주세요.")
+        st.error("⚠️ Please upload an STL file first.")
     else:
-        with st.spinner("1/2: GitHub에 STL 파일 업로드 중..."):
+        with st.spinner("1/2: Uploading STL file to GitHub..."):
             stl_bytes = base64.b64decode(st.session_state["stl_b64"])
-            # 'input/part.stl' 경로로 강제 고정 업로드
+            # Force upload to fixed path 'input/part.stl'
             upload_success = upload_stl_to_github(stl_bytes, "input/part.stl")
 
         if upload_success:
-            st.success("✅ 1단계: STL 업로드 완료!")
-            with st.spinner("2/2: 시뮬레이션 트리거 중..."):
+            st.success("✅ Step 1: STL upload complete!")
+            with st.spinner("2/2: Triggering simulation..."):
                 sig_id = str(uuid.uuid4())[:8]
-                # 페이로드에는 텍스트 데이터만 담아서 64KB 제한 우회
+                # Only pass text data in payload to bypass 64KB limit
                 _gx    = float(st.session_state.get("gx_final", 0.0))
                 _gy    = float(st.session_state.get("gy_final", 0.0))
                 _gz    = float(st.session_state.get("gz_final", 0.0))
@@ -804,11 +804,11 @@ if st.sidebar.button("🚀 Run Cloud Simulation", type="primary", use_container_
                     "etime":     float(etime),
                 }
                 if trigger_github_simulation(ep):
-                    st.toast("🚀 시뮬레이션 시작!", icon="✅")
+                    st.toast("🚀 Simulation started!", icon="✅")
                     time.sleep(2)
                     st.rerun()
         else:
-            st.error("❌ 1단계: STL 파일 업로드에 실패했습니다. GitHub 토큰 권한을 확인하세요.")
+            st.error("❌ Step 1: STL upload failed. Please check your GitHub token permissions.")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -881,7 +881,7 @@ with col_log:
 
 # ─────────── Results & Sync ───────────
 
-# ─────────── [1] 애니메이션 상태 관리 변수 초기화 ───────────
+# ─────────── [1] Initialize animation state variables ───────────
 if "frame_idx" not in st.session_state:
     st.session_state.frame_idx = 0
 if "playing" not in st.session_state:
@@ -889,16 +889,16 @@ if "playing" not in st.session_state:
 if "result_frames" not in st.session_state:
     st.session_state["result_frames"] = []
 
-# 로컬 변수로도 한 번 더 선언 (가장 확실한 방법)
+# Also declare as local variable (most reliable approach)
 current_frames = st.session_state["result_frames"]
 
 st.title("📊 Simulation Results")
 
 import os, glob, re, time, zipfile, json
-# ─────────── [2] 시뮬레이션 결과 섹션 시작 ───────────
-# ─────────── [2] 진단 로그 (압축 해제 상태 확인) ───────────
+# ─────────── [2] Simulation Results Section Start ───────────
+# ─────────── [2] Diagnostic Logs (check extraction status) ───────────
 with st.expander("🔍 System Diagnostic Logs", expanded=True):
-    # sync_simulation_results()가 추출하는 폴더와 동일한 경로 탐색
+    # Search the same paths that sync_simulation_results() extracts to
     target_dirs = ["simulation-results", "temp_results"]
     st.write(f"📂 **Checking Folders:** `{target_dirs}`")
 
@@ -912,14 +912,14 @@ with st.expander("🔍 System Diagnostic Logs", expanded=True):
             key=lambda x: int(re.findall(r'\d+', os.path.basename(x))[0])
             if re.findall(r'\d+', os.path.basename(x)) else 0
         )
-        # 세션 상태와 동기화 (경로 리스트로 통일)
+        # Sync with session state (unified as path list)
         st.session_state["result_frames"] = found_pngs
         current_frames = found_pngs
         st.success(f"✅ {len(found_pngs)} frames detected on disk.")
     else:
         st.warning("⚠️ No images found. Please click 'Sync Results'.")
 
-# ─────────── 3. Sync 버튼 ───────────
+# ─────────── 3. Sync Button ───────────
 if st.button("🔄 Sync Results", key="sync_final_btn_v5", type="primary"):
     sync_simulation_results()
     st.session_state["current_frame"] = 0
@@ -927,7 +927,7 @@ if st.button("🔄 Sync Results", key="sync_final_btn_v5", type="primary"):
     st.session_state.playing = False
     st.rerun()
 
-# ─────────── 4. results.json 기반 3D 인터랙티브 플로우 애니메이션 ───────────
+# ─────────── 4. 3D Interactive Flow Animation based on results.json ───────────
 if os.path.exists("results.json"):
     with open("results.json", "r") as f:
         res_data = json.load(f)
@@ -940,7 +940,7 @@ if os.path.exists("results.json"):
     st.divider()
     st.subheader("🌊 Interactive Flow Animation")
 
-    # 제어 버튼 배치
+    # Control button layout
     c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
     if c1.button("▶ Play"):
         st.session_state.playing = True
@@ -950,11 +950,11 @@ if os.path.exists("results.json"):
         st.session_state.frame_idx = 0
         st.session_state.playing = False
 
-    # 프레임 탐색 슬라이더 (Pause 상태에서 수동 조절 가능)
+    # Frame scrubber slider (can be manually adjusted while paused)
     current_frame = st.slider("Frame Scrubber", 0, num_frames - 1, st.session_state.frame_idx)
     st.session_state.frame_idx = current_frame
 
-    # 시각화 컨테이너
+    # Visualization container
     plot_spot = st.empty()
 
     def draw_3d_frame(idx):
@@ -963,7 +963,7 @@ if os.path.exists("results.json"):
         f_coords = coords[mask]
         f_weights = weights[mask]
         fig = go.Figure()
-        # 1. STL 원본 형상을 배경에 반투명하게 중첩
+        # 1. Overlay original STL shape as translucent background
         stl_mesh = st.session_state.get("mesh")
         if stl_mesh is not None:
             fig.add_trace(go.Mesh3d(
@@ -974,21 +974,21 @@ if os.path.exists("results.json"):
                 j=stl_mesh.faces[:, 1],
                 k=stl_mesh.faces[:, 2],
                 color='lightgrey',
-                opacity=0.30,                                        # 외곽 가이드로만 보이도록
+                opacity=0.15,                                        # Show only as outline guide
                 name='Original STL',
                 showlegend=True,
                 hoverinfo='skip'
             ))
-        # 2. 유동 해석 격자(Voxel) 추가
+        # 2. Add flow analysis voxel grid
         fig.add_trace(go.Scatter3d(
             x=f_coords[:, 0], y=f_coords[:, 1], z=f_coords[:, 2],
             mode='markers',
             marker=dict(
-                size=4,                                              # 격자 크기
+                size=4,                                              # Voxel size
                 color=f_weights,
                 colorscale='Viridis',
-                opacity=0.8,                                         # STL 위에서 잘 보이도록 높임
-                line=dict(width=0.5, color='black'),                 # 격자 간 구분 및 음영 효과
+                opacity=0.8,                                         # High opacity to be visible over STL
+                line=dict(width=0.5, color='black'),                 # Voxel boundary and shading effect
                 showscale=True,
                 colorbar=dict(title="Flow Sequence", thickness=15)
             ),
@@ -998,14 +998,14 @@ if os.path.exists("results.json"):
             margin=dict(l=0, r=0, b=0, t=0),
             scene=dict(
                 xaxis_title="X (mm)", yaxis_title="Y (mm)", zaxis_title="Z (mm)",
-                aspectmode='data'                                    # 비율 유지
+                aspectmode='data'                                    # Maintain aspect ratio
             ),
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
             height=700
         )
         return fig
 
-    # 애니메이션 실행 루프
+    # Animation playback loop
     if st.session_state.playing:
         while st.session_state.frame_idx < num_frames and st.session_state.playing:
             fig = draw_3d_frame(st.session_state.frame_idx)
@@ -1015,15 +1015,15 @@ if os.path.exists("results.json"):
             if st.session_state.frame_idx >= num_frames:
                 st.session_state.playing = False
 
-            time.sleep(0.05)  # 재생 속도 조절
+            time.sleep(0.05)  # Playback speed control
             st.rerun()
     else:
-        # 멈춰있을 때 현재 프레임 표시 (자유로운 회전/확대 가능)
+        # Show current frame when paused (free rotation/zoom available)
         fig = draw_3d_frame(st.session_state.frame_idx)
         plot_spot.plotly_chart(fig, use_container_width=True)
 
 else:
-    # results.json 없을 때 PNG 프레임 폴백 애니메이션
+    # PNG frame fallback animation when results.json is unavailable
     if current_frames:
         st.subheader("🌊 Flow Animation")
         total = len(current_frames)
@@ -1076,7 +1076,7 @@ else:
                 img_placeholder.image(fd, caption=cap, use_container_width=True)
 
         if st.session_state.get("animation_playing", False):
-            status_placeholder.info("⏵ 재생 중... (Pause 또는 Reset으로 멈춤)")
+            status_placeholder.info("⏵ Playing... (Click Pause or Reset to stop)")
             for i in range(curr_idx, total):
                 if not st.session_state.get("animation_playing", False):
                     break
@@ -1092,7 +1092,7 @@ else:
             _show_frame(st.session_state.get("current_frame", 0))
 
     else:
-        st.info("💡 Sync 버튼을 눌러 결과 이미지를 로드하세요.")
+        st.info("💡 Click 'Sync Results' to load the result images.")
 
 
 # ─────────── Material DB Management ───────────
